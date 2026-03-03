@@ -1,5 +1,19 @@
+# Environments
 venv/
+.venv/
+env/
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+
+# Databases
 *.db
+*.sqlite3
+
+# Local/Secrets
 .env
+.vscode/
+*.log
