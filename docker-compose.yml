@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  ares-engine:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./blog.db:/app/blog.db
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1.5G
+    restart: unless-stopped

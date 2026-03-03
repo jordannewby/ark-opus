@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ares Console v3.1</title>
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="/static/css/console.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
+
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            height: 100vh;
+            overflow: hidden;
+            background: #0a0a0c;
+        }
+
+        .content-pane {
+            height: 100%;
+            overflow-y: auto !important;
+            padding-bottom: 8rem;
+            scrollbar-width: thin;
+            scrollbar-color: #27272a transparent;
+        }
+
+        /* SEO/Sanity Content Styling */
+        .prose-custom h1 {
+            color: #22d3ee;
+            font-size: 2.2rem;
+            font-weight: 800;
+            margin-bottom: 1.5rem;
+            line-height: 1.2;
+        }
+
+        .prose-custom h2 {
+            color: #d946ef;
+            font-size: 1.6rem;
+            font-weight: 700;
+            margin-top: 2.5rem;
+            margin-bottom: 1rem;
+            border-left: 4px solid #d946ef;
+            padding-left: 12px;
+        }
+
+        .prose-custom h3 {
+            color: #f8fafc;
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-top: 2rem;
+        }
+
+        .prose-custom p {
+            margin-bottom: 1.4rem;
+            line-height: 1.8;
+            color: #94a3b8;
+            font-size: 0.95rem;
+        }
+
+        .prose-custom table {
+            width: 100%;
+            border: 1px solid #27272a;
+            margin: 2rem 0;
+            border-collapse: collapse;
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        .prose-custom th {
+            background: rgba(34, 211, 238, 0.1);
+            color: #22d3ee;
+            padding: 12px;
+            text-align: left;
+            border: 1px solid #27272a;
+            font-size: 0.8rem;
+        }
+
+        .prose-custom td {
+            padding: 12px;
+            border: 1px solid #27272a;
+            font-size: 0.85rem;
+        }
+
+        .prose-custom ul {
+            list-style-type: disc;
+            padding-left: 1.5rem;
+            margin-bottom: 1.5rem;
+            color: #94a3b8;
+        }
+
+        .prose-custom strong {
+            color: #fff;
+            font-weight: 600;
+            background: rgba(0, 255, 157, 0.05);
+        }
+
+        .agent-node-active {
+            color: #00ff9d !important;
+            border-color: #00ff9d !important;
+            box-shadow: 0 0 15px rgba(0, 255, 157, 0.3);
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-950 text-gray-100">
+    <div class="dashboard-grid flex h-screen w-full">
+        <aside class="sidebar w-[280px] p-6 border-r border-slate-800 flex flex-col gap-6 bg-gray-950 shrink-0">
+            <div class="brand-block">
+                <div
+                    class="ares-logo bg-magenta-600 w-10 h-10 flex items-center justify-center font-bold text-xl rounded shadow-lg shadow-magenta-900/20">
+                    A</div>
+                <h1 class="text-lg font-bold tracking-widest mt-4">ARES CONSOLE</h1>
+                <p class="text-[10px] text-slate-500 uppercase tracking-tighter">Ver 3.1 Pro // Sanity Workflow</p>
+            </div>
+            <div class="flex-1 flex flex-col gap-4 overflow-hidden">
+                <div
+                    class="glass-card flex-1 flex flex-col overflow-hidden bg-slate-900/20 border border-slate-800 p-4 rounded-lg">
+                    <span class="mono-tag text-[10px] text-magenta-500 mb-3 uppercase font-bold tracking-widest">System
+                        Logs_</span>
+                    <div id="terminal-body"
+                        class="terminal-body flex-1 overflow-y-auto text-[11px] font-mono leading-relaxed text-slate-400">
+                        > INITIALIZED AND AWAITING COMMAND...
+                    </div>
+                </div>
+            </div>
+            <div id="mcp-status"
+                class="glass-card py-3 px-4 flex items-center justify-between border border-slate-800 rounded-lg">
+                <span class="text-[10px] text-slate-400 uppercase">Status:</span>
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span class="text-[10px] text-emerald-400 font-bold uppercase tracking-widest">Ready</span>
+                </div>
+            </div>
+        </aside>
+
+        <main class="main-content flex-1 flex flex-col overflow-hidden">
+            <header class="p-6 border-b border-slate-800 bg-slate-900/30">
+                <div class="flex items-center gap-4 max-w-5xl mx-auto">
+                    <input id="keyword-input" type="text"
+                        class="bg-black/60 border border-slate-700 text-cyan-400 px-5 py-3 rounded-lg flex-1 font-mono text-sm focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none transition-all"
+                        placeholder="INITIATE SEO TARGET ANALYSIS...">
+                    <button id="generate-btn"
+                        class="bg-cyan-600 hover:bg-cyan-500 text-white px-8 py-3 rounded-lg font-bold text-xs uppercase tracking-widest transition-all shadow-lg shadow-cyan-900/20">EXECUTE</button>
+                </div>
+            </header>
+
+            <nav class="px-6 py-4 flex items-center justify-center gap-8 bg-black/20 border-b border-slate-800">
+                <div id="agent-research"
+                    class="text-[10px] uppercase text-slate-500 border border-slate-800 px-4 py-1.5 rounded transition-all">
+                    Research</div>
+                <div class="h-px w-6 bg-slate-800"></div>
+                <div id="agent-psychology"
+                    class="text-[10px] uppercase text-slate-500 border border-slate-800 px-4 py-1.5 rounded transition-all">
+                    Psychology</div>
+                <div class="h-px w-6 bg-slate-800"></div>
+                <div id="agent-writer"
+                    class="text-[10px] uppercase text-slate-500 border border-slate-800 px-4 py-1.5 rounded transition-all">
+                    Writer</div>
+            </nav>
+
+            <div class="flex-1 overflow-hidden grid grid-cols-2 gap-px bg-slate-800">
+                <div class="bg-gray-950 p-8 content-pane">
+                    <h2 class="text-xs font-bold tracking-[3px] text-magenta-400 uppercase mb-8 opacity-80">Strategic
+                        Blueprint</h2>
+                    <div id="blueprint-content" class="prose prose-invert prose-sm max-w-none text-slate-400"></div>
+                </div>
+                <div class="bg-gray-950 p-8 content-pane border-l border-slate-800">
+                    <div class="flex items-center justify-between mb-8">
+                        <h2 class="text-xs font-bold tracking-[3px] text-cyan-400 uppercase opacity-80">Generated Output
+                        </h2>
+                        <div class="flex gap-2">
+                            <button id="copy-md-btn" title="Copy Markdown for Sanity"
+                                class="text-[9px] px-3 py-1.5 bg-slate-900 hover:bg-magenta-600 text-slate-400 hover:text-white rounded border border-slate-700 transition-all font-bold uppercase tracking-tighter">Copy
+                                MD</button>
+                            <button id="copy-html-btn" title="Copy Raw HTML"
+                                class="text-[9px] px-3 py-1.5 bg-slate-900 hover:bg-cyan-600 text-slate-400 hover:text-white rounded border border-slate-700 transition-all font-bold uppercase tracking-tighter">Copy
+                                HTML</button>
+                        </div>
+                    </div>
+                    <div id="article-content" class="prose-custom max-w-none"></div>
+                </div>
+            </div>
+        </main>
+
+        <aside class="tactical-hub w-[320px] p-6 flex flex-col gap-6 border-l border-slate-800 bg-gray-950 shrink-0">
+            <div class="glass-card p-6 rounded-lg bg-slate-900/20 border border-slate-800">
+                <h3 class="text-[10px] text-magenta-500 font-bold uppercase tracking-widest mb-8">SEO Integrity Audit_
+                </h3>
+                <div class="flex flex-col items-center gap-8">
+                    <div class="relative w-36 h-36">
+                        <svg viewBox="0 0 100 100" class="w-full h-full transform -rotate-90">
+                            <circle cx="50" cy="50" r="45" fill="none" stroke="#1e293b" stroke-width="6" />
+                            <circle id="score-circle" cx="50" cy="50" r="45" fill="none" stroke="#00ff9d"
+                                stroke-width="6" stroke-dasharray="283" stroke-dashoffset="283"
+                                class="transition-all duration-1000" />
+                        </svg>
+                        <div class="absolute inset-0 flex flex-col items-center justify-center">
+                            <span id="score-text"
+                                class="text-3xl font-bold font-mono tracking-tighter text-white">0%</span>
+                            <span class="text-[8px] text-slate-500 uppercase font-bold mt-1">SEO Score</span>
+                        </div>
+                    </div>
+                    <div class="w-full flex flex-col gap-4 text-[11px] text-slate-400 font-mono">
+                        <div id="audit-length" class="flex items-center gap-3"><span
+                                class="w-1.5 h-1.5 rounded-full bg-slate-700"></span> Word Count (2k+)</div>
+                        <div id="audit-entities" class="flex items-center gap-3"><span
+                                class="w-1.5 h-1.5 rounded-full bg-slate-700"></span> Semantic Density</div>
+                        <div id="audit-visuals" class="flex items-center gap-3"><span
+                                class="w-1.5 h-1.5 rounded-full bg-slate-700"></span> Data Blocks</div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+    <script src="/static/js/console.js"></script>
+</body>
+
+</html>
