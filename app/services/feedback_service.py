@@ -17,7 +17,7 @@ class FeedbackAgent:
             raise ValueError("GEMINI_API_KEY environment variable is not set.")
 
         self.client = genai.Client(api_key=GEMINI_API_KEY)
-        self.model_name = "gemini-3-flash-preview"
+        self.model_name = "gemini-2.5-flash"
 
         self.system_prompt = (
             "You are a master linguistic analyst and editor. Your job is to compare an original AI-generated text "

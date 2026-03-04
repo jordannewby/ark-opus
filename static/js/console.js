@@ -14,7 +14,7 @@ const els = {
         psychology: document.getElementById('agent-psychology'),
         writer: document.getElementById('agent-writer')
     },
-    nicheSelect: document.getElementById('niche-select')
+    nicheInput: document.getElementById('niche-input')
 };
 
 function terminalLog(agent, message, color = "#22d3ee") {
@@ -142,27 +142,136 @@ function updateSEOAudit(content) {
     if (lengthDot) lengthDot.style.background = wordCount > 1800 ? "#22d3ee" : "rgba(255,255,255,0.1)";
     if (entityDot) entityDot.style.background = h2Count >= 4 ? "#22d3ee" : "rgba(255,255,255,0.1)";
     if (visualDot) visualDot.style.background = hasDataBlocks ? "#22d3ee" : "rgba(255,255,255,0.1)";
+    if (visualDot) visualDot.style.background = hasDataBlocks ? "#22d3ee" : "rgba(255,255,255,0.1)";
 }
 
-// MAIN EXECUTION
+// -------------------------------------------------------------------------
+// MODAL & CLARIFICATION LOGIC
+// -------------------------------------------------------------------------
+const modalEls = {
+    modal: document.getElementById('clarify-modal'),
+    panel: document.getElementById('clarify-panel'),
+    loading: document.getElementById('clarify-loading'),
+    form: document.getElementById('clarify-form'),
+    container: document.getElementById('questions-container'),
+    skipBtn: document.getElementById('clarify-skip-btn'),
+    submitBtn: document.getElementById('clarify-submit-btn'),
+    backdrop: document.getElementById('clarify-backdrop')
+};
+
+let currentQuestions = [];
+
+function showModal() {
+    modalEls.modal.classList.remove('hidden');
+    // small delay to allow display block to apply before animating opacity
+    setTimeout(() => {
+        modalEls.panel.classList.remove('scale-95', 'opacity-0');
+        modalEls.panel.classList.add('scale-100', 'opacity-100');
+    }, 10);
+}
+
+function hideModal() {
+    modalEls.panel.classList.remove('scale-100', 'opacity-100');
+    modalEls.panel.classList.add('scale-95', 'opacity-0');
+    setTimeout(() => {
+        modalEls.modal.classList.add('hidden');
+    }, 300); // match tailwind transition duration
+}
+
+modalEls.backdrop.addEventListener('click', hideModal);
+
+modalEls.skipBtn.addEventListener('click', () => {
+    hideModal();
+    executeGeneration(""); // Generate with empty context
+});
+
+modalEls.submitBtn.addEventListener('click', () => {
+    // Gather all answers
+    let contextParts = [];
+    const textareas = modalEls.container.querySelectorAll('textarea');
+    textareas.forEach((ta, idx) => {
+        const answer = ta.value.trim();
+        if (answer) {
+            contextParts.push(`Q: ${currentQuestions[idx]}\nA: ${answer}`);
+        }
+    });
+
+    const finalContext = contextParts.join('\n\n');
+    hideModal();
+    executeGeneration(finalContext);
+});
+
+// MAIN EXECUTION TRIGGER (Step 1)
 els.generateBtn.addEventListener('click', async () => {
     const kw = els.keywordInput.value.trim();
     if (!kw) return;
 
-    const niche = els.nicheSelect ? els.nicheSelect.value : "default";
-
     els.generateBtn.disabled = true;
+
+    // Reset UI State for new run
     els.terminal.innerHTML = "";
     els.articlePane.innerHTML = "";
     els.blueprintPane.innerHTML = "";
-    els.articlePane.classList.add('hidden'); // Reset to interactive state if it was rendered
+    els.articlePane.classList.add('hidden');
+    updateAgentUI(null);
 
-    terminalLog("SYSTEM", `Starting content generation for topic...`, "#22d3ee");
+    // Show Modal Loading State
+    modalEls.loading.classList.remove('hidden');
+    modalEls.form.classList.add('hidden');
+    showModal();
+
+    terminalLog("SYSTEM", `Fetching briefing questions for: ${kw}...`, "#22d3ee");
 
     try {
-        const response = await fetch(`/generate/${encodeURIComponent(kw)}?niche=${encodeURIComponent(niche)}`, {
+        const response = await fetch(`/clarify?keyword=${encodeURIComponent(kw)}`);
+        if (!response.ok) throw new Error("Failed to fetch questions");
+
+        const data = await response.json();
+        currentQuestions = data.questions || [];
+
+        if (currentQuestions.length === 0) {
+            // Fallback if AI fails to return questions
+            hideModal();
+            executeGeneration("");
+            return;
+        }
+
+        // Render Questions in Modal
+        modalEls.container.innerHTML = "";
+        currentQuestions.forEach((q, idx) => {
+            const block = document.createElement('div');
+            block.className = 'bg-black/20 border border-white/5 rounded-xl p-4';
+            block.innerHTML = `
+                <label class="block text-sm font-medium text-slate-200 mb-2 leading-snug">${idx + 1}. ${q}</label>
+                <textarea rows="2" class="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-sm text-white placeholder-slate-600 outline-none focus:border-cyan-500/50 focus:bg-white/10 transition-all resize-none" placeholder="Type your answer here... (Optional)"></textarea>
+            `;
+            modalEls.container.appendChild(block);
+        });
+
+        modalEls.loading.classList.add('hidden');
+        modalEls.form.classList.remove('hidden');
+        terminalLog("SYSTEM", `Briefing agent ready. Awaiting user input.`, "#22d3ee");
+
+    } catch (err) {
+        terminalLog("ERROR", `Briefing Failed: ${err.message}. Skipping to generation...`, "#ef4444");
+        hideModal();
+        executeGeneration("");
+    }
+});
+
+// MAIN GENERATION LOOP (Step 2)
+async function executeGeneration(userContext) {
+    const kw = els.keywordInput.value.trim();
+    const rawNiche = els.nicheInput ? els.nicheInput.value.trim() : "";
+    const niche = rawNiche ? rawNiche : "default";
+
+    terminalLog("SYSTEM", `Compiling context and starting generation...`, "#22d3ee");
+
+    try {
+        const response = await fetch(`/generate/${encodeURIComponent(kw)}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ niche: niche, context: userContext })
         });
 
         if (!response.ok) throw new Error(`Server Error: ${response.status}`);
@@ -187,6 +296,9 @@ els.generateBtn.addEventListener('click', async () => {
                             const payload = JSON.parse(jsonStr);
 
                             switch (payload.event) {
+                                case 'debug':
+                                    terminalLog("SYS-DEBUG", payload.message, "#fbbf24");
+                                    break;
                                 case 'phase1_start':
                                     updateAgentUI('research');
                                     terminalLog("ENGINE", payload.message, "#d946ef");
@@ -226,7 +338,7 @@ els.generateBtn.addEventListener('click', async () => {
         els.generateBtn.disabled = false;
         updateAgentUI(null);
     }
-});
+}
 
 // CLIPBOARD HANDLERS
 document.getElementById('copy-md-btn').addEventListener('click', () => {

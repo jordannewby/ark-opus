@@ -18,7 +18,7 @@ class WriterService:
             raise ValueError("GEMINI_API_KEY environment variable is not set.")
 
         self.client = genai.Client(api_key=GEMINI_API_KEY)
-        self.model_name = "gemini-3-flash-preview" # or gemini-3.0-flash-exp depending on API availability
+        self.model_name = "gemini-2.5-pro"
 
         # Load the strict writer system prompt
         prompt_path = Path(__file__).parent / "prompts" / "writer.md"

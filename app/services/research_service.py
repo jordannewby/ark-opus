@@ -25,7 +25,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from ..models import ResearchCache
-from ..settings import DEEPSEEK_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD, BRAVE_API_KEY
+from ..settings import DEEPSEEK_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD
 
 DATAFORSEO_API_URL = "https://api.dataforseo.com/v3"
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
@@ -42,10 +42,16 @@ class ResearchAgent:
         if not DATAFORSEO_LOGIN or not DATAFORSEO_PASSWORD:
             raise ValueError("DataForSEO credentials missing from environment.")
 
-    async def research(self, keyword: str, niche: str = "default") -> dict:
+    async def research(self, keyword: str, niche: str = "default", user_context: str = "") -> dict:
         """Run full research pipeline for *keyword* via localized MCP server."""
         cached = self._get_cached(keyword)
-        if cached is not None:
+        
+        from ..settings import DEBUG_MODE
+        
+        # Bypass cache if DEBUG_MODE is True or if user provided customized context
+        if cached is not None and not user_context and not DEBUG_MODE:
+            if DEBUG_MODE:
+                print(f"[DEBUG] Cache Hit! Returning data for {keyword}")
             return cached
 
         # Step A: Initialize DataForSEO MCP Server via sub-process
@@ -62,16 +68,25 @@ class ResearchAgent:
         )
         
         # Step B: Elite Discovery (Non-MCP)
-        elite_data = await self._brave_elite_discovery(keyword, niche=niche)
+        elite_data = await self._exa_elite_discovery(keyword, niche=niche)
 
         # Step C: MCP Context Lifecycle & Agentic Loop
+        from ..settings import DEBUG_MODE
+        
+        if DEBUG_MODE:
+            print(f"\n[DEBUG] Spinning up ephemeral MCP Subprocess for DataForSEO...")
+            
+        executed_tools = []
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
+                if DEBUG_MODE:
+                    print(f"[DEBUG] MCP Server Initialized successfully.")
                 
                 # Fetch available DataForSEO tools
                 tools_response = await session.list_tools()
                 safe_tools = []
+                simplified_tools = []
                 for tool in tools_response.tools:
                     if any(cat in tool.name.lower() for cat in ALLOWED_TOOL_CATEGORIES):
                         safe_tools.append({
@@ -79,11 +94,21 @@ class ResearchAgent:
                             "description": tool.description, 
                             "inputSchema": tool.inputSchema
                         })
+                        
+                        # Aggressively strip webhook noise from the schema to prevent R1 cognitive overload
+                        clean_schema = ResearchAgent._strip_webhook_noise(tool.inputSchema)
+                        
+                        simplified_tools.append({
+                            "name": tool.name, 
+                            "description": tool.description,
+                            "inputSchema": clean_schema
+                        })
                 
                 # Let DeepSeek-R1 decide the workflow based on the keyword and safe_tools
                 try:
-                    tools_decision = await self._agentic_tool_decision(keyword, safe_tools)
-                    print(f"\n[AGENTIC LOOP] DeepSeek-R1 MCP Tool Decision: {tools_decision}\n")
+                    tools_decision = await self._agentic_tool_decision(keyword, simplified_tools, user_context)
+                    if DEBUG_MODE:
+                        print(f"\n[DEBUG] DeepSeek-R1 Selected Tools:\n{json.dumps(tools_decision, indent=2)}\n")
                     
                     # Store Results
                     mcp_results = {}
@@ -94,11 +119,15 @@ class ResearchAgent:
                         t_args = call.get("arguments", {})
                         
                         if not any(cat in t_name.lower() for cat in ALLOWED_TOOL_CATEGORIES):
-                            print(f"[SECURITY GUARDRAIL] Blocked unauthorized tool call: {t_name}")
+                            if DEBUG_MODE: print(f"[DEBUG-SECURITY] Blocked unauthorized tool call: {t_name}")
                             continue
                             
-                        print(f"Executing tool {t_name} with args {t_args}")
+                        if DEBUG_MODE:
+                            print(f"[DEBUG] Executing MCP Tool: {t_name}")
+                            print(f"[DEBUG] Tool Payload: {json.dumps(t_args)}")
+                            
                         res = await session.call_tool(t_name, arguments=t_args)
+                        executed_tools.append(t_name)
                         
                         if "keyword_ideas" in t_name:
                             mcp_results["keywords"] = res
@@ -112,17 +141,23 @@ class ResearchAgent:
                             mcp_results["on_page"] = res
                         
                 except Exception as e:
+                    if DEBUG_MODE: print(f"[DEBUG] Agentic loop failed, fallback triggered. Error: {e}")
                     # Fallback Logic: Safe Gather baseline
-                    print(f"Agentic loop failed, falling back to standard keywords and serp: {e}")
                     mcp_results = {}
+                    executed_tools = []
                     mcp_results["keywords"] = await session.call_tool(
                         "dataforseo_labs_google_keyword_ideas", 
                         arguments={"keywords": [keyword], "location_code": 2840, "language_code": "en"}
                     )
+                    executed_tools.append("dataforseo_labs_google_keyword_ideas (fallback)")
                     mcp_results["serp"] = await session.call_tool(
                         "serp_organic_live_advanced", 
                         arguments={"keyword": keyword, "location_code": 2840, "language_code": "en", "depth": 10}
                     )
+                    executed_tools.append("serp_organic_live_advanced (fallback)")
+                    
+        if DEBUG_MODE:
+            print(f"[DEBUG] Ephemeral MCP Subprocess terminated cleanly.\n")
 
         # Step D: Data Formatting
         kw_data = mcp_results.get("keywords")
@@ -158,7 +193,7 @@ class ResearchAgent:
             "raw_mcp_serp_fallback": serp_text if not competitor_headers else None
         }))
         
-        info_gap = await self._analyze_information_gap(keyword, compiled_text)
+        info_gap = await self._analyze_information_gap(keyword, compiled_text, user_context)
 
         result = {
             "keyword": keyword,
@@ -169,6 +204,7 @@ class ResearchAgent:
             "on_page_metrics": {"avg_word_count": 1850, "header_density": "Every 150 words"}, # Mock since OnPage is not in MCP yet
             "backlink_authority": {"authority_sources": ["wikipedia.org", "hbr.org", "forbes.com"]}, # Mock
             "elite_competitors": elite_data,
+            "executed_tools": executed_tools if 'executed_tools' in locals() else [],
         }
 
         self._save_cache(keyword, result)
@@ -182,78 +218,49 @@ class ResearchAgent:
     # Brave Goggles (Elite Discovery Layer)
     # ------------------------------------------------------------------
 
-    async def _brave_elite_discovery(self, keyword: str, niche: str = "default") -> list[dict]:
-        """Use Brave Search Goggles to find top elite competitor insights based on niche."""
-        # 1. Pull dynamic URL from the map in settings
-        from ..settings import GOGGLE_MAP, BRAVE_API_KEY
-        
-        if not BRAVE_API_KEY:
+    async def _exa_elite_discovery(self, keyword: str, niche: str = "default") -> list[dict]:
+        """Use Exa.ai Neural Search to find and extract the full text of elite articles."""
+        from ..settings import EXA_API_KEY
+        if not EXA_API_KEY:
             return []
-                
-        if niche not in GOGGLE_MAP:
-            raise ValueError(f"Invalid niche '{niche}'. Must be one of {list(GOGGLE_MAP.keys())}")
             
-        # Resolve the Goggle URL based on the provided niche 
-        goggles_url = GOGGLE_MAP[niche]
-        
         headers = {
-            "Accept": "application/json",
-            "Accept-Encoding": "gzip",
-            "X-Subscription-Token": BRAVE_API_KEY
+            "x-api-key": EXA_API_KEY,
+            "Content-Type": "application/json"
         }
-        params = {
-            "q": keyword,
-            "goggles_id": goggles_url  # Now dynamically selected
+        
+        # Exa Neural Prompting - asking for meaning, not just keywords
+        prompt = f"High-quality, expert-level blog post or article about {keyword}"
+        if niche != "default":
+            prompt = f"High-quality, advanced {niche} blog post or article about {keyword}"
+            
+        payload = {
+            "query": prompt,
+            "type": "auto",
+            "num_results": 3,
+            "contents": {
+                "text": {
+                    "max_characters": 10000  # Truncate at ~2500 tokens to protect DeepSeek context window
+                }
+            }
         }
         
         async with httpx.AsyncClient(timeout=30) as client:
             try:
-                resp = await client.get(
-                    "https://api.search.brave.com/res/v1/web/search",
-                    headers=headers,
-                    params=params
-                )
+                resp = await client.post("https://api.exa.ai/search", headers=headers, json=payload)
                 resp.raise_for_status()
                 data = resp.json()
                 
                 results = []
-                for result in data.get("web", {}).get("results", []):
-                    # Clean and strip HTML 
-                    title = self._strip_html(result.get("title", ""))
-                    description = self._strip_html(result.get("description", ""))
+                for result in data.get("results", []):
                     results.append({
-                        "title": title,
-                        "description": description,
-                        "url": result.get("url", "")
+                        "title": result.get("title", ""),
+                        "url": result.get("url", ""),
+                        "content": result.get("text", "") 
                     })
                 return results
-            except httpx.HTTPStatusError as e:
-                print(f"Brave Goggles Error ({niche}): {e}. Retrying without Goggles...")
-                if "goggles_id" in params:
-                    del params["goggles_id"]
-                    try:
-                        resp_fallback = await client.get(
-                            "https://api.search.brave.com/res/v1/web/search",
-                            headers=headers,
-                            params=params
-                        )
-                        resp_fallback.raise_for_status()
-                        data = resp_fallback.json()
-                        results = []
-                        for result in data.get("web", {}).get("results", []):
-                            title = self._strip_html(result.get("title", ""))
-                            description = self._strip_html(result.get("description", ""))
-                            results.append({
-                                "title": title,
-                                "description": description,
-                                "url": result.get("url", "")
-                            })
-                        return results
-                    except Exception as e_fallback:
-                        print(f"Brave Search Fallback Error: {e_fallback}")
-                return []
             except Exception as e:
-                print(f"Brave Search Request Error: {e}")
+                print(f"Exa.ai API Error: {e}")
                 return []
     # ------------------------------------------------------------------
     # Extraction Helpers
@@ -327,37 +334,81 @@ class ResearchAgent:
         clean = re.sub(r'\s+', ' ', clean).strip()
         return clean
 
+    @staticmethod
+    def _strip_webhook_noise(schema: dict) -> dict:
+        """
+        Recursively remove extraneous webhook bindings (pingback_url, postback_url, etc.)
+        from the DataForSEO parameter schemas to prevent LLM cognitive overload.
+        """
+        if not isinstance(schema, dict):
+            return schema
+            
+        clean_schema = {}
+        for key, value in schema.items():
+            if isinstance(value, dict):
+                # If we are looking at the 'properties' block, filter its keys
+                if key == "properties":
+                    filtered_props = {}
+                    for prop_k, prop_v in value.items():
+                        if "pingback" not in prop_k.lower() and "postback" not in prop_k.lower() and "webhook" not in prop_k.lower():
+                            filtered_props[prop_k] = ResearchAgent._strip_webhook_noise(prop_v)
+                    clean_schema[key] = filtered_props
+                else:
+                    clean_schema[key] = ResearchAgent._strip_webhook_noise(value)
+            elif isinstance(value, list):
+                clean_schema[key] = [ResearchAgent._strip_webhook_noise(i) if isinstance(i, dict) else i for i in value]
+            else:
+                clean_schema[key] = value
+                
+        # Clean up required array if properties were removed
+        if "required" in clean_schema and isinstance(clean_schema["required"], list):
+            clean_schema["required"] = [
+                r for r in clean_schema["required"] 
+                if "pingback" not in r.lower() and "postback" not in r.lower() and "webhook" not in r.lower()
+            ]
+            
+        return clean_schema
+
     # ------------------------------------------------------------------
     # DeepSeek Agentic Logic
     # ------------------------------------------------------------------
 
-    async def _agentic_tool_decision(self, keyword: str, available_tools: list[dict]) -> dict:
+    async def _agentic_tool_decision(self, keyword: str, available_tools: list[dict], user_context: str = "") -> dict:
         """Ask DeepSeek-R1 which MCP tools to execute based on available schema."""
         if not DEEPSEEK_API_KEY:
             raise ValueError("DeepSeek API key missing.")
             
         prompt = (
             f"You are an expert SEO Autonomous Agent. We are researching the keyword '{keyword}'.\n"
+            f"USER DIRECTIVE / INTENT CONTEXT:\n{user_context if user_context else 'None provided. Assume general intent.'}\n\n"
             "Here are the available MCP tools we can execute:\n"
             f"{json.dumps(available_tools, indent=2)}\n\n"
             "Decide which tools you need to build a comprehensive Information Gap profile.\n"
-            "You are encouraged to aggressively select multiple tools from the schema to get the highest resolution data possible. "
-            "Specifically, you should attempt to gather:\n"
-            "1. Baseline data: 'dataforseo_labs_google_keyword_ideas' and 'serp_organic_live_advanced'\n"
-            "2. Authority data: Any available 'backlinks' tools\n"
-            "3. Structural data: Any available 'on_page' tools\n"
-            "- For any tool requiring 'location_code', use 2840 (US).\n"
-            "- For any tool requiring 'language_code', use 'en'.\n"
-            "- 'dataforseo_labs_google_keyword_ideas' usually expects 'keywords' as an array: [\"keyword_here\"].\n"
-            "Return ONLY a valid JSON object with a single field 'tool_calls', which must be a list of objects containing 'tool_name' and 'arguments' matching the tool's inputSchema.\n"
-            "Do not include markdown blocks or any other text."
+            "CRITICAL DIRECTIVES:\n"
+            "1. You MUST ALWAYS select 'dataforseo_labs_google_keyword_ideas' and 'serp_organic_live_advanced'.\n"
+            "2. EXTREMELY IMPORTANT: You are HIGHLY ENCOURAGED to add additional tools from the schema (e.g., related searches, backlinks, on-page) to maximize SEO quality. Do not limit yourself if the context requires deeper data.\n"
+            "3. ZERO HALLUCINATION & STRICT HONESTY: Do not fake data. You must list EXACTLY the tools you want the system to execute for you using their exact schema names.\n\n"
+            "OUTPUT FORMAT TEMPLATE (Use this exact structure for parameter formatting. Append additional tool objects to the 'tool_calls' array as needed):\n"
+            "{\n"
+            "  \"tool_calls\": [\n"
+            "    {\n"
+            "      \"tool_name\": \"dataforseo_labs_google_keyword_ideas\",\n"
+            "      \"arguments\": {\"keywords\": [\"" + keyword + "\"], \"location_name\": \"United States\", \"language_code\": \"en\"}\n"
+            "    },\n"
+            "    {\n"
+            "      \"tool_name\": \"serp_organic_live_advanced\",\n"
+            "      \"arguments\": {\"keyword\": \"" + keyword + "\", \"location_name\": \"United States\", \"language_code\": \"en\", \"depth\": 10}\n"
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "Return ONLY a valid JSON object matching the format above. Do not include markdown blocks or any other text."
         )
         payload = {
             "model": "deepseek-reasoner",
             "messages": [
                 {"role": "user", "content": prompt}
             ],
-            "max_tokens": 800
+            "max_tokens": 4000
         }
         
         headers = {
@@ -389,7 +440,7 @@ class ResearchAgent:
                 "tool_calls": decision.get("tool_calls", [])
             }
 
-    async def _analyze_information_gap(self, keyword: str, text_context: str) -> str:
+    async def _analyze_information_gap(self, keyword: str, text_context: str, user_context: str = "") -> str:
         """Use deepseek-reasoner to find the expert angle Page 1 is currently ignoring."""
         if not DEEPSEEK_API_KEY:
             return "DeepSeek API key missing. Cannot generate information gap."
@@ -400,7 +451,9 @@ class ResearchAgent:
         }
         prompt = (
             f"You are an expert SEO strategist. Analyze the following competitor and SERP data for '{keyword}'. "
-            "Identify the 'Information Gap'—the specific expert angle or unique insight that Page 1 is currently ignoring. "
+            f"USER DIRECTIVE / INTENT CONTEXT:\n{user_context}\n\n"
+            "Identify the 'Information Gap'—the specific expert angle or unique insight that Page 1 is currently ignoring, "
+            "that perfectly caters to the user's explicit intent. "
             "Provide ONLY the information gap insight in 2-3 sentences max.\n\n"
             f"DATA:\n{text_context[:4000]}"
         )

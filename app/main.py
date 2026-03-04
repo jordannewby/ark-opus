@@ -116,33 +116,62 @@ async def generate_blueprint(research_data: ResearchResponse, db: Session = Depe
 
 import json
 from fastapi.responses import FileResponse, StreamingResponse
+from .schemas import GeneratePayload
+
+@app.get("/clarify")
+async def clarify_intent(keyword: str):
+    from .services.briefing_agent import BriefingAgent
+    agent = BriefingAgent()
+    questions = await agent.get_clarifying_questions(keyword)
+    return {"questions": questions}
 
 @app.post("/generate/{keyword}")
-async def generate_article(keyword: str, niche: str = "default", db: Session = Depends(get_db)):
+async def generate_article(keyword: str, payload: GeneratePayload, db: Session = Depends(get_db)):
     from .services.psychology_agent import PsychologyAgent
     from .services.writer_service import WriterService
+    from .settings import DEBUG_MODE
+    import time
+    import traceback
+
+    niche = payload.niche
+    context = payload.context
 
     print(f"🚀 [ARES] Starting unified generation for: {keyword} (niche: {niche})")
 
     async def event_generator():
+        start_time = time.time()
         try:
-            # Phase 1: Research
-            yield f"data: {json.dumps({'event': 'phase1_start', 'message': 'Gathering intelligence...'})}\n\n"
+            if DEBUG_MODE:
+                yield f"data: {json.dumps({'event': 'debug', 'message': f'Initializing Generation Sequence. Context: {bool(context)}'})}\n\n"
+            # Phase 1
+            yield f"data: {json.dumps({'event': 'phase1_start', 'message': 'Gathering intelligence and analyzing context...'})}\n\n"
+            p1_start = time.time()
             research_agent = ResearchAgent(db)
-            research_data_dict = await research_agent.research(keyword, niche=niche)
+            research_data_dict = await research_agent.research(keyword, niche=niche, user_context=context)
+            if DEBUG_MODE:
+                yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1 (DeepSeek-R1 + MCP) completed in {round(time.time() - p1_start, 2)}s'})}\n\n"
             
-            # Phase 2: Psychology Blueprint
+            tools_used = research_data_dict.get("executed_tools", [])
+            if DEBUG_MODE and tools_used:
+                tools_str = ", ".join(tools_used)
+                yield f"data: {json.dumps({'event': 'debug', 'message': f'MCP Tools Executed: {tools_str}'})}\n\n"
+            
+            # Phase 2
             yield f"data: {json.dumps({'event': 'phase2_start', 'message': 'Mapping psychological blueprint...'})}\n\n"
+            p2_start = time.time()
             psychology_agent = PsychologyAgent(db=db) 
             blueprint_dict = await psychology_agent.generate_blueprint(research_data_dict)
-            
-            # Send the blueprint back to the client immediately so it can render Phase 01 / Phase 02 visually
             yield f"data: {json.dumps({'event': 'phase2_complete', 'blueprint': blueprint_dict})}\n\n"
+            if DEBUG_MODE:
+                yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 2 (DeepSeek-V3) completed in {round(time.time() - p2_start, 2)}s'})}\n\n"
 
-            # Phase 3: Content Writer
+            # Phase 3
             yield f"data: {json.dumps({'event': 'phase3_start', 'message': 'Drafting final prose...'})}\n\n"
+            p3_start = time.time()
             writer_service = WriterService(db=db) 
             article_content = await writer_service.produce_article(blueprint_dict)
+            if DEBUG_MODE:
+                yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 3 (Gemini 2.5 Pro) completed in {round(time.time() - p3_start, 2)}s'})}\n\n"
 
             # Save the generated article
             post = Post(
@@ -163,6 +192,10 @@ async def generate_article(keyword: str, niche: str = "default", db: Session = D
             # Must convert datetime objects to ISO strings for json.dumps
             post_schema['created_at'] = post_schema['created_at'].isoformat()
             
+            if DEBUG_MODE:
+                total_time = round(time.time() - start_time, 2)
+                yield f"data: {json.dumps({'event': 'debug', 'message': f'Total Engine Execution Time: {total_time}s'})}\n\n"
+
             final_payload = {
                 'event': 'complete',
                 'post': post_schema,
@@ -171,10 +204,17 @@ async def generate_article(keyword: str, niche: str = "default", db: Session = D
             yield f"data: {json.dumps(final_payload)}\n\n"
             
         except Exception as e:
-            print(f"❌ [ARES] Generation Error: {e}")
-            yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+            error_msg = str(e)
+            if DEBUG_MODE:
+                tb = traceback.format_exc()
+                print(f"\n[CRITICAL ERROR TRACEBACK]\n{tb}\n")
+                error_msg = f"{str(e)} | Check backend terminal for full traceback."
+            else:
+                print(f"❌ [ARES] Generation Error: {e}")
+            yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 # ---------------------------------------------------------------------------
 # Health check (Synchronized with console.js checkSystemStatus)
@@ -182,14 +222,14 @@ async def generate_article(keyword: str, niche: str = "default", db: Session = D
 
 @app.get("/health")
 async def health_check():
-    """Check if DeepSeek API and Brave Goggles API are reachable concurrently."""
+    """Check if DeepSeek API and Exa.ai API are reachable concurrently."""
     import httpx
     import asyncio
-    from .settings import DEEPSEEK_API_KEY, BRAVE_API_KEY
+    from .settings import DEEPSEEK_API_KEY, EXA_API_KEY
     from .services.research_service import DEEPSEEK_API_URL
 
     deepseek_ok = False
-    brave_ok = False
+    exa_ok = False
 
     async def check_deepseek():
         if not DEEPSEEK_API_KEY:
@@ -204,30 +244,26 @@ async def health_check():
         except Exception:
             return False
 
-    async def check_brave():
-        if not BRAVE_API_KEY:
+    async def check_exa():
+        if not EXA_API_KEY:
             return False
         try:
             async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(
-                    "https://api.search.brave.com/res/v1/web/search",
-                    headers={
-                        "Accept": "application/json",
-                        "Accept-Encoding": "gzip",
-                        "X-Subscription-Token": BRAVE_API_KEY
-                    },
-                    params={"q": "health"}
+                resp = await client.post(
+                    "https://api.exa.ai/search",
+                    headers={"x-api-key": EXA_API_KEY, "Content-Type": "application/json"},
+                    json={"query": "health", "type": "auto", "num_results": 1}
                 )
                 return resp.status_code == 200
         except Exception:
             return False
 
-    deepseek_ok, brave_ok = await asyncio.gather(check_deepseek(), check_brave())
+    deepseek_ok, exa_ok = await asyncio.gather(check_deepseek(), check_exa())
 
     # Return structure matching what console.js expects
     return {
-        "status": "online" if (deepseek_ok and brave_ok) else "degraded", 
-        "brave_search": brave_ok,
+        "status": "online" if (deepseek_ok and exa_ok) else "degraded", 
+        "exa_search": exa_ok,
         "deepseek": deepseek_ok
     }
 

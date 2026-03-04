@@ -63,3 +63,8 @@ class BlueprintResponse(BaseModel):
 class GenerateFullResponse(BaseModel):
     post: PostResponse
     blueprint: BlueprintResponse
+
+# --- NEW: Payload for the Clarification / Generation Loop ---
+class GeneratePayload(BaseModel):
+    niche: str = "default"
+    context: str = ""
