@@ -1,0 +1,20 @@
+# Build artifacts & large context dumps
+llm_paste.md
+build_llm_paste.py
+
+# Python runtime
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE & system noise
+.git/
+.vscode/
+*.log
+
+# Redundant alternative requirements
+requirements_new.txt
