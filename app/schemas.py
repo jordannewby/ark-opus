@@ -82,6 +82,30 @@ class StyleRuleResponse(BaseModel):
     
     model_config = {"from_attributes": True}
 
+class ResearchRunCapture(BaseModel):
+    keyword: str
+    niche: str = "default"
+    profile_name: str = "default"
+    tool_sequence: list[str]
+    iteration_count: int
+    exa_queries: list[str] = []
+    kd_values: list[dict] = []
+    max_kd_used: int | None = None
+    avg_kd: int | None = None
+    entity_cluster: list[str] = []
+    info_gap_text: str | None = None
+    competitor_count: int = 0
+
+
+class NichePlaybookResponse(BaseModel):
+    niche: str
+    playbook: dict
+    runs_distilled: int
+    version: int
+
+    model_config = {"from_attributes": True}
+
+
 class WorkspaceCreate(BaseModel):
     name: str
     slug: str

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import Post, UserStyleRule, Workspace
+from .models import Post, ResearchRun, UserStyleRule, Workspace
 from .schemas import (
     BlueprintResponse,
     GenerateFullResponse,
@@ -79,18 +79,25 @@ async def approve_and_train_post(
     if post.original_ai_content and post.original_ai_content.strip() != data.content.strip():
         # Set human_edited_content strictly as the new baseline
         post.human_edited_content = data.content
-        
-        # Fire the hitl background task
+
+        # Fire the style-learning background task
         from .services.feedback_service import FeedbackAgent
         agent = FeedbackAgent(db=db)
-        
-        # We must use a detached async background task. 
-        # But wait, FastAPI background tasks run in the same session, we can just pass the strings
         background_tasks.add_task(
-            agent.analyze_and_store_feedback, 
-            post.original_ai_content, 
+            agent.analyze_and_store_feedback,
+            post.original_ai_content,
             data.content,
             post.profile_name
+        )
+
+        # Fire research quality scoring (edit-distance ratio → ResearchRun.quality_score)
+        from .services.research_intel_service import ResearchIntelService
+        intel_service = ResearchIntelService(db=db)
+        background_tasks.add_task(
+            intel_service.score_research_run,
+            post_id,
+            post.original_ai_content,
+            data.content,
         )
     
     # Update the primary content string
@@ -198,7 +205,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, db: Session =
             yield f"data: {json.dumps({'event': 'phase1_start', 'message': 'Gathering intelligence and analyzing context...'})}\n\n"
             p1_start = time.time()
             research_agent = ResearchAgent(db)
-            research_data_dict = await research_agent.research(keyword, niche=niche, user_context=context)
+            research_data_dict = await research_agent.research(keyword, niche=niche, user_context=context, profile_name=payload.profile_name)
             if DEBUG_MODE:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1 (DeepSeek-R1 + MCP) completed in {round(time.time() - p1_start, 2)}s'})}\n\n"
             
@@ -226,14 +233,24 @@ async def generate_article(keyword: str, payload: GeneratePayload, db: Session =
 
             # Save the generated article
             post = Post(
-                title=keyword, 
-                content=article_content, 
+                title=keyword,
+                content=article_content,
                 original_ai_content=article_content,
-                profile_name=payload.profile_name
+                profile_name=payload.profile_name,
             )
             db.add(post)
             db.commit()
             db.refresh(post)
+
+            # Link Post ↔ ResearchRun for quality scoring feedback loop
+            run_id = research_data_dict.get("research_run_id")
+            if run_id:
+                post.research_run_id = run_id
+                research_run = db.get(ResearchRun, run_id)
+                if research_run:
+                    research_run.post_id = post.id
+                db.commit()
+                db.refresh(post)
 
             print(f"✅ [ARES] Generation complete for: {keyword}")
             

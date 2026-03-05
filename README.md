@@ -66,7 +66,7 @@ uvicorn app.main:app --reload
 ```
 
 Then, open your web browser and navigate to the frontend console:
-`http://127.0.0.1:8000/console`
+`http://127.0.0.1:8000/`
 
 ---
 
@@ -83,9 +83,9 @@ The backend operates entirely inside FastAPI (`app/main.py`), utilizing the `/ge
 4.  **Phase 3: Prose Logic (`app/services/writer_service.py`)**
     *   `gemini-2.5-pro` violently enforces a strict "Anti-AI" system prompt (`writer.md`), banning fluff words and drafting the heavy-duty Markdown article.
 5.  **Phase 6: Self-Correction Loop (`app/services/feedback_service.py`)**
-    *   When a human edits the generated Markdown in the UI, `gemini-2.5-flash` semantically diffs the original against the edit to extract permanent `UserStyleRule` entities to SQLite, ensuring the AI converges on the user's exact writing style over time.
+    *   When a human edits the generated Markdown in the UI, `gemini-2.5-flash` semantically diffs the original against the edit to extract permanent `UserStyleRule` entities to Neon PostgreSQL (scoped by `profile_name`), ensuring the AI converges on the user's exact writing style over time.
 
 ## 💾 Notes on Portability
 
-*   **Database:** The project uses a local SQLite database (`blog.db`). This file is deliberately ignored by Git so that data generated on one machine does not overwrite data on another. A fresh database will be automatically created on your new device the first time the app attempts to save data.
+*   **Database:** The project uses a serverless Neon PostgreSQL cluster. Connection details are stored in `.env` (which is gitignored). Each new device needs its own `.env` file with the correct `DATABASE_URL` and API keys.
 *   **Git Syncing:** When working across multiple devices, always remember to `git pull` before you start working and `git commit` / `git push` when you are done to ensure your codebase stays perfectly in sync.
