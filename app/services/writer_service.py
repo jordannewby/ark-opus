@@ -8,7 +8,7 @@ from ..settings import GEMINI_API_KEY
 
 
 class WriterService:
-    """Uses Gemini 3 Flash Preview to enforce strict anti-AI prose logic."""
+    """Uses Gemini 2.5 Pro to enforce strict anti-AI prose logic."""
 
     def __init__(self, db):
         # Injecting db for consistency across the orchestration layer

@@ -4,7 +4,7 @@ from google.genai import types
 from ..settings import GEMINI_API_KEY
 
 class BriefingAgent:
-    """Uses Gemini 3 Flash to quickly ask clarifying questions before heavy research begins."""
+    """Uses Gemini 2.5 Flash to quickly ask clarifying questions before heavy research begins."""
 
     def __init__(self):
         if not GEMINI_API_KEY:

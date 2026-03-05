@@ -8,7 +8,7 @@ from ..settings import GEMINI_API_KEY
 from ..models import UserStyleRule
 
 class FeedbackAgent:
-    """Uses Gemini 3 Flash Preview to diff AI vs Human text and extract persistent style rules."""
+    """Uses Gemini 2.5 Flash to diff AI vs Human text and extract persistent style rules."""
 
     def __init__(self, db):
         self.db = db

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import Post, UserStyleRule
+from .models import Post, UserStyleRule, Workspace
 from .schemas import (
     BlueprintResponse,
     GenerateFullResponse,
@@ -21,7 +21,9 @@ from .schemas import (
     PostUpdate,
     ResearchResponse,
     StyleRuleCreate,
-    StyleRuleResponse
+    StyleRuleResponse,
+    WorkspaceCreate,
+    WorkspaceResponse
 )
 
 # Import services AFTER the environment is loaded
@@ -127,6 +129,26 @@ def delete_style_rule(rule_id: int, db: Session = Depends(get_db)):
     db.delete(rule)
     db.commit()
     return {"status": "deleted"}
+
+# --- WORKSPACE ENDPOINTS ---
+
+@app.get("/workspaces", response_model=list[WorkspaceResponse])
+def get_workspaces(db: Session = Depends(get_db)):
+    """Fetch all saved workspaces."""
+    return db.query(Workspace).order_by(Workspace.name.asc()).all()
+
+@app.post("/workspaces", response_model=WorkspaceResponse)
+def create_workspace(workspace: WorkspaceCreate, db: Session = Depends(get_db)):
+    """Create a new workspace if the slug does not exist."""
+    existing = db.query(Workspace).filter(Workspace.slug == workspace.slug).first()
+    if existing:
+        return existing
+    
+    new_workspace = Workspace(name=workspace.name, slug=workspace.slug)
+    db.add(new_workspace)
+    db.commit()
+    db.refresh(new_workspace)
+    return new_workspace
 
 # --- Orchestration Endpoints ---
 

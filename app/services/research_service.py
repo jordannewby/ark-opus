@@ -312,7 +312,15 @@ class ResearchAgent:
         """
         golden_keywords: list[dict] = []
         try:
-            items = keywords_data.get("tasks", [])[0].get("result", [])[0].get("items", [])
+            tasks = keywords_data.get("tasks", [])
+            if not tasks:
+                return []
+                
+            results = tasks[0].get("result", [])
+            if not results:
+                return []
+                
+            items = results[0].get("items", [])
             for r in items:
                 kw = r.get("keyword", "")
                 info = r.get("keyword_info", {})

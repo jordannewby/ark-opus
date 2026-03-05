@@ -1,4 +1,8 @@
 // ARES CONSOLE v4.0 - CYBER GLASS EXPERIMENT
+window.addEventListener('error', (e) => {
+    console.error("Global Trapped Error:", e.error);
+    alert("UI Error: " + (e.message || "Unknown error occurred in console.js"));
+});
 let lastGeneratedMarkdown = "";
 
 const els = {
@@ -435,8 +439,8 @@ brainEls.addBtn.addEventListener('click', async () => {
         const profile = els.profileSelect ? els.profileSelect.value : "default";
         const res = await fetch('/rules', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({rule_description: text, profile_name: profile})
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rule_description: text, profile_name: profile })
         });
         if (res.ok) {
             brainEls.input.value = '';
@@ -474,6 +478,32 @@ const wsEls = {
     openBtn: document.getElementById('add-workspace-btn')
 };
 
+async function syncWorkspaces() {
+    try {
+        const res = await fetch('/workspaces');
+        if (!res.ok) throw new Error('Failed to fetch workspaces');
+        const workspaces = await res.json();
+
+        const currentVal = els.profileSelect.value;
+        els.profileSelect.innerHTML = '<option value="default" class="bg-[#050505]">WORKSPACE: DEFAULT</option>';
+
+        workspaces.forEach(ws => {
+            if (ws.slug === 'default') return;
+            const option = document.createElement('option');
+            option.value = ws.slug;
+            option.textContent = `WORKSPACE: ${ws.name.toUpperCase()}`;
+            option.className = 'bg-[#050505]';
+            els.profileSelect.appendChild(option);
+        });
+
+        if (Array.from(els.profileSelect.options).find(o => o.value === currentVal)) {
+            els.profileSelect.value = currentVal;
+        }
+    } catch (e) {
+        console.error("Workspace sync error:", e);
+    }
+}
+
 function toggleWorkspaceModal(isVisible) {
     if (isVisible) {
         wsEls.overlay.classList.remove('hidden');
@@ -490,7 +520,7 @@ function toggleWorkspaceModal(isVisible) {
     }
 }
 
-function createWorkspace() {
+async function createWorkspace() {
     const raw = wsEls.input.value.trim();
     if (!raw) return;
 
@@ -506,17 +536,36 @@ function createWorkspace() {
         return;
     }
 
-    const option = document.createElement('option');
-    option.value = slug;
-    option.textContent = `WORKSPACE: ${raw.toUpperCase()}`;
-    option.className = 'bg-[#050505]';
+    try {
+        wsEls.createBtn.disabled = true;
 
-    els.profileSelect.appendChild(option);
-    els.profileSelect.value = slug;
-    els.profileSelect.dispatchEvent(new Event('change'));
+        // Persist to Neon DB
+        const res = await fetch('/workspaces', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: raw, slug: slug })
+        });
 
-    toggleWorkspaceModal(false);
-    terminalLog("SYSTEM", `Workspace "${raw}" created and activated.`, "#d946ef");
+        if (!res.ok) throw new Error("Failed to save workspace");
+        const ws = await res.json();
+
+        const option = document.createElement('option');
+        option.value = ws.slug;
+        option.textContent = `WORKSPACE: ${ws.name.toUpperCase()}`;
+        option.className = 'bg-[#050505]';
+
+        els.profileSelect.appendChild(option);
+        els.profileSelect.value = ws.slug;
+        els.profileSelect.dispatchEvent(new Event('change'));
+
+        toggleWorkspaceModal(false);
+        terminalLog("SYSTEM", `Workspace "${ws.name}" created and saved to cloud.`, "#d946ef");
+    } catch (e) {
+        console.error("Workspace creation error:", e);
+        terminalLog("SYSTEM", `Error creating workspace "${raw}".`, "#ef4444");
+    } finally {
+        wsEls.createBtn.disabled = false;
+    }
 }
 
 wsEls.openBtn.addEventListener('click', () => toggleWorkspaceModal(true));
@@ -528,3 +577,6 @@ wsEls.createBtn.addEventListener('click', createWorkspace);
 wsEls.input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') createWorkspace();
 });
+
+// Run Initial Sync
+syncWorkspaces();

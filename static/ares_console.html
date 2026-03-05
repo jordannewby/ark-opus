@@ -157,7 +157,8 @@
         <aside class="w-[340px] flex flex-col gap-6 shrink-0 relative z-10">
             <!-- Brand Panel -->
             <div class="glass-panel rounded-2xl p-6 flex flex-col items-center justify-center relative overflow-hidden">
-                <div class="absolute inset-0 bg-gradient-to-br from-cyan-500/5 to-magenta-500/5"></div>
+                <div class="absolute inset-0 bg-gradient-to-br from-cyan-500/5 to-magenta-500/5 pointer-events-none">
+                </div>
                 <div
                     class="w-14 h-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center backdrop-blur-xl cyber-glow-cyan mb-4">
                     <svg class="w-7 h-7 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -167,8 +168,13 @@
                 </div>
                 <h1 class="text-xl font-bold tracking-tight text-white/90">Ares Engine</h1>
                 <p class="mono-text text-[10px] text-slate-500 uppercase tracking-widest mt-1">AI Content Generator</p>
-                <button id="open-brain-btn" class="mt-4 flex items-center gap-2 px-4 py-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 text-[10px] uppercase tracking-widest hover:bg-cyan-500/20 transition-all active:scale-95">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path></svg>
+                <button id="open-brain-btn"
+                    class="mt-4 flex items-center gap-2 px-4 py-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 text-[10px] uppercase tracking-widest hover:bg-cyan-500/20 transition-all active:scale-95">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z">
+                        </path>
+                    </svg>
                     AI Memory Bank
                 </button>
             </div>
@@ -243,7 +249,8 @@
 
                 <div class="h-6 w-px bg-white/10"></div>
                 <div class="flex items-center gap-2">
-                    <select id="profile-select" class="bg-transparent border-none text-fuchsia-400 text-sm font-bold outline-none px-2 cursor-pointer appearance-none uppercase tracking-wide text-center">
+                    <select id="profile-select"
+                        class="bg-transparent border-none text-fuchsia-400 text-sm font-bold outline-none px-2 cursor-pointer appearance-none uppercase tracking-wide text-center">
                         <option value="default" class="bg-[#050505]">WORKSPACE: DEFAULT</option>
                         <option value="tech_startup" class="bg-[#050505]">WORKSPACE: TECH</option>
                         <option value="legal_client" class="bg-[#050505]">WORKSPACE: LEGAL</option>
@@ -251,7 +258,8 @@
                     <button id="add-workspace-btn" title="Create new workspace"
                         class="w-9 h-9 rounded-full bg-fuchsia-500/15 hover:bg-fuchsia-500/25 border border-fuchsia-500/30 text-fuchsia-400 flex items-center justify-center transition-all shadow-[0_0_10px_rgba(217,70,239,0.2)] hover:shadow-[0_0_18px_rgba(217,70,239,0.3)] shrink-0">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4">
+                            </path>
                         </svg>
                     </button>
                 </div>
@@ -412,28 +420,42 @@
 
     <!-- AI BRAIN MODAL -->
     <div id="brain-modal" class="fixed inset-0 z-[100] flex justify-end hidden">
-        <div id="brain-backdrop" class="absolute inset-0 bg-black/60 backdrop-blur-md opacity-0 transition-opacity duration-300"></div>
-        <div id="brain-panel" class="relative w-full max-w-md h-full bg-[#08080a] border-l border-white/10 shadow-2xl transform translate-x-full transition-transform duration-500 flex flex-col">
+        <div id="brain-backdrop"
+            class="absolute inset-0 bg-black/60 backdrop-blur-md opacity-0 transition-opacity duration-300"></div>
+        <div id="brain-panel"
+            class="relative w-full max-w-md h-full bg-[#08080a] border-l border-white/10 shadow-2xl transform translate-x-full transition-transform duration-500 flex flex-col">
             <div class="p-8 border-b border-white/5 flex items-center justify-between">
                 <div>
                     <h2 class="text-xl font-bold text-white tracking-tight flex items-center gap-3">
                         <span class="p-2 rounded-lg bg-cyan-500/10 text-cyan-400">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5s3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5s3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253">
+                                </path>
+                            </svg>
                         </span>
                         Neural Memory Bank
                     </h2>
-                    <p class="text-[10px] text-slate-500 uppercase tracking-widest mt-2 ml-1">Persistent Writing Constraints</p>
+                    <p class="text-[10px] text-slate-500 uppercase tracking-widest mt-2 ml-1">Persistent Writing
+                        Constraints</p>
                 </div>
                 <button id="close-brain-btn" class="text-slate-500 hover:text-white transition-colors">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
+                        </path>
+                    </svg>
                 </button>
             </div>
 
             <div class="p-8 space-y-4 bg-white/[0.01]">
-                <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Add Manual Constraint</label>
+                <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Add Manual
+                    Constraint</label>
                 <div class="flex gap-2">
-                    <input id="new-rule-input" type="text" class="flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white outline-none focus:border-cyan-500/50 transition-all" placeholder="E.g. Never use the word 'delve'">
-                    <button id="add-rule-btn" class="bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 px-5 rounded-xl text-lg transition-all border border-cyan-500/20">+</button>
+                    <input id="new-rule-input" type="text"
+                        class="flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white outline-none focus:border-cyan-500/50 transition-all"
+                        placeholder="E.g. Never use the word 'delve'">
+                    <button id="add-rule-btn"
+                        class="bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 px-5 rounded-xl text-lg transition-all border border-cyan-500/20">+</button>
                 </div>
             </div>
 
@@ -443,32 +465,39 @@
 
             <div class="p-8 bg-black/40 border-t border-white/5">
                 <p class="text-[10px] text-slate-500 leading-relaxed italic">
-                    Note: Rules are automatically generated when you save edits to an article, but can be manually pruned or added here.
+                    Note: Rules are automatically generated when you save edits to an article, but can be manually
+                    pruned or added here.
                 </p>
             </div>
         </div>
     </div>
 
     <!-- WORKSPACE CREATION MODAL -->
-    <div id="workspace-modal-overlay" class="fixed inset-0 z-[110] flex items-center justify-center hidden bg-black/80 backdrop-blur-md">
-        <div id="workspace-modal-panel" class="relative w-full max-w-sm bg-[#0a0a0c] border border-white/10 rounded-2xl p-8 shadow-[0_0_60px_rgba(217,70,239,0.1)] transform transition-all duration-300 scale-95 opacity-0">
+    <div id="workspace-modal-overlay"
+        class="fixed inset-0 z-[110] flex items-center justify-center hidden bg-black/80 backdrop-blur-md">
+        <div id="workspace-modal-panel"
+            class="relative w-full max-w-sm bg-[#0a0a0c] border border-white/10 rounded-2xl p-8 shadow-[0_0_60px_rgba(217,70,239,0.1)] transform transition-all duration-300 scale-95 opacity-0">
             <div class="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-fuchsia-500 to-cyan-500 rounded-t-2xl"></div>
 
             <div class="flex items-center gap-3 mb-6">
-                <div class="w-10 h-10 rounded-xl bg-fuchsia-500/10 border border-fuchsia-500/30 flex items-center justify-center text-fuchsia-400">
+                <div
+                    class="w-10 h-10 rounded-xl bg-fuchsia-500/10 border border-fuchsia-500/30 flex items-center justify-center text-fuchsia-400">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4">
+                        </path>
                     </svg>
                 </div>
                 <div>
                     <h2 class="text-lg font-bold text-white tracking-tight">New Workspace</h2>
-                    <p class="text-[10px] text-fuchsia-400/70 mono-text uppercase tracking-widest mt-0.5">Isolated AI memory partition</p>
+                    <p class="text-[10px] text-fuchsia-400/70 mono-text uppercase tracking-widest mt-0.5">Isolated AI
+                        memory partition</p>
                 </div>
             </div>
 
             <div class="space-y-4">
                 <div>
-                    <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Workspace Name</label>
+                    <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Workspace
+                        Name</label>
                     <input id="modal-workspace-input" type="text" maxlength="40"
                         class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 outline-none focus:border-fuchsia-500/50 focus:bg-white/[0.08] transition-all"
                         placeholder="e.g. Health Blog, SaaS Startup">
@@ -488,7 +517,7 @@
     </div>
 
     <!-- JS -->
-    <script src="/static/js/console.js"></script>
+    <script src="/static/js/console.js?v=5.0"></script>
 </body>
 
 </html>

@@ -3,15 +3,18 @@
 ## 1. Project Phase Summary
 
 ### Recent Updates
-- **Workspace Creation Modal**: Added dynamic workspace creation via a high-fidelity modal overlay (`#workspace-modal-overlay`). Users click a magenta plus-button (`#add-workspace-btn`) next to the `<select id="profile-select">` dropdown to open the modal, enter a workspace name, and the system slugifies it (e.g., "Health Blog" → `health_blog`), injects a new `<option>`, sets it active, and fires `dispatchEvent(new Event('change'))` to reload the Neural Memory Bank from the new Neon partition. The `executeGeneration`, `loadRules`, and `deleteRule` functions are untouched.
-- **Database Migration**: Fully migrated database architecture from local SQLite to serverless PostgreSQL (Neon.tech). Injected cloud connection strings and removed legacy SQLite configuration.
+- **Persistent Cloud Workspaces**: Added `Workspace` SQLAlchemy model, `GET /workspaces` and `POST /workspaces` API endpoints, and frontend `syncWorkspaces()` function. Workspaces are now persisted to the Neon.tech PostgreSQL database. On page load, `console.js` fetches all workspaces and populates the `#profile-select` dropdown. New workspace creation uses `POST /workspaces` to save to DB before updating the UI.
+- **Workspace Creation Modal**: Added dynamic workspace creation via a high-fidelity modal overlay (`#workspace-modal-overlay`). Users click a magenta plus-button (`#add-workspace-btn`) next to the `<select id="profile-select">` dropdown to open the modal, enter a workspace name, and the system slugifies it (e.g., "Health Blog" → `health_blog`), injects a new `<option>`, sets it active, and fires `dispatchEvent(new Event('change'))` to reload the Neural Memory Bank from the new Neon partition.
+- **Multi-Tenant Style Rules**: `UserStyleRule` and `Post` models now include `profile_name` column for workspace-scoped rules. The `WriterService.produce_article()` accepts `profile_name` to filter rules per workspace. The `FeedbackAgent.analyze_and_store_feedback()` also stores rules per profile.
+- **Entity Extraction Safety Fix**: Fixed `IndexError: list index out of range` in `ResearchAgent._extract_entities` by adding safety checks for empty `tasks` and `result` arrays before indexing.
+- **AI Memory Bank CSS Fix**: Fixed `pointer-events` on the gradient overlay div in `ares_console.html` that was silently blocking clicks on the "AI Memory Bank" button.
+- **Database Migration**: Fully migrated database architecture from local SQLite to serverless PostgreSQL (Neon.tech). Injected cloud connection strings with `pool_pre_ping=True`, `pool_recycle=300`, and TCP keepalive parameters.
 - **UX Redesign**: Revamped `ares_console.html` and `console.js` with a Cyber-Glassmorphism aesthetic (Deep blacks, Tailwind text coloring, glowing accents, spatial layout).
 - **Briefing Agent (Phase 0)**: Implemented `/clarify` endpoint and `BriefingAgent` using `gemini-2.5-flash` to ask 3 targeted questions before heavy research begins. Wired a custom frontend modal to intercept the "GENERATE" action and inject the user's answers into the deep reasoning R1 agent.
 - **Advanced SEO Filtering**: Upgraded `ResearchAgent._extract_entities` to calculate an 'Opportunity Score' based on Volume, KD, and CPC. Safely handles null DataForSEO payloads using fallback logic to extract purely golden keywords.
 - **Frontend Niche Overhaul**: Replaced the static Niche `<select>` dropdown with a free-form `<input>` text field to fully unlock Exa.ai's natural language Neural Search capabilities.
-- **Stable API Migration**: Migrated all backend generative pipelines off the unstable `gemini-3-flash-preview` models to production-grade endpoints (`gemini-2.5-pro` for deep drafting, `gemini-2.5-flash` for background/UI tasks).
+- **Stable API Migration**: Migrated all backend generative pipelines to production-grade endpoints (`gemini-2.5-pro` for deep drafting via `WriterService`, `gemini-2.5-flash` for background/UI tasks via `BriefingAgent` and `FeedbackAgent`).
 - **Observability**: Added global `DEBUG_MODE` environment variable for detailed backend tracebacks and streamed frontend SSE logs of the agent's actions (e.g. MCP Subprocess initialization, tool decisions).
-- **Database Schema**: Performed manual SQLite migration to add `original_ai_content` and `human_edited_content` columns, allowing the HITL self-correction loop to save properly.
 - **Agentic Schema Abstraction & Tool Streaming**: Implemented a recursive `_strip_webhook_noise` filter in `ResearchAgent` to remove massive webhook payloads from the DataForSEO MCP schemas, resolving DeepSeek-R1 `JSONDecodeError`s. Refactored the `/generate` endpoint in `main.py` to stream exactly which DataForSEO MCP tools the R1 agent executes directly to the frontend UI via SSE.
 - **Core SEO Stack Enforcement**: Updated DeepSeek-R1's system prompt in `_agentic_tool_decision` to strictly enforce the selection of a 4-tool baseline (Keyword Ideas, Live SERP, Related Searches, On-Page Content Analysis) for unbreakable semantic resolution.
 
@@ -135,23 +138,29 @@ The app requires an `.env` file containing three critical keys:
 
 ### app/database.py
 ```python
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from dotenv import load_dotenv
 
 load_dotenv()
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///blog.db"
+# We removed os.getenv to prevent rogue local environment variables from hijacking the connection.
+# This strictly forces SQLAlchemy to use the Neon PostgreSQL cluster.
+SQLALCHEMY_DATABASE_URL = "postgresql://neondb_owner:npg_A1WgoOpGKC5h@ep-red-grass-aiy3x0x0-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require"
 
+# Added `pool_pre_ping=True` and `pool_recycle=300` to prevent drop connections with Serverless Postgres
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+    SQLALCHEMY_DATABASE_URL,
+    pool_pre_ping=True, 
+    pool_recycle=300,
+    connect_args={"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 5}
 )
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):
     pass
-
 
 def get_db():
     db = SessionLocal()
@@ -178,7 +187,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import Post
+from .models import Post, UserStyleRule, Workspace
 from .schemas import (
     BlueprintResponse,
     GenerateFullResponse,
@@ -186,6 +195,10 @@ from .schemas import (
     PostResponse,
     PostUpdate,
     ResearchResponse,
+    StyleRuleCreate,
+    StyleRuleResponse,
+    WorkspaceCreate,
+    WorkspaceResponse
 )
 
 # Import services AFTER the environment is loaded
@@ -246,12 +259,11 @@ async def approve_and_train_post(
         from .services.feedback_service import FeedbackAgent
         agent = FeedbackAgent(db=db)
         
-        # We must use a detached async background task. 
-        # But wait, FastAPI background tasks run in the same session, we can just pass the strings
         background_tasks.add_task(
             agent.analyze_and_store_feedback, 
             post.original_ai_content, 
-            data.content
+            data.content,
+            post.profile_name
         )
     
     # Update the primary content string
@@ -265,6 +277,52 @@ async def approve_and_train_post(
     db.refresh(post)
     return post
 
+# --- AI BRAIN / STYLE RULE CRUD ---
+
+@app.get("/rules", response_model=list[StyleRuleResponse])
+def get_style_rules(profile_name: str = "default", db: Session = Depends(get_db)):
+    """Fetch all learned style rules from the AI's memory."""
+    return db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).order_by(UserStyleRule.id.desc()).all()
+
+@app.post("/rules", response_model=StyleRuleResponse)
+def add_style_rule(rule: StyleRuleCreate, db: Session = Depends(get_db)):
+    """Manually inject a new style rule into the AI's memory."""
+    new_rule = UserStyleRule(rule_description=rule.rule_description, profile_name=rule.profile_name)
+    db.add(new_rule)
+    db.commit()
+    db.refresh(new_rule)
+    return new_rule
+
+@app.delete("/rules/{rule_id}")
+def delete_style_rule(rule_id: int, db: Session = Depends(get_db)):
+    """Delete a specific style rule from memory."""
+    rule = db.get(UserStyleRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    db.delete(rule)
+    db.commit()
+    return {"status": "deleted"}
+
+# --- WORKSPACE ENDPOINTS ---
+
+@app.get("/workspaces", response_model=list[WorkspaceResponse])
+def get_workspaces(db: Session = Depends(get_db)):
+    """Fetch all saved workspaces."""
+    return db.query(Workspace).order_by(Workspace.name.asc()).all()
+
+@app.post("/workspaces", response_model=WorkspaceResponse)
+def create_workspace(workspace: WorkspaceCreate, db: Session = Depends(get_db)):
+    """Create a new workspace if the slug does not exist."""
+    existing = db.query(Workspace).filter(Workspace.slug == workspace.slug).first()
+    if existing:
+        return existing
+    
+    new_workspace = Workspace(name=workspace.name, slug=workspace.slug)
+    db.add(new_workspace)
+    db.commit()
+    db.refresh(new_workspace)
+    return new_workspace
+
 # --- Orchestration Endpoints ---
 
 @app.get("/research/{keyword}", response_model=ResearchResponse)
@@ -276,7 +334,6 @@ async def research_keyword(keyword: str, niche: str = "default", db: Session = D
 async def generate_blueprint(research_data: ResearchResponse, db: Session = Depends(get_db)):
     from .services.psychology_agent import PsychologyAgent
     agent = PsychologyAgent(db=db) 
-    # research_data is a Pydantic model here, so we dump it to a dict
     blueprint = await agent.generate_blueprint(research_data.model_dump())
     return blueprint
 
@@ -335,15 +392,16 @@ async def generate_article(keyword: str, payload: GeneratePayload, db: Session =
             yield f"data: {json.dumps({'event': 'phase3_start', 'message': 'Drafting final prose...'})}\n\n"
             p3_start = time.time()
             writer_service = WriterService(db=db) 
-            article_content = await writer_service.produce_article(blueprint_dict)
+            article_content = await writer_service.produce_article(blueprint_dict, payload.profile_name)
             if DEBUG_MODE:
-                yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 3 (Gemini 3 Flash) completed in {round(time.time() - p3_start, 2)}s'})}\n\n"
+                yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 3 (Gemini 2.5 Pro) completed in {round(time.time() - p3_start, 2)}s'})}\n\n"
 
             # Save the generated article
             post = Post(
                 title=keyword, 
                 content=article_content, 
-                original_ai_content=article_content
+                original_ai_content=article_content,
+                profile_name=payload.profile_name
             )
             db.add(post)
             db.commit()
@@ -351,11 +409,8 @@ async def generate_article(keyword: str, payload: GeneratePayload, db: Session =
 
             print(f"✅ [ARES] Generation complete for: {keyword}")
             
-            # Use model_dump or dictionary access to serialize the SQLAlchemy object safely
-            # Since standard Post output might not be directly JSON serializable without a Pydantic model conversion
             from .schemas import PostResponse
             post_schema = PostResponse.model_validate(post).model_dump()
-            # Must convert datetime objects to ISO strings for json.dumps
             post_schema['created_at'] = post_schema['created_at'].isoformat()
             
             if DEBUG_MODE:
@@ -426,7 +481,6 @@ async def health_check():
 
     deepseek_ok, exa_ok = await asyncio.gather(check_deepseek(), check_exa())
 
-    # Return structure matching what console.js expects
     return {
         "status": "online" if (deepseek_ok and exa_ok) else "degraded", 
         "exa_search": exa_ok,
@@ -460,6 +514,7 @@ class Post(Base):
     __tablename__ = "posts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(50), default="default", server_default="default")
     title: Mapped[str] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(Text)
     original_ai_content: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -472,6 +527,7 @@ class UserStyleRule(Base):
     __tablename__ = "user_style_rules"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(50), default="default", server_default="default")
     rule_description: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
@@ -486,6 +542,13 @@ class ResearchCache(Base):
     cache_ttl_hours: Mapped[int] = mapped_column(Integer, default=24)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
+
+class Workspace(Base):
+    __tablename__ = "workspaces"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True)
+    slug: Mapped[str] = mapped_column(String(50), unique=True)
 
 ```
 
@@ -561,6 +624,30 @@ class GenerateFullResponse(BaseModel):
 class GeneratePayload(BaseModel):
     niche: str = "default"
     context: str = ""
+    profile_name: str = "default"
+
+
+class StyleRuleCreate(BaseModel):
+    rule_description: str
+    profile_name: str = "default"
+
+
+class StyleRuleResponse(BaseModel):
+    id: int
+    rule_description: str
+    
+    model_config = {"from_attributes": True}
+
+class WorkspaceCreate(BaseModel):
+    name: str
+    slug: str
+
+class WorkspaceResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+    
+    model_config = {"from_attributes": True}
 
 ```
 
@@ -615,7 +702,7 @@ from google.genai import types
 from ..settings import GEMINI_API_KEY
 
 class BriefingAgent:
-    """Uses Gemini 3 Flash to quickly ask clarifying questions before heavy research begins."""
+    """Uses Gemini 2.5 Flash to quickly ask clarifying questions before heavy research begins."""
 
     def __init__(self):
         if not GEMINI_API_KEY:
@@ -673,7 +760,7 @@ from ..settings import GEMINI_API_KEY
 from ..models import UserStyleRule
 
 class FeedbackAgent:
-    """Uses Gemini 3 Flash Preview to diff AI vs Human text and extract persistent style rules."""
+    """Uses Gemini 2.5 Flash to diff AI vs Human text and extract persistent style rules."""
 
     def __init__(self, db):
         self.db = db
@@ -697,7 +784,7 @@ class FeedbackAgent:
             "Do NOT return markdown blocks (like ```json). Return ONLY the raw JSON array."
         )
 
-    async def analyze_and_store_feedback(self, original_text: str, edited_text: str) -> list[str]:
+    async def analyze_and_store_feedback(self, original_text: str, edited_text: str, profile_name: str = "default") -> list[str]:
         """
         Takes the original AI text and the human's edited text, asks Gemini to extract style rules,
         and saves them to the UserStyleRule database.
@@ -1171,7 +1258,15 @@ class ResearchAgent:
         """
         golden_keywords: list[dict] = []
         try:
-            items = keywords_data.get("tasks", [])[0].get("result", [])[0].get("items", [])
+            tasks = keywords_data.get("tasks", [])
+            if not tasks:
+                return []
+                
+            results = tasks[0].get("result", [])
+            if not results:
+                return []
+                
+            items = results[0].get("items", [])
             for r in items:
                 kw = r.get("keyword", "")
                 info = r.get("keyword_info", {})
@@ -1428,7 +1523,7 @@ from ..settings import GEMINI_API_KEY
 
 
 class WriterService:
-    """Uses Gemini 3 Flash Preview to enforce strict anti-AI prose logic."""
+    """Uses Gemini 2.5 Pro to enforce strict anti-AI prose logic."""
 
     def __init__(self, db):
         # Injecting db for consistency across the orchestration layer
@@ -1445,7 +1540,7 @@ class WriterService:
         with open(prompt_path, "r", encoding="utf-8") as f:
             self.system_prompt = f.read()
 
-    async def produce_article(self, blueprint: dict) -> str:
+    async def produce_article(self, blueprint: dict, profile_name: str = "default") -> str:
         """
         Takes a blueprint JSON and outputs a formatted Markdown article.
         Enforces Information Gain, E-E-A-T, and Entity Density rules.
@@ -1478,7 +1573,7 @@ class WriterService:
         
         # Inject Dynamic Human Style Rules learned from previous edits
         from ..models import UserStyleRule
-        style_rules = self.db.query(UserStyleRule).all()
+        style_rules = self.db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).all()
         if style_rules:
             prompt_instructions += "\n--- HUMAN STYLE GUIDELINES LEARNED FROM PAST EDITS ---\n"
             prompt_instructions += "You MUST organically integrate these stylistic preferences into your writing:\n"

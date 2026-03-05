@@ -81,3 +81,14 @@ class StyleRuleResponse(BaseModel):
     rule_description: str
     
     model_config = {"from_attributes": True}
+
+class WorkspaceCreate(BaseModel):
+    name: str
+    slug: str
+
+class WorkspaceResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+    
+    model_config = {"from_attributes": True}
