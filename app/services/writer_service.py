@@ -25,7 +25,7 @@ class WriterService:
         with open(prompt_path, "r", encoding="utf-8") as f:
             self.system_prompt = f.read()
 
-    async def produce_article(self, blueprint: dict) -> str:
+    async def produce_article(self, blueprint: dict, profile_name: str = "default") -> str:
         """
         Takes a blueprint JSON and outputs a formatted Markdown article.
         Enforces Information Gain, E-E-A-T, and Entity Density rules.
@@ -58,7 +58,7 @@ class WriterService:
         
         # Inject Dynamic Human Style Rules learned from previous edits
         from ..models import UserStyleRule
-        style_rules = self.db.query(UserStyleRule).all()
+        style_rules = self.db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).all()
         if style_rules:
             prompt_instructions += "\n--- HUMAN STYLE GUIDELINES LEARNED FROM PAST EDITS ---\n"
             prompt_instructions += "You MUST organically integrate these stylistic preferences into your writing:\n"

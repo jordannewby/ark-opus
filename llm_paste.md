@@ -3,8 +3,11 @@
 ## 1. Project Phase Summary
 
 ### Recent Updates
+- **Workspace Creation Modal**: Added dynamic workspace creation via a high-fidelity modal overlay (`#workspace-modal-overlay`). Users click a magenta plus-button (`#add-workspace-btn`) next to the `<select id="profile-select">` dropdown to open the modal, enter a workspace name, and the system slugifies it (e.g., "Health Blog" → `health_blog`), injects a new `<option>`, sets it active, and fires `dispatchEvent(new Event('change'))` to reload the Neural Memory Bank from the new Neon partition. The `executeGeneration`, `loadRules`, and `deleteRule` functions are untouched.
+- **Database Migration**: Fully migrated database architecture from local SQLite to serverless PostgreSQL (Neon.tech). Injected cloud connection strings and removed legacy SQLite configuration.
 - **UX Redesign**: Revamped `ares_console.html` and `console.js` with a Cyber-Glassmorphism aesthetic (Deep blacks, Tailwind text coloring, glowing accents, spatial layout).
 - **Briefing Agent (Phase 0)**: Implemented `/clarify` endpoint and `BriefingAgent` using `gemini-2.5-flash` to ask 3 targeted questions before heavy research begins. Wired a custom frontend modal to intercept the "GENERATE" action and inject the user's answers into the deep reasoning R1 agent.
+- **Advanced SEO Filtering**: Upgraded `ResearchAgent._extract_entities` to calculate an 'Opportunity Score' based on Volume, KD, and CPC. Safely handles null DataForSEO payloads using fallback logic to extract purely golden keywords.
 - **Frontend Niche Overhaul**: Replaced the static Niche `<select>` dropdown with a free-form `<input>` text field to fully unlock Exa.ai's natural language Neural Search capabilities.
 - **Stable API Migration**: Migrated all backend generative pipelines off the unstable `gemini-3-flash-preview` models to production-grade endpoints (`gemini-2.5-pro` for deep drafting, `gemini-2.5-flash` for background/UI tasks).
 - **Observability**: Added global `DEBUG_MODE` environment variable for detailed backend tracebacks and streamed frontend SSE logs of the agent's actions (e.g. MCP Subprocess initialization, tool decisions).
@@ -65,8 +68,8 @@ The master orchestration route (`/generate/{keyword}`) located in `app/main.py` 
 
 1.  **Phase 1: Research (`ResearchAgent`)**
     - **Location**: `app/services/research_service.py`
-    - **Function**: Uses the Brave Web Search API to scrape live data for a specific keyword. Extracts top competitor H2s, "People Also Ask" metrics, and semantic entities.
-    - **Cost-Saving Measure**: Results are mapped to a local SQLite cache table (`ResearchCache`) to drastically reduce API requests and stay within budget.
+    - **Function**: Uses the Brave Web Search API to scrape live data for a specific keyword. Extracts top competitor H2s, "People Also Ask" metrics, and semantic entities via an "Opportunity Score" algorithm.
+    - **Cost-Saving Measure**: Results are mapped to a PostgreSQL cache table (`ResearchCache`) to drastically reduce API requests and stay within budget.
 2.  **Phase 2: Psychology Blueprint (`PsychologyAgent`)**
     - **Location**: `app/services/psychology_agent.py`
     - **Function**: Utilizes Google Gemini (`gemini-2.5-flash`) via the `GEMINI_PSYCH_API_KEY` to draft a deep behavioral blueprint. Applies the PAS framework and generates specific "Identity Hooks" to target the reader.
@@ -76,7 +79,7 @@ The master orchestration route (`/generate/{keyword}`) located in `app/main.py` 
 
 ## Tech Stack
 -   **Backend**: FastAPI (Python)
--   **Database**: SQLite (via SQLAlchemy ORM)
+-   **Database**: PostgreSQL via Neon.tech (via SQLAlchemy ORM)
 -   **Server Engine**: Uvicorn (`uvicorn[standard]`)
 -   **AI Integration**: `google-genai` (Gemini Flash Models)
 -   **Web Client**: `httpx` (for Async Requests)
@@ -87,7 +90,7 @@ app/
 ├── main.py                     # Master orchestration and endpoints
 ├── models.py                   # SQLAlchemy schema (Post, ResearchCache)
 ├── schemas.py                  # Pydantic validation schemas
-├── database.py                 # SQLite configuration
+├── database.py                 # PostgreSQL configuration
 ├── settings.py                 # Core environment and API Key initialization
 ├── services/
 │   ├── research_service.py     # Phase 1: Data Gathering (Brave Search)
@@ -1162,22 +1165,54 @@ class ResearchAgent:
 
     @staticmethod
     def _extract_entities(keywords_data: dict, serp_data: dict) -> list[str]:
-        """Derive 15+ semantic entities from keywords data."""
-        entities: list[str] = []
+        """
+        Derive high-value semantic entities (Golden Keywords) using advanced SEO metrics.
+        Calculates an 'Opportunity Score' based on Volume, Difficulty, and Commercial Intent (CPC).
+        """
+        golden_keywords: list[dict] = []
         try:
             items = keywords_data.get("tasks", [])[0].get("result", [])[0].get("items", [])
-            for r in items[:20]:
+            for r in items:
                 kw = r.get("keyword", "")
-                if kw:
-                    entities.append(kw)
-        except Exception:
+                info = r.get("keyword_info", {})
+                
+                # Extract metrics (Safely handle DataForSEO 'null' values converting to Python 'None')
+                sv = info.get("search_volume") or 0
+                kd = info.get("keyword_difficulty") or 99 
+                cpc = info.get("cpc") or 0.0
+                
+                if not kw:
+                    continue
+                    
+                # ADVANCED SEO FILTERING:
+                # 1. Eliminate impossibly hard keywords (KD > 65)
+                # 2. Require at least *some* search volume (SV > 10) to avoid ghost town keywords
+                if kd < 65 and sv > 10:
+                    # Opportunity Score Formula: Rewards high volume & high CPC, penalizes high KD
+                    opp_score = (sv / (kd + 1)) + (cpc * 10)
+                    
+                    golden_keywords.append({
+                        "keyword": kw,
+                        "score": opp_score,
+                        "kd": kd,
+                        "sv": sv
+                    })
+            
+            # Sort by our custom Opportunity Score (Highest to Lowest)
+            golden_keywords.sort(key=lambda x: x["score"], reverse=True)
+            
+            # Extract just the string names of the top 15 highest-opportunity keywords
+            extracted = [e["keyword"] for e in golden_keywords[:15]]
+            
+            if extracted:
+                return extracted
+                
+        except Exception as e:
+            print(f"Entity Extraction Error: {e}")
             pass
             
-        if not entities:
-            # Fallback mock entities extraction
-            entities = ["seo strategy", "content marketing", "keyword research", "search intent"]
-            
-        return entities[:15]
+        # Fallback if the MCP payload fails or is empty
+        return ["seo strategy", "content marketing", "keyword research", "search intent"]
 
     # ------------------------------------------------------------------
     # Stripping HTML
@@ -1921,6 +1956,21 @@ Never use any of these words or patterns:
                     class="bg-transparent border-none text-cyan-400 text-sm font-medium outline-none px-4 w-48 placeholder-slate-600 focus:text-cyan-300 transition-colors"
                     placeholder="Niche (e.g. SaaS, Finance)">
 
+                <div class="h-6 w-px bg-white/10"></div>
+                <div class="flex items-center gap-2">
+                    <select id="profile-select" class="bg-transparent border-none text-fuchsia-400 text-sm font-bold outline-none px-2 cursor-pointer appearance-none uppercase tracking-wide text-center">
+                        <option value="default" class="bg-[#050505]">WORKSPACE: DEFAULT</option>
+                        <option value="tech_startup" class="bg-[#050505]">WORKSPACE: TECH</option>
+                        <option value="legal_client" class="bg-[#050505]">WORKSPACE: LEGAL</option>
+                    </select>
+                    <button id="add-workspace-btn" title="Create new workspace"
+                        class="w-9 h-9 rounded-full bg-fuchsia-500/15 hover:bg-fuchsia-500/25 border border-fuchsia-500/30 text-fuchsia-400 flex items-center justify-center transition-all shadow-[0_0_10px_rgba(217,70,239,0.2)] hover:shadow-[0_0_18px_rgba(217,70,239,0.3)] shrink-0">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                        </svg>
+                    </button>
+                </div>
+
                 <button id="generate-btn" title="Start generating content"
                     class="bg-white/10 hover:bg-white/20 text-white px-8 h-12 rounded-full font-semibold text-sm transition-all border border-white/5 hover:border-white/20 ml-2 tracking-wide">
                     GENERATE
@@ -2069,6 +2119,44 @@ Never use any of these words or patterns:
                     <button id="clarify-submit-btn"
                         class="px-6 py-2.5 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-sm font-bold tracking-wide hover:bg-cyan-500/30 hover:shadow-[0_0_20px_rgba(34,211,238,0.2)] transition-all">
                         SUBMIT ANSWERS
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- WORKSPACE CREATION MODAL -->
+    <div id="workspace-modal-overlay" class="fixed inset-0 z-[110] flex items-center justify-center hidden bg-black/80 backdrop-blur-md">
+        <div id="workspace-modal-panel" class="relative w-full max-w-sm bg-[#0a0a0c] border border-white/10 rounded-2xl p-8 shadow-[0_0_60px_rgba(217,70,239,0.1)] transform transition-all duration-300 scale-95 opacity-0">
+            <div class="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-fuchsia-500 to-cyan-500 rounded-t-2xl"></div>
+
+            <div class="flex items-center gap-3 mb-6">
+                <div class="w-10 h-10 rounded-xl bg-fuchsia-500/10 border border-fuchsia-500/30 flex items-center justify-center text-fuchsia-400">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h2 class="text-lg font-bold text-white tracking-tight">New Workspace</h2>
+                    <p class="text-[10px] text-fuchsia-400/70 mono-text uppercase tracking-widest mt-0.5">Isolated AI memory partition</p>
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Workspace Name</label>
+                    <input id="modal-workspace-input" type="text" maxlength="40"
+                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 outline-none focus:border-fuchsia-500/50 focus:bg-white/[0.08] transition-all"
+                        placeholder="e.g. Health Blog, SaaS Startup">
+                </div>
+                <div class="flex justify-end gap-3 pt-2">
+                    <button id="workspace-cancel-btn"
+                        class="px-5 py-2.5 rounded-xl border border-white/10 text-slate-400 text-sm font-medium hover:bg-white/5 hover:text-white transition-colors">
+                        Cancel
+                    </button>
+                    <button id="workspace-create-btn"
+                        class="px-5 py-2.5 rounded-xl bg-fuchsia-500/20 border border-fuchsia-500/40 text-fuchsia-300 text-sm font-bold tracking-wide hover:bg-fuchsia-500/30 hover:shadow-[0_0_20px_rgba(217,70,239,0.2)] transition-all">
+                        CREATE
                     </button>
                 </div>
             </div>
@@ -2351,7 +2439,8 @@ const els = {
         psychology: document.getElementById('agent-psychology'),
         writer: document.getElementById('agent-writer')
     },
-    nicheInput: document.getElementById('niche-input')
+    nicheInput: document.getElementById('niche-input'),
+    profileSelect: document.getElementById('profile-select')
 };
 
 function terminalLog(agent, message, color = "#22d3ee") {
@@ -2695,5 +2784,172 @@ document.getElementById('copy-html-btn').addEventListener('click', () => {
         btn.innerText = "COPIED!";
         setTimeout(() => btn.innerText = "Copy Rich Text", 2000);
     });
+});
+
+// --- AI BRAIN LOGIC ---
+const brainEls = {
+    modal: document.getElementById('brain-modal'),
+    backdrop: document.getElementById('brain-backdrop'),
+    panel: document.getElementById('brain-panel'),
+    openBtn: document.getElementById('open-brain-btn'),
+    closeBtn: document.getElementById('close-brain-btn'),
+    container: document.getElementById('rules-container'),
+    input: document.getElementById('new-rule-input'),
+    addBtn: document.getElementById('add-rule-btn')
+};
+
+function toggleBrain(show) {
+    if (show) {
+        brainEls.modal.classList.remove('hidden');
+        setTimeout(() => {
+            brainEls.backdrop.classList.remove('opacity-0');
+            brainEls.panel.classList.remove('translate-x-full');
+        }, 10);
+        loadRules();
+    } else {
+        brainEls.backdrop.classList.add('opacity-0');
+        brainEls.panel.classList.add('translate-x-full');
+        setTimeout(() => brainEls.modal.classList.add('hidden'), 500);
+    }
+}
+
+brainEls.openBtn.addEventListener('click', () => toggleBrain(true));
+brainEls.closeBtn.addEventListener('click', () => toggleBrain(false));
+brainEls.backdrop.addEventListener('click', () => toggleBrain(false));
+
+async function loadRules() {
+    brainEls.container.innerHTML = '<div class="text-slate-500 text-xs text-center mono-text animate-pulse py-10">Accessing memory blocks...</div>';
+    try {
+        const profile = els.profileSelect ? els.profileSelect.value : "default";
+        const res = await fetch('/rules?profile_name=' + profile);
+        const rules = await res.json();
+
+        if (rules.length === 0) {
+            brainEls.container.innerHTML = `
+                <div class="flex flex-col items-center justify-center py-20 opacity-30">
+                    <svg class="w-12 h-12 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    <p class="text-xs mono-text">Memory Bank Empty</p>
+                </div>
+            `;
+            return;
+        }
+
+        brainEls.container.innerHTML = rules.map(r => `
+            <div class="group bg-white/[0.03] border border-white/5 rounded-2xl p-4 hover:bg-white/[0.05] hover:border-white/10 transition-all relative">
+                <div class="flex gap-4 items-start">
+                    <div class="w-1.5 h-1.5 rounded-full bg-cyan-500 mt-2 shrink-0 cyber-glow-cyan shadow-[0_0_8px_rgba(34,211,238,0.5)]"></div>
+                    <p class="text-sm text-slate-300 leading-relaxed pr-8 font-medium">${r.rule_description}</p>
+                </div>
+                <button onclick="deleteRule(${r.id})" class="absolute top-4 right-4 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                </button>
+            </div>
+        `).join('');
+    } catch (e) {
+        brainEls.container.innerHTML = '<div class="text-red-400/60 text-xs text-center p-10">Error: Failed to connect to Neural Bank.</div>';
+    }
+}
+
+brainEls.addBtn.addEventListener('click', async () => {
+    const text = brainEls.input.value.trim();
+    if (!text) return;
+
+    brainEls.addBtn.disabled = true;
+    try {
+        const profile = els.profileSelect ? els.profileSelect.value : "default";
+        const res = await fetch('/rules', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({rule_description: text, profile_name: profile})
+        });
+        if (res.ok) {
+            brainEls.input.value = '';
+            loadRules();
+        }
+    } finally {
+        brainEls.addBtn.disabled = false;
+    }
+});
+
+async function deleteRule(id) {
+    try {
+        const res = await fetch(`/rules/${id}`, { method: 'DELETE' });
+        if (res.ok) loadRules();
+    } catch (e) {
+        console.error("Failed to delete rule", e);
+    }
+}
+
+els.profileSelect.addEventListener('change', () => {
+    if (!brainEls.modal.classList.contains('hidden')) {
+        loadRules();
+    }
+});
+
+// -------------------------------------------------------------------------
+// WORKSPACE CREATION MODAL LOGIC
+// -------------------------------------------------------------------------
+const wsEls = {
+    overlay: document.getElementById('workspace-modal-overlay'),
+    panel: document.getElementById('workspace-modal-panel'),
+    input: document.getElementById('modal-workspace-input'),
+    createBtn: document.getElementById('workspace-create-btn'),
+    cancelBtn: document.getElementById('workspace-cancel-btn'),
+    openBtn: document.getElementById('add-workspace-btn')
+};
+
+function toggleWorkspaceModal(isVisible) {
+    if (isVisible) {
+        wsEls.overlay.classList.remove('hidden');
+        wsEls.input.value = '';
+        setTimeout(() => {
+            wsEls.panel.classList.remove('scale-95', 'opacity-0');
+            wsEls.panel.classList.add('scale-100', 'opacity-100');
+            wsEls.input.focus();
+        }, 10);
+    } else {
+        wsEls.panel.classList.remove('scale-100', 'opacity-100');
+        wsEls.panel.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => wsEls.overlay.classList.add('hidden'), 300);
+    }
+}
+
+function createWorkspace() {
+    const raw = wsEls.input.value.trim();
+    if (!raw) return;
+
+    const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    if (!slug) return;
+
+    // Prevent duplicates
+    const existing = Array.from(els.profileSelect.options).find(o => o.value === slug);
+    if (existing) {
+        els.profileSelect.value = slug;
+        els.profileSelect.dispatchEvent(new Event('change'));
+        toggleWorkspaceModal(false);
+        return;
+    }
+
+    const option = document.createElement('option');
+    option.value = slug;
+    option.textContent = `WORKSPACE: ${raw.toUpperCase()}`;
+    option.className = 'bg-[#050505]';
+
+    els.profileSelect.appendChild(option);
+    els.profileSelect.value = slug;
+    els.profileSelect.dispatchEvent(new Event('change'));
+
+    toggleWorkspaceModal(false);
+    terminalLog("SYSTEM", `Workspace "${raw}" created and activated.`, "#d946ef");
+}
+
+wsEls.openBtn.addEventListener('click', () => toggleWorkspaceModal(true));
+wsEls.cancelBtn.addEventListener('click', () => toggleWorkspaceModal(false));
+wsEls.overlay.addEventListener('click', (e) => {
+    if (e.target === wsEls.overlay) toggleWorkspaceModal(false);
+});
+wsEls.createBtn.addEventListener('click', createWorkspace);
+wsEls.input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') createWorkspace();
 });
 ```

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import Post
+from .models import Post, UserStyleRule
 from .schemas import (
     BlueprintResponse,
     GenerateFullResponse,
@@ -20,6 +20,8 @@ from .schemas import (
     PostResponse,
     PostUpdate,
     ResearchResponse,
+    StyleRuleCreate,
+    StyleRuleResponse
 )
 
 # Import services AFTER the environment is loaded
@@ -85,7 +87,8 @@ async def approve_and_train_post(
         background_tasks.add_task(
             agent.analyze_and_store_feedback, 
             post.original_ai_content, 
-            data.content
+            data.content,
+            post.profile_name
         )
     
     # Update the primary content string
@@ -98,6 +101,32 @@ async def approve_and_train_post(
     db.commit()
     db.refresh(post)
     return post
+
+# --- AI BRAIN / STYLE RULE CRUD ---
+
+@app.get("/rules", response_model=list[StyleRuleResponse])
+def get_style_rules(profile_name: str = "default", db: Session = Depends(get_db)):
+    """Fetch all learned style rules from the AI's memory."""
+    return db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).order_by(UserStyleRule.id.desc()).all()
+
+@app.post("/rules", response_model=StyleRuleResponse)
+def add_style_rule(rule: StyleRuleCreate, db: Session = Depends(get_db)):
+    """Manually inject a new style rule into the AI's memory."""
+    new_rule = UserStyleRule(rule_description=rule.rule_description, profile_name=rule.profile_name)
+    db.add(new_rule)
+    db.commit()
+    db.refresh(new_rule)
+    return new_rule
+
+@app.delete("/rules/{rule_id}")
+def delete_style_rule(rule_id: int, db: Session = Depends(get_db)):
+    """Delete a specific style rule from memory."""
+    rule = db.get(UserStyleRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    db.delete(rule)
+    db.commit()
+    return {"status": "deleted"}
 
 # --- Orchestration Endpoints ---
 
@@ -169,7 +198,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, db: Session =
             yield f"data: {json.dumps({'event': 'phase3_start', 'message': 'Drafting final prose...'})}\n\n"
             p3_start = time.time()
             writer_service = WriterService(db=db) 
-            article_content = await writer_service.produce_article(blueprint_dict)
+            article_content = await writer_service.produce_article(blueprint_dict, payload.profile_name)
             if DEBUG_MODE:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 3 (Gemini 2.5 Pro) completed in {round(time.time() - p3_start, 2)}s'})}\n\n"
 
@@ -177,7 +206,8 @@ async def generate_article(keyword: str, payload: GeneratePayload, db: Session =
             post = Post(
                 title=keyword, 
                 content=article_content, 
-                original_ai_content=article_content
+                original_ai_content=article_content,
+                profile_name=payload.profile_name
             )
             db.add(post)
             db.commit()

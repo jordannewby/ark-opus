@@ -68,3 +68,16 @@ class GenerateFullResponse(BaseModel):
 class GeneratePayload(BaseModel):
     niche: str = "default"
     context: str = ""
+    profile_name: str = "default"
+
+
+class StyleRuleCreate(BaseModel):
+    rule_description: str
+    profile_name: str = "default"
+
+
+class StyleRuleResponse(BaseModel):
+    id: int
+    rule_description: str
+    
+    model_config = {"from_attributes": True}

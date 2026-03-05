@@ -32,7 +32,7 @@ class FeedbackAgent:
             "Do NOT return markdown blocks (like ```json). Return ONLY the raw JSON array."
         )
 
-    async def analyze_and_store_feedback(self, original_text: str, edited_text: str) -> list[str]:
+    async def analyze_and_store_feedback(self, original_text: str, edited_text: str, profile_name: str = "default") -> list[str]:
         """
         Takes the original AI text and the human's edited text, asks Gemini to extract style rules,
         and saves them to the UserStyleRule database.
@@ -77,7 +77,7 @@ class FeedbackAgent:
 
              # Save to DB
              for rule_text in rules:
-                 new_rule = UserStyleRule(rule_description=rule_text)
+                 new_rule = UserStyleRule(rule_description=rule_text, profile_name=profile_name)
                  self.db.add(new_rule)
                  
              if rules:

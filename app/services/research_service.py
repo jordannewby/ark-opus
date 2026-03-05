@@ -306,22 +306,54 @@ class ResearchAgent:
 
     @staticmethod
     def _extract_entities(keywords_data: dict, serp_data: dict) -> list[str]:
-        """Derive 15+ semantic entities from keywords data."""
-        entities: list[str] = []
+        """
+        Derive high-value semantic entities (Golden Keywords) using advanced SEO metrics.
+        Calculates an 'Opportunity Score' based on Volume, Difficulty, and Commercial Intent (CPC).
+        """
+        golden_keywords: list[dict] = []
         try:
             items = keywords_data.get("tasks", [])[0].get("result", [])[0].get("items", [])
-            for r in items[:20]:
+            for r in items:
                 kw = r.get("keyword", "")
-                if kw:
-                    entities.append(kw)
-        except Exception:
+                info = r.get("keyword_info", {})
+            
+                # Extract metrics (Safely handle DataForSEO 'null' values converting to Python 'None')
+                sv = info.get("search_volume") or 0
+                kd = info.get("keyword_difficulty") or 99 
+                cpc = info.get("cpc") or 0.0
+                
+                if not kw:
+                    continue
+                    
+                # ADVANCED SEO FILTERING:
+                # 1. Eliminate impossibly hard keywords (KD > 65)
+                # 2. Require at least *some* search volume (SV > 10) to avoid ghost town keywords
+                if kd < 65 and sv > 10:
+                    # Opportunity Score Formula: Rewards high volume & high CPC, penalizes high KD
+                    opp_score = (sv / (kd + 1)) + (cpc * 10)
+                    
+                    golden_keywords.append({
+                        "keyword": kw,
+                        "score": opp_score,
+                        "kd": kd,
+                        "sv": sv
+                    })
+            
+            # Sort by our custom Opportunity Score (Highest to Lowest)
+            golden_keywords.sort(key=lambda x: x["score"], reverse=True)
+            
+            # Extract just the string names of the top 15 highest-opportunity keywords
+            extracted = [e["keyword"] for e in golden_keywords[:15]]
+            
+            if extracted:
+                return extracted
+                
+        except Exception as e:
+            print(f"Entity Extraction Error: {e}")
             pass
             
-        if not entities:
-            # Fallback mock entities extraction
-            entities = ["seo strategy", "content marketing", "keyword research", "search intent"]
-            
-        return entities[:15]
+        # Fallback if the MCP payload fails or is empty
+        return ["seo strategy", "content marketing", "keyword research", "search intent"]
 
     # ------------------------------------------------------------------
     # Stripping HTML

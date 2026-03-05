@@ -14,7 +14,8 @@ const els = {
         psychology: document.getElementById('agent-psychology'),
         writer: document.getElementById('agent-writer')
     },
-    nicheInput: document.getElementById('niche-input')
+    nicheInput: document.getElementById('niche-input'),
+    profileSelect: document.getElementById('profile-select')
 };
 
 function terminalLog(agent, message, color = "#22d3ee") {
@@ -264,6 +265,7 @@ async function executeGeneration(userContext) {
     const kw = els.keywordInput.value.trim();
     const rawNiche = els.nicheInput ? els.nicheInput.value.trim() : "";
     const niche = rawNiche ? rawNiche : "default";
+    const profile = els.profileSelect ? els.profileSelect.value : "default";
 
     terminalLog("SYSTEM", `Compiling context and starting generation...`, "#22d3ee");
 
@@ -271,7 +273,7 @@ async function executeGeneration(userContext) {
         const response = await fetch(`/generate/${encodeURIComponent(kw)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ niche: niche, context: userContext })
+            body: JSON.stringify({ niche: niche, context: userContext, profile_name: profile })
         });
 
         if (!response.ok) throw new Error(`Server Error: ${response.status}`);
@@ -358,4 +360,171 @@ document.getElementById('copy-html-btn').addEventListener('click', () => {
         btn.innerText = "COPIED!";
         setTimeout(() => btn.innerText = "Copy Rich Text", 2000);
     });
+});
+
+// --- AI BRAIN LOGIC ---
+const brainEls = {
+    modal: document.getElementById('brain-modal'),
+    backdrop: document.getElementById('brain-backdrop'),
+    panel: document.getElementById('brain-panel'),
+    openBtn: document.getElementById('open-brain-btn'),
+    closeBtn: document.getElementById('close-brain-btn'),
+    container: document.getElementById('rules-container'),
+    input: document.getElementById('new-rule-input'),
+    addBtn: document.getElementById('add-rule-btn')
+};
+
+function toggleBrain(show) {
+    if (show) {
+        brainEls.modal.classList.remove('hidden');
+        setTimeout(() => {
+            brainEls.backdrop.classList.remove('opacity-0');
+            brainEls.panel.classList.remove('translate-x-full');
+        }, 10);
+        loadRules();
+    } else {
+        brainEls.backdrop.classList.add('opacity-0');
+        brainEls.panel.classList.add('translate-x-full');
+        setTimeout(() => brainEls.modal.classList.add('hidden'), 500);
+    }
+}
+
+brainEls.openBtn.addEventListener('click', () => toggleBrain(true));
+brainEls.closeBtn.addEventListener('click', () => toggleBrain(false));
+brainEls.backdrop.addEventListener('click', () => toggleBrain(false));
+
+async function loadRules() {
+    brainEls.container.innerHTML = '<div class="text-slate-500 text-xs text-center mono-text animate-pulse py-10">Accessing memory blocks...</div>';
+    try {
+        const profile = els.profileSelect ? els.profileSelect.value : "default";
+        const res = await fetch('/rules?profile_name=' + profile);
+        const rules = await res.json();
+
+        if (rules.length === 0) {
+            brainEls.container.innerHTML = `
+                <div class="flex flex-col items-center justify-center py-20 opacity-30">
+                    <svg class="w-12 h-12 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    <p class="text-xs mono-text">Memory Bank Empty</p>
+                </div>
+            `;
+            return;
+        }
+
+        brainEls.container.innerHTML = rules.map(r => `
+            <div class="group bg-white/[0.03] border border-white/5 rounded-2xl p-4 hover:bg-white/[0.05] hover:border-white/10 transition-all relative">
+                <div class="flex gap-4 items-start">
+                    <div class="w-1.5 h-1.5 rounded-full bg-cyan-500 mt-2 shrink-0 cyber-glow-cyan shadow-[0_0_8px_rgba(34,211,238,0.5)]"></div>
+                    <p class="text-sm text-slate-300 leading-relaxed pr-8 font-medium">${r.rule_description}</p>
+                </div>
+                <button onclick="deleteRule(${r.id})" class="absolute top-4 right-4 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                </button>
+            </div>
+        `).join('');
+    } catch (e) {
+        brainEls.container.innerHTML = '<div class="text-red-400/60 text-xs text-center p-10">Error: Failed to connect to Neural Bank.</div>';
+    }
+}
+
+brainEls.addBtn.addEventListener('click', async () => {
+    const text = brainEls.input.value.trim();
+    if (!text) return;
+
+    brainEls.addBtn.disabled = true;
+    try {
+        const profile = els.profileSelect ? els.profileSelect.value : "default";
+        const res = await fetch('/rules', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({rule_description: text, profile_name: profile})
+        });
+        if (res.ok) {
+            brainEls.input.value = '';
+            loadRules();
+        }
+    } finally {
+        brainEls.addBtn.disabled = false;
+    }
+});
+
+async function deleteRule(id) {
+    try {
+        const res = await fetch(`/rules/${id}`, { method: 'DELETE' });
+        if (res.ok) loadRules();
+    } catch (e) {
+        console.error("Failed to delete rule", e);
+    }
+}
+
+els.profileSelect.addEventListener('change', () => {
+    if (!brainEls.modal.classList.contains('hidden')) {
+        loadRules();
+    }
+});
+
+// -------------------------------------------------------------------------
+// WORKSPACE CREATION MODAL LOGIC
+// -------------------------------------------------------------------------
+const wsEls = {
+    overlay: document.getElementById('workspace-modal-overlay'),
+    panel: document.getElementById('workspace-modal-panel'),
+    input: document.getElementById('modal-workspace-input'),
+    createBtn: document.getElementById('workspace-create-btn'),
+    cancelBtn: document.getElementById('workspace-cancel-btn'),
+    openBtn: document.getElementById('add-workspace-btn')
+};
+
+function toggleWorkspaceModal(isVisible) {
+    if (isVisible) {
+        wsEls.overlay.classList.remove('hidden');
+        wsEls.input.value = '';
+        setTimeout(() => {
+            wsEls.panel.classList.remove('scale-95', 'opacity-0');
+            wsEls.panel.classList.add('scale-100', 'opacity-100');
+            wsEls.input.focus();
+        }, 10);
+    } else {
+        wsEls.panel.classList.remove('scale-100', 'opacity-100');
+        wsEls.panel.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => wsEls.overlay.classList.add('hidden'), 300);
+    }
+}
+
+function createWorkspace() {
+    const raw = wsEls.input.value.trim();
+    if (!raw) return;
+
+    const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    if (!slug) return;
+
+    // Prevent duplicates
+    const existing = Array.from(els.profileSelect.options).find(o => o.value === slug);
+    if (existing) {
+        els.profileSelect.value = slug;
+        els.profileSelect.dispatchEvent(new Event('change'));
+        toggleWorkspaceModal(false);
+        return;
+    }
+
+    const option = document.createElement('option');
+    option.value = slug;
+    option.textContent = `WORKSPACE: ${raw.toUpperCase()}`;
+    option.className = 'bg-[#050505]';
+
+    els.profileSelect.appendChild(option);
+    els.profileSelect.value = slug;
+    els.profileSelect.dispatchEvent(new Event('change'));
+
+    toggleWorkspaceModal(false);
+    terminalLog("SYSTEM", `Workspace "${raw}" created and activated.`, "#d946ef");
+}
+
+wsEls.openBtn.addEventListener('click', () => toggleWorkspaceModal(true));
+wsEls.cancelBtn.addEventListener('click', () => toggleWorkspaceModal(false));
+wsEls.overlay.addEventListener('click', (e) => {
+    if (e.target === wsEls.overlay) toggleWorkspaceModal(false);
+});
+wsEls.createBtn.addEventListener('click', createWorkspace);
+wsEls.input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') createWorkspace();
 });
