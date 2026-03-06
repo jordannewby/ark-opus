@@ -112,7 +112,7 @@ class CartographerService:
             "keywords": [seed_topic],
             "location_name": "United States",
             "language_name": "English",
-            "limit": 100,
+            "limit": 700,
             "include_serp_info": False
         }]
         
@@ -152,6 +152,8 @@ CRITICAL FILTERING RULES: You MUST ruthlessly discard any keywords from the raw 
 2. Navigational/Login (e.g., 'login', 'support', 'customer service')
 3. Competitor-branded (unless doing a specific VS comparison)
 4. Completely irrelevant to the 'Context/Target Audience' provided above.
+
+CRITICAL: If out of the 700 keywords provided, only 2 actually match the target audience/niche, return ONLY 2 spokes. DO NOT force 10 spokes if it means including irrelevant, broad, or job/login-related keywords. Returning generic keywords just to fill space is a critical failure.
 
 If the raw data is full of garbage, pick ONLY the absolute best keywords. It is better to return 4 highly relevant spokes than 10 garbage ones.
 
