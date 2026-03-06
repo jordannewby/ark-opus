@@ -4,7 +4,13 @@ Load this file when working on pipeline logic, agent behavior, or the workspace 
 
 ---
 
-## Pipeline Overview (5 Phases)
+## Pipeline Overview (6 Phases)
+
+### Phase -1 — CartographerAgent (`app/services/cartographer_service.py`)
+- **Model**: `deepseek-reasoner` (DeepSeek-R1)
+- **Trigger**: `/campaigns/plan` endpoint via the Cartographer UI
+- **Logic**: Fetches top 100 keyword ideas from DataForSEO, sends compressed schema to DeepSeek-R1 to map Hub-and-Spoke structure, and saves result strictly as JSON to database.
+- **Output**: Persists a `ContentCampaign` containing 1 Pillar and up to 10 Spoke keywords, output via `/campaigns` to the UI.
 
 ### Phase 0 — BriefingAgent (`app/services/briefing_agent.py`)
 - **Model**: `gemini-2.5-flash`
@@ -29,10 +35,12 @@ Load this file when working on pipeline logic, agent behavior, or the workspace 
 - **Output**: Structured JSON psychological blueprint with Identity Hooks, emotional triggers
 
 ### Phase 3 — WriterService (`app/services/writer_service.py`)
-- **Model**: `gemini-2.5-pro` via native `google-genai` SDK
-- **Prompt**: `app/services/prompts/writer.md` — Anti-AI-slop rules (bans: "delve", "tapestry", "crucial", corporate fluff)
+- **Model**: `claude-3-5-sonnet-20241022` via native `anthropic` SDK
+- **Logic**: Operates in an **iterative SEO loop** (max 3 attempts). Each draft is validated by `verify_seo_score`. If validation fails, feedback is injected into the next attempt's prompt.
+- **SEO Validation**: Static method checks for word count (min 1500), H2 count (min 5), list/table density (min 3 blocks), and Information Gain Density (min 2.0). 
+- **Prompt**: `app/services/prompts/writer.md` — Anti-AI-slop rules (bans: "delve", "tapestry", "crucial", corporate fluff) + dynamic SEO length directive (2,000-2,500 words).
 - **Input**: Psychology blueprint + UserStyleRules from DB (scoped to active workspace)
-- **Output**: 2,000+ word Markdown article streamed via SSE
+- **Output**: 2,500+ word Markdown article streamed in real-time. Yields `debug` events for iteration tracking and `content` events for prose. 
 
 ### Phase 6 — FeedbackAgent (`app/services/feedback_service.py`)
 - **Model**: `gemini-2.5-flash`
@@ -59,9 +67,11 @@ A closed-loop system that makes the ResearchAgent self-improving across runs. Fo
 
 ## SSE Streaming Architecture
 
-- `/generate` endpoint → `event_generator()` async generator → `StreamingResponse`
-- Frontend `static/js/console.js` consumes SSE events and renders them in the Cyber-Glassmorphism console
-- Each phase streams progress events (tool decisions, intermediate results) in real time
+- `/generate` endpoint → `event_generator()` async generator → `StreamingResponse` (Uses Pydantic `model_dump(mode='json')` for safe datetime serialization)
+- Frontend `static/js/console.js` consumes SSE events and renders them in the Cyber-Glassmorphism console.
+- **Real-time Content**: Phase 3 (Writer) streams `content` events which are appended directly to the UI editor for a "live typing" effect. Supports `RETRY_CLEAR` data to reset the editor during iterative SEO loops.
+- **Debug Propagation**: Forwarding `debug` events from all backend agents (Phase 1 tool decisions, Phase 3 iteration logs) to the Cyber-Glass terminal for full visibility.
+- Each phase streams progress events (tool decisions, intermediate results) in real time.
 - DataForSEO MCP tool names are streamed directly to the UI as R1 selects them
 
 ---
@@ -74,16 +84,18 @@ Workspaces partition Neon PostgreSQL by `profile_name`, isolating `UserStyleRule
 - **Modal**: `#workspace-modal-overlay` — text input → slugify (e.g., "Health Blog" → `health_blog`) → inject `<option>` → `dispatchEvent(new Event('change'))` → reloads Neural Memory Bank
 - **Safety invariant**: `executeGeneration`, `loadRules`, `deleteRule` functions are NEVER modified by workspace logic
 - **AI Brain panel**: `#brain-modal` slide-out reads/writes rules scoped to active `profile-select` value
+- **Cartographer panel**: `#cartographer-modal` slide-out provides an interface to plan Content Campaigns mappings.
 
 ---
 
 ## Database Schema (Neon PostgreSQL)
 
 Tables managed via SQLAlchemy ORM in `app/models.py`:
-- `Post` — generated articles (`original_ai_content`, `human_edited_content`, `profile_name`, `research_run_id`)
+- `Post` — generated articles (`title`, `content`, `original_ai_content`, `human_edited_content`, `profile_name`, `research_run_id`, `updated_at`)
 - `UserStyleRule` — style memory rules scoped by `profile_name`
 - `ResearchCache` — cached keyword research to reduce API calls
 - `Workspace` — persistent workspace definitions (`name`, `slug`, unique)
+- `ContentCampaign` — stores hub-and-spoke mappings (`seed_topic`, `pillar_keyword`, `spoke_keywords_json`, `profile_name`)
 - `ResearchRun` — per-run telemetry (tool sequence, KD stats, Exa queries, entity clusters, `quality_score`, `is_distilled`). Linked to `Post` via bidirectional `post_id`/`research_run_id`.
 - `NichePlaybook` — distilled niche-level intelligence. Composite unique constraint `(profile_name, niche)` for multi-tenant isolation. Versioned with `runs_distilled` counter.
 

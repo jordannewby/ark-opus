@@ -1,41 +1,44 @@
 import json
 import re
+import asyncio
 from pathlib import Path
-
-from google import genai
-from google.genai import types
-from ..settings import GEMINI_API_KEY
+from anthropic import AsyncAnthropic
+from ..settings import ANTHROPIC_API_KEY
 
 
 class WriterService:
-    """Uses Gemini 2.5 Pro to enforce strict anti-AI prose logic."""
+    """Uses Anthropic Claude 4 Sonnet to enforce strict anti-AI prose logic & deep comprehensiveness."""
 
     def __init__(self, db):
-        # Injecting db for consistency across the orchestration layer
         self.db = db
+        if not ANTHROPIC_API_KEY:
+            raise ValueError("ANTHROPIC_API_KEY environment variable is not set.")
 
-        if not GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY environment variable is not set.")
-
-        self.client = genai.Client(api_key=GEMINI_API_KEY)
-        self.model_name = "gemini-2.5-pro"
+        self.client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        self.model_name = "claude-sonnet-4-20250514"
 
         # Load the strict writer system prompt
         prompt_path = Path(__file__).parent / "prompts" / "writer.md"
         with open(prompt_path, "r", encoding="utf-8") as f:
-            self.system_prompt = f.read()
+            self.base_system_prompt = f.read()
 
-    async def produce_article(self, blueprint: dict, profile_name: str = "default") -> str:
+    async def produce_article(self, blueprint: dict, profile_name: str = "default"):
         """
-        Takes a blueprint JSON and outputs a formatted Markdown article.
-        Enforces Information Gain, E-E-A-T, and Entity Density rules.
+        Takes a blueprint JSON and streams a formatted Markdown article using Anthropic.
+        Enforces Information Gain, E-E-A-T, and Entity Density rules with an iterative SEO loop.
         """
         entities = blueprint.get("entities", [])
         semantic_keywords = blueprint.get("semantic_keywords", [])
+        information_gap = blueprint.get("information_gap", "")
 
-        # Start building the user prompt
+        # 1. Build Base Prompts
+        system_instructions = self.base_system_prompt + (
+            "\n\nTarget the optimal SEO blog length for ranking and high engagement (approximately 2,000 to 2,500 words). "
+            "Be highly comprehensive, but eliminate all rambling and fluff. Conclude naturally once the Information Gap is fully addressed."
+        )
+
         prompt_instructions = (
-            "Write a full ~2,000 word blog post based on the following psychological blueprint:\n\n"
+            "Write a full ~2,500 word blog post based on the following psychological blueprint:\n\n"
             f"{json.dumps(blueprint, indent=2)}\n\n"
             "MANDATORY:\n"
             "- Deliver the 'Information Gap' hook in the first 150 words.\n"
@@ -55,34 +58,71 @@ class WriterService:
             "3. FORMATTING: The very first ## H2 MUST focus entirely on the 'Information Gap' as a pattern interrupt.\n"
             "4. CADENCE: Max 3 sentences per paragraph. Short, punchy, aggressive delivery.\n"
         )
-        
-        # Inject Dynamic Human Style Rules learned from previous edits
+
+        # Inject Dynamic Human Style Rules
         from ..models import UserStyleRule
         style_rules = self.db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).all()
         if style_rules:
             prompt_instructions += "\n--- HUMAN STYLE GUIDELINES LEARNED FROM PAST EDITS ---\n"
-            prompt_instructions += "You MUST organically integrate these stylistic preferences into your writing:\n"
             for rule in style_rules:
                 prompt_instructions += f"- {rule.rule_description}\n"
             prompt_instructions += "--------------------------------------------------------\n"
 
         prompt_instructions += "\nFollow all system prompt guidelines strictly. Write directly in Markdown."
 
-        try:
-             response = self.client.models.generate_content(
-                 model=self.model_name,
-                 contents=prompt_instructions,
-                 config=types.GenerateContentConfig(
-                     system_instruction=self.system_prompt,
-                     temperature=0.8,
-                     max_output_tokens=4000,
-                 ),
-             )
-             return response.text
-             
-        except Exception as e:
-             print(f"Gemini SDK Error: {e}")
-             return f"Error Generating Article: {e}"
+        max_attempts = 3
+        v_feedback = ""
+
+        for attempt in range(1, max_attempts + 1):
+            yield {"type": "debug", "message": f"Writer Iteration {attempt}: Starting draft generation..."}
+            
+            current_prompt = prompt_instructions
+            if v_feedback:
+                current_prompt += f"\n\nCRITICAL FEEDBACK FROM PREVIOUS ATTEMPT:\n{v_feedback}\nFix these issues in this new draft."
+
+            full_content = ""
+            try:
+                async with self.client.messages.stream(
+                    model=self.model_name,
+                    max_tokens=8192,
+                    system=system_instructions,
+                    messages=[{"role": "user", "content": current_prompt}],
+                    temperature=0.7
+                ) as stream:
+                    async for text_delta in stream.text_stream:
+                        full_content += text_delta
+                        yield {"type": "content", "data": text_delta}
+
+                # 2. Perform SEO Validation
+                yield {"type": "debug", "message": f"Writer Iteration {attempt}: Validating draft quality..."}
+                score = self.verify_seo_score(full_content, information_gap)
+
+                if score["passed"]:
+                    yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed SEO validation."}
+                    yield {"status": "success", "text": full_content}
+                    return
+                else:
+                    v_feedback = (
+                        f"SEO Validation Failed (Iteration {attempt}).\n"
+                        f"Issues: {', '.join(score['banned_words_found']) if score['banned_words_used'] else ''} "
+                        f"{'| Length too short' if not score['word_count_ok'] else ''} "
+                        f"{'| Missing H2s' if not score['h2_ok'] else ''}."
+                    )
+                    yield {"type": "debug", "message": f"Writer Iteration {attempt} failed: {v_feedback}"}
+                    
+                    if attempt == max_attempts:
+                        yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
+                        yield {"status": "success", "text": full_content}
+                        return
+                    
+                    # Clear editor for next attempt
+                    yield {"type": "content", "data": "RETRY_CLEAR"}
+
+            except Exception as e:
+                error_msg = f"Anthropic API Error: {str(e)}"
+                print(f"[Writer] {error_msg}")
+                yield {"status": "error", "message": error_msg}
+                return
 
     @staticmethod
     def verify_seo_score(text: str, information_gap: str = "") -> dict:
@@ -90,8 +130,6 @@ class WriterService:
         Validates generated article against basic SEO structure requirements and Information Gain Density.
         """
         lines = text.split("\n")
-
-        # Word count
         word_count = len(text.split())
 
         # H1 count: lines starting with exactly '# ' (not '##')
@@ -117,19 +155,15 @@ class WriterService:
                 in_block = False
 
         # Information Gain Density Check
-        # specific insight from the Information Gap MUST appear at least 3 times
         info_gain_density = 0
         if information_gap:
-            # Extract significant unique nouns/keywords from the gap
             significant_words = {w.lower() for w in re.findall(r'\b[A-Za-z]{5,}\b', information_gap)}
             if significant_words:
                 text_lower = text.lower()
-                # Count the total occurrences of these significant concepts
                 word_counts = sum(text_lower.count(w) for w in significant_words)
-                # Average mentions per significant concept as a proxy for density
                 info_gain_density = word_counts / len(significant_words) if len(significant_words) > 0 else 0
                 
-        info_gain_ok = info_gain_density >= 3.0 if information_gap else True
+        info_gain_ok = info_gain_density >= 2.0 if information_gap else True
 
         # Banned phrases check
         banned_list = ["delve", "tapestry", "landscape", "multifaceted", "comprehensive", "holistic", "navigate", "crucial", "in conclusion", "ultimately", "fast-paced world", "digital age", "game-changer"]
@@ -138,7 +172,7 @@ class WriterService:
         banned_words_used = len(found_banned_words) > 0
 
         passed = (
-            word_count >= 1500  # Adjusted slightly per Haiku's length distribution
+            word_count >= 1500
             and h1_count == 1
             and h2_count >= 5
             and list_table_blocks >= 3

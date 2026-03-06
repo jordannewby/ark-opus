@@ -1,13 +1,13 @@
 # Ares Engine
 
-**Stack**: FastAPI + Neon PostgreSQL + DeepSeek-R1/V3 + Gemini 2.5 Pro/Flash + Exa.ai (Native Tools) + DataForSEO MCP
+**Stack**: FastAPI + Neon PostgreSQL + DeepSeek-R1/V3 + Anthropic Claude 3.5 Sonnet + Gemini 2.5 Pro/Flash + Exa.ai (Native Tools) + DataForSEO MCP
 **Budget**: $10 max — prefer lightweight, serverless
 
 ## Key Paths
-- `app/main.py` — FastAPI app, `/generate` SSE endpoint, `/posts/{id}/approve`, `/clarify`, `/rules`, `/workspaces`
-- `app/services/` — All agents: briefing_agent, research_service, psychology_agent, writer_service, feedback_service, research_intel_service
-- `app/models.py` — ORM models: `Post`, `UserStyleRule`, `ResearchCache`, `Workspace`, `ResearchRun`, `NichePlaybook`
-- `app/schemas.py` — Pydantic schemas (includes `WorkspaceCreate`, `WorkspaceResponse`, `StyleRuleCreate`, `ResearchRunCapture`, `NichePlaybookResponse`)
+- `app/main.py` — FastAPI app, `/generate` SSE endpoint, `/posts/{id}/approve`, `/clarify`, `/rules`, `/workspaces`, `/campaigns/plan`, `/campaigns`
+- `app/services/` — All agents: briefing_agent, research_service, psychology_agent, writer_service, feedback_service, research_intel_service, cartographer_service
+- `app/models.py` — ORM models: `Post`, `UserStyleRule`, `ResearchCache`, `Workspace`, `ResearchRun`, `NichePlaybook`, `ContentCampaign`
+- `app/schemas.py` — Pydantic schemas (includes `WorkspaceCreate`, `WorkspaceResponse`, `StyleRuleCreate`, `ResearchRunCapture`, `NichePlaybookResponse`, `CampaignResponse`)
 - `app/services/prompts/` — LLM prompt templates (writer.md, persuasion.md)
 - `static/` — Frontend (ares_console.html, js/console.js, js/api.js)
 - `app/database.py` — Neon PostgreSQL connection (SQLAlchemy, pool_pre_ping, keepalives)
@@ -20,7 +20,7 @@
 - **Iterative Tooling** — ResearchAgent runs an iterative loop (max 5) allowing R1 to mix DataForSEO MCP tools with native Exa tools (`exa_scout_search`, `exa_extract_full_text`)
 - **Multi-tenant** — all DB queries must filter by `profile_name` (workspace scope)
 - **Research Intelligence** — ResearchAgent self-improves via a 4-phase loop: Capture ($0) → Recall (~200 tokens) → Reinforce ($0 on /approve) → Distill (~$0.001/10 runs via Gemini Flash). Niche playbooks are scoped by `(profile_name, niche)`.
-- **API keys** — GEMINI_API_KEY, DEEPSEEK_API_KEY, EXA_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD (in .env only)
+- **API keys** — ANTHROPIC_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY, EXA_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD (in .env only)
 
 ## NEVER
 - Never rewrite entire files for small logic changes — use targeted edits

@@ -23,6 +23,7 @@ DEEPSEEK_API_KEY = get_clean_env("DEEPSEEK_API_KEY")
 DATAFORSEO_LOGIN = get_clean_env("DATAFORSEO_LOGIN")
 DATAFORSEO_PASSWORD = get_clean_env("DATAFORSEO_PASSWORD")
 EXA_API_KEY = get_clean_env("EXA_API_KEY")
+ANTHROPIC_API_KEY = get_clean_env("ANTHROPIC_API_KEY")
 
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY is missing.")
@@ -32,3 +33,5 @@ if not DATAFORSEO_LOGIN or not DATAFORSEO_PASSWORD:
     raise ValueError("DATAFORSEO credentials missing.")
 if not EXA_API_KEY:
     raise ValueError("EXA_API_KEY is missing.")
+if not ANTHROPIC_API_KEY:
+    raise ValueError("ANTHROPIC_API_KEY is missing.")

@@ -79,6 +79,16 @@ class NichePlaybook(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
 
 
+class ContentCampaign(Base):
+    __tablename__ = "content_campaigns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(50), index=True, default="default", server_default="default")
+    seed_topic: Mapped[str] = mapped_column(String(200))
+    pillar_keyword: Mapped[str] = mapped_column(String(200))
+    spoke_keywords_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
 class Workspace(Base):
     __tablename__ = "workspaces"
 

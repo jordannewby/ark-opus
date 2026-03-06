@@ -4,28 +4,131 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ares Console v4.0 - Cyber Glass</title>
+    <title>Ares Engine - Leveric Cyber</title>
     <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap');
+
+        :root {
+            --bg-base: #050505;
+            --bg-elevated: #0F0F11;
+            --text-main: #FFFFFF;
+            --text-muted: #8B8B93;
+            --accent: #3b82f6;
+            /* Leveric Royal Blue */
+            --accent-hover: #8b5cf6;
+            /* Leveric Vibrant Purple */
+        }
 
         body {
-            font-family: 'Inter', -apple-system, sans-serif;
-            background: #050505;
-            color: #f3f4f6;
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            margin: 0;
             overflow: hidden;
             height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Sharp, cyber ambient glow */
+        .ambient-glow {
+            position: fixed;
+            top: -20%;
+            left: -10%;
+            width: 70vw;
+            height: 70vh;
+            background: radial-gradient(circle, rgba(59, 130, 246, 0.04) 0%, rgba(5, 5, 5, 0) 70%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        .ambient-glow-2 {
+            position: fixed;
+            bottom: -20%;
+            right: -10%;
+            width: 60vw;
+            height: 60vh;
+            background: radial-gradient(circle, rgba(255, 255, 255, 0.02) 0%, rgba(5, 5, 5, 0) 70%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        .agent-node {
+            opacity: 0.3;
+            transform: scale(0.98);
+            transition: all 0.5s ease;
+        }
+
+        .agent-node-active {
+            opacity: 1 !important;
+            transform: scale(1.05) !important;
+            color: var(--accent) !important;
+            font-weight: 600;
+            text-shadow: 0 0 15px rgba(139, 92, 246, 0.4);
+        }
+
+        /* Dark mode Prose for generated text */
+        .prose-custom h1 {
+            color: #FFFFFF;
+            font-size: 2.25rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            letter-spacing: -0.02em;
+        }
+
+        .prose-custom h2 {
+            color: #F4F4F5;
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-top: 2.5rem;
+            margin-bottom: 1rem;
+            letter-spacing: -0.01em;
+        }
+
+        .prose-custom h3 {
+            color: #E4E4E7;
+            font-size: 1.25rem;
+            font-weight: 500;
+            margin-top: 1.5rem;
+        }
+
+        .prose-custom p {
+            color: #A1A1AA;
+            line-height: 1.8;
+            margin-bottom: 1.5rem;
+            font-size: 1.05rem;
+        }
+
+        .prose-custom ul {
+            list-style-type: none;
+            padding-left: 0;
+            margin-bottom: 1.5rem;
+            color: #A1A1AA;
+        }
+
+        .prose-custom li {
+            position: relative;
+            padding-left: 1.25rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .prose-custom li::before {
+            content: '→';
+            position: absolute;
+            left: 0;
+            color: var(--accent);
+            font-weight: bold;
         }
 
         .mono-text {
             font-family: 'JetBrains Mono', monospace;
         }
 
-        /* Scrollbar */
         ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
+            width: 4px;
+            height: 4px;
         }
 
         ::-webkit-scrollbar-track {
@@ -34,412 +137,435 @@
 
         ::-webkit-scrollbar-thumb {
             background: rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
+            border-radius: 4px;
         }
 
         ::-webkit-scrollbar-thumb:hover {
             background: rgba(255, 255, 255, 0.2);
         }
 
-        /* Animations */
-        @keyframes slideInRight {
-            from {
-                opacity: 0;
-                transform: translateX(20px);
-            }
-
-            to {
-                opacity: 1;
-                transform: translateX(0);
-            }
+        /* Input UX Enhancements */
+        .input-group {
+            position: relative;
+            width: 100%;
         }
 
-        .animate-slideInRight {
-            animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        .input-group label {
+            position: absolute;
+            top: 0;
+            left: 0;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            transform: translateY(-120%);
+            opacity: 0;
+            transition: all 0.3s ease;
+            pointer-events: none;
+        }
+
+        .input-group input:focus+label,
+        .input-group input:not(:placeholder-shown)+label {
+            transform: translateY(-160%);
+            opacity: 1;
+            color: var(--accent);
+        }
+
+        .input-group input::placeholder {
+            transition: opacity 0.3s ease;
+        }
+
+        .input-group input:focus::placeholder {
+            opacity: 0.3;
+        }
+
+        input:focus,
+        textarea:focus,
+        select:focus,
+        button:focus {
+            outline: none !important;
+            box-shadow: none !important;
+            border-color: transparent;
+        }
+
+        #keyword-input:focus,
+        #niche-input:focus,
+        #cartographer-topic-input:focus,
+        #modal-workspace-input:focus,
+        #new-rule-input:focus {
+            border-bottom-color: var(--accent) !important;
+        }
+
+        .btn-sleek {
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #3b82f6 100%);
+            background-size: 200% auto;
+            color: #FFFFFF;
+            border-radius: 9999px;
+            padding: 0.6rem 1.75rem;
+            transition: all 0.5s ease;
+            font-weight: 700;
+            font-size: 0.875rem;
+            letter-spacing: 0.05em;
+            box-shadow: 0 0 15px rgba(59, 130, 246, 0.3);
+        }
+
+        .btn-sleek:hover {
+            background-position: right center;
+            box-shadow: 0 0 25px rgba(139, 92, 246, 0.5);
+            transform: translateY(-1px);
+        }
+
+        .btn-outline {
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #8B8B93;
+            border-radius: 9999px;
+            padding: 0.5rem 1.5rem;
+            transition: all 0.3s;
+            font-weight: 500;
+            background: transparent;
+        }
+
+        .btn-outline:hover {
+            background-color: rgba(59, 130, 246, 0.05);
+            border-color: rgba(139, 92, 246, 0.4);
+            color: #8b5cf6;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+        }
+
+        .sidebar-btn {
+            width: 100%;
+            text-align: left;
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            color: #8B8B93;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .sidebar-btn:hover {
+            background-color: rgba(59, 130, 246, 0.05);
+            color: var(--accent);
+        }
+
+        #score-circle {
+            stroke: url(#blue-purple-gradient);
+        }
+
+        .audit-dot {
+            transition: background 0.5s ease;
+            width: 6px;
+            height: 6px;
+        }
+
+        ::selection {
+            background: rgba(139, 92, 246, 0.2);
+            color: #FFFFFF;
         }
 
         .glass-panel {
-            background: rgba(255, 255, 255, 0.02);
-            backdrop-filter: blur(40px);
-            -webkit-backdrop-filter: blur(40px);
+            background-color: var(--bg-elevated);
             border: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        .cyber-glow-cyan {
-            box-shadow: 0 0 15px rgba(34, 211, 238, 0.15);
-        }
-
-        .cyber-glow-magenta {
-            box-shadow: 0 0 15px rgba(217, 70, 239, 0.15);
-        }
-
-        .agent-node-active {
-            color: #22d3ee !important;
-            border-color: rgba(34, 211, 238, 0.5) !important;
-            box-shadow: 0 0 15px rgba(34, 211, 238, 0.2);
-            font-weight: 600;
-        }
-
-        /* Prose customization for markdown */
-        .prose-custom h1 {
-            color: #f8fafc;
-            font-size: 2rem;
-            font-weight: 700;
-            margin-bottom: 1.5rem;
-            letter-spacing: -0.02em;
-        }
-
-        .prose-custom h2 {
-            color: #22d3ee;
-            font-size: 1.5rem;
-            font-weight: 600;
-            margin-top: 2rem;
-            margin-bottom: 1rem;
-        }
-
-        .prose-custom h3 {
-            color: #d946ef;
-            font-size: 1.25rem;
-            font-weight: 600;
-            margin-top: 1.5rem;
-        }
-
-        .prose-custom p {
-            color: #94a3b8;
-            line-height: 1.7;
-            margin-bottom: 1.25rem;
-        }
-
-        .prose-custom ul {
-            list-style-type: none;
-            padding-left: 0;
-            margin-bottom: 1.25rem;
-        }
-
-        .prose-custom li {
-            position: relative;
-            padding-left: 1.5rem;
-            margin-bottom: 0.5rem;
-            color: #cbd5e1;
-        }
-
-        .prose-custom li::before {
-            content: '→';
-            position: absolute;
-            left: 0;
-            color: #22d3ee;
-            font-family: 'JetBrains Mono';
-            font-size: 0.8em;
-            top: 0.2em;
-        }
-
-        .prose-custom blockquote {
-            border-left: 2px solid #22d3ee;
-            padding-left: 1rem;
-            color: #cbd5e1;
-            font-style: italic;
-            background: rgba(34, 211, 238, 0.05);
-            padding: 1rem;
-            border-radius: 0.5rem;
-        }
-
-        /* Disable focus outline specifically to maintain aesthetics */
-        *:focus {
-            outline: none;
         }
     </style>
 </head>
 
-<body class="bg-[#050505] text-slate-200 antialiased selection:bg-cyan-500/30">
-    <div class="flex h-screen w-full p-6 gap-6 box-border font-sans">
+<body>
+    <div class="ambient-glow"></div>
+    <div class="ambient-glow-2"></div>
 
-        <!-- Sidebar - System Logs & Status -->
-        <aside class="w-[340px] flex flex-col gap-6 shrink-0 relative z-10">
-            <!-- Brand Panel -->
-            <div class="glass-panel rounded-2xl p-6 flex flex-col items-center justify-center relative overflow-hidden">
-                <div class="absolute inset-0 bg-gradient-to-br from-cyan-500/5 to-magenta-500/5 pointer-events-none">
-                </div>
+    <div
+        class="flex flex-col h-full w-full px-6 md:px-12 pt-10 pb-6 relative z-10 box-border overflow-hidden max-w-[1600px] mx-auto">
+
+        <!-- Header / Input Area -->
+        <div class="w-full flex flex-col md:flex-row items-end justify-between gap-8 shrink-0 mb-10">
+            <div class="flex-1 w-full max-w-4xl relative input-group group">
+                <input id="keyword-input" type="text"
+                    class="w-full bg-transparent border-0 border-b border-white/10 text-lg md:text-xl text-white placeholder-slate-600 py-3 transition-colors focus:border-[#3b82f6]"
+                    placeholder="What topic should we write about today?">
+                <label for="keyword-input">Primary Topic</label>
                 <div
-                    class="w-14 h-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center backdrop-blur-xl cyber-glow-cyan mb-4">
-                    <svg class="w-7 h-7 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                            d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                    </svg>
+                    class="absolute bottom-0 left-0 w-0 h-0.5 bg-gradient-to-r from-[#3b82f6] to-[#8b5cf6] transition-all duration-300 group-focus-within:w-full">
                 </div>
-                <h1 class="text-xl font-bold tracking-tight text-white/90">Ares Engine</h1>
-                <p class="mono-text text-[10px] text-slate-500 uppercase tracking-widest mt-1">AI Content Generator</p>
-                <button id="open-brain-btn"
-                    class="mt-4 flex items-center gap-2 px-4 py-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 text-[10px] uppercase tracking-widest hover:bg-cyan-500/20 transition-all active:scale-95">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z">
-                        </path>
-                    </svg>
-                    AI Memory Bank
+            </div>
+
+            <div class="flex flex-col md:flex-row items-center gap-5 pb-1 w-full md:w-auto">
+                <div class="relative input-group group w-40 text-center">
+                    <input id="niche-input" type="text"
+                        class="bg-transparent border-0 border-b border-white/10 text-base text-[#8B8B93] placeholder-slate-600 py-2 w-full text-center transition-colors focus:border-[#3b82f6]"
+                        placeholder="Industry or Niche">
+                    <label for="niche-input" class="!left-[50%] !-translate-x-[50%]">Domain</label>
+                    <div
+                        class="absolute bottom-0 left-[50%] -translate-x-[50%] w-0 h-0.5 bg-gradient-to-r from-[#3b82f6] to-[#8b5cf6] transition-all duration-300 group-focus-within:w-full">
+                    </div>
+                </div>
+
+                <div
+                    class="flex items-center gap-2 bg-[#0F0F11] border border-white/5 rounded-full px-3 py-1.5 hover:border-white/10 transition-colors">
+                    <span class="text-[10px] uppercase tracking-wider text-slate-500 font-medium">Workspace</span>
+                    <select id="profile-select"
+                        class="bg-transparent border-none text-xs font-medium text-white appearance-none cursor-pointer outline-none max-w-[80px] text-ellipsis">
+                        <option value="default" class="bg-[#050505] text-white">Default</option>
+                    </select>
+                    <button id="add-workspace-btn"
+                        class="text-slate-500 hover:text-[#8b5cf6] transition-colors text-sm hover:scale-110 active:scale-95">+</button>
+                </div>
+
+                <button id="generate-btn"
+                    class="btn-sleek shrink-0 active:scale-95 active:shadow-none hover:shadow-[0_0_20px_rgba(139,92,246,0.4)]">
+                    Generate Article
                 </button>
             </div>
+        </div>
 
-            <!-- Terminal Panel -->
-            <div class="glass-panel rounded-2xl flex-1 p-5 flex flex-col overflow-hidden relative">
-                <div class="flex items-center justify-between mb-4 px-1">
-                    <span class="text-xs font-semibold text-slate-400 tracking-wide uppercase">Live Status</span>
-                    <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse cyber-glow-cyan"></span>
-                </div>
-                <!-- Log container will scroll from bottom -->
-                <div id="terminal-body"
-                    class="mono-text text-[11px] leading-relaxed text-slate-400 overflow-y-auto flex-1 pr-2 space-y-2">
-                    <!-- Logs injected here -->
-                </div>
-            </div>
+        <!-- Ambient Pipeline Nodes -->
+        <div class="flex justify-center items-center py-2 px-6 gap-8 md:gap-24 shrink-0 mb-8 max-w-2xl mx-auto w-full">
+            <div id="agent-research" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">
+                Researching</div>
+            <div class="h-px w-8 bg-white/10 md:block hidden"></div>
+            <div id="agent-psychology" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">
+                Strategizing</div>
+            <div class="h-px w-8 bg-white/10 md:block hidden"></div>
+            <div id="agent-writer" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">
+                Writing</div>
+        </div>
 
-            <!-- SEO Audit Panel -->
-            <div class="glass-panel rounded-2xl p-6 flex flex-col gap-4 relative">
-                <h3 class="text-xs font-semibold tracking-wide uppercase text-slate-400 mb-2">Content Quality Check</h3>
-                <div class="flex items-center gap-6">
-                    <div class="relative w-20 h-20 shrink-0">
-                        <svg viewBox="0 0 100 100" class="w-full h-full transform -rotate-90">
-                            <circle cx="50" cy="50" r="45" fill="none" stroke="rgba(255,255,255,0.05)"
-                                stroke-width="6" />
-                            <circle id="score-circle" cx="50" cy="50" r="45" fill="none"
-                                class="stroke-cyan-400 transition-all duration-1000" stroke-width="6"
-                                stroke-dasharray="283" stroke-dashoffset="283" />
+        <!-- Main Workspace Area -->
+        <div class="flex-1 flex flex-col md:flex-row gap-8 w-full overflow-hidden">
+
+            <!-- Left Sidebar -->
+            <div class="w-full md:w-64 flex flex-col shrink-0 gap-6 min-h-0">
+
+                <!-- Telemetry -->
+                <div class="flex flex-col min-h-0 glass-panel rounded-3xl p-6">
+                    <div class="text-xs uppercase tracking-wider text-slate-500 mb-4 font-semibold">Activity Log</div>
+                    <div id="terminal-body"
+                        class="mono-text text-[11px] leading-relaxed text-[#8B8B93] space-y-3 overflow-y-auto"></div>
+                </div>
+
+                <!-- Audit -->
+                <div class="shrink-0 glass-panel rounded-3xl p-6">
+                    <div class="text-xs uppercase tracking-wider text-slate-500 mb-4 font-semibold">Quality Score</div>
+                    <div class="flex items-center gap-5">
+                        <div class="relative w-14 h-14 shrink-0">
+                            <svg viewBox="0 0 100 100" class="w-full h-full transform -rotate-90">
+                                <defs>
+                                    <linearGradient id="blue-purple-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                        <stop offset="0%" stop-color="#3b82f6" />
+                                        <stop offset="100%" stop-color="#8b5cf6" />
+                                    </linearGradient>
+                                </defs>
+                                <circle cx="50" cy="50" r="46" fill="none" stroke="rgba(255,255,255,0.05)"
+                                    stroke-width="6" />
+                                <circle id="score-circle" cx="50" cy="50" r="46" fill="none"
+                                    class="transition-all duration-1000" stroke-width="6" stroke-dasharray="289"
+                                    stroke-dashoffset="289" />
+                            </svg>
+                            <div class="absolute inset-0 flex items-center justify-center">
+                                <span id="score-text" class="mono-text text-sm font-semibold text-white">0%</span>
+                            </div>
+                        </div>
+                        <div
+                            class="flex-1 flex flex-col gap-2.5 text-[10px] uppercase font-semibold text-slate-500 tracking-wider">
+                            <div id="audit-length" class="flex items-center justify-between"><span>Length</span><span
+                                    class="audit-dot bg-white/10 rounded-full"></span></div>
+                            <div id="audit-entities" class="flex items-center justify-between">
+                                <span>Headings</span><span class="audit-dot bg-white/10 rounded-full"></span>
+                            </div>
+                            <div id="audit-visuals" class="flex items-center justify-between">
+                                <span>Formatting</span><span class="audit-dot bg-white/10 rounded-full"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tools Navigation -->
+                <div class="flex flex-col gap-1 mt-auto glass-panel rounded-3xl p-3">
+                    <button id="open-blueprint-btn" class="sidebar-btn flex items-center justify-between group">
+                        <span>View Blueprint</span>
+                        <svg class="w-4 h-4 text-[#8B8B93] group-hover:text-[#8b5cf6] transition-colors" fill="none"
+                            stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7">
+                            </path>
                         </svg>
-                        <div class="absolute inset-0 flex flex-col items-center justify-center">
-                            <span id="score-text" class="mono-text text-lg font-bold text-white">0%</span>
-                        </div>
-                    </div>
-                    <div
-                        class="flex-1 flex flex-col gap-3 text-[11px] font-medium text-slate-400 font-mono tracking-tight">
-                        <div id="audit-length" class="flex items-center justify-between" title="Aim for 2000+ words">
-                            <span>Word Count</span>
-                            <span class="w-1.5 h-1.5 rounded-full bg-white/10 audit-dot"></span>
-                        </div>
-                        <div id="audit-entities" class="flex items-center justify-between" title="Use multiple headers">
-                            <span>Heading Structure</span>
-                            <span class="w-1.5 h-1.5 rounded-full bg-white/10 audit-dot"></span>
-                        </div>
-                        <div id="audit-visuals" class="flex items-center justify-between"
-                            title="Include lists or tables">
-                            <span>Tables & Lists</span>
-                            <span class="w-1.5 h-1.5 rounded-full bg-white/10 audit-dot"></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </aside>
-
-        <!-- Main Content Area -->
-        <main class="flex-1 flex flex-col gap-6 min-w-0">
-            <!-- Top Command Bar (Spotlight Style) -->
-            <div
-                class="glass-panel mx-auto max-w-4xl w-full rounded-full p-2 pl-6 pr-2 flex items-center gap-4 cyber-glow-cyan shadow-[0_8px_32px_rgba(0,0,0,0.5)] z-20">
-                <svg class="w-5 h-5 text-cyan-400 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                </svg>
-                <input id="keyword-input" type="text"
-                    class="bg-transparent border-none text-lg text-white placeholder-slate-500 flex-1 outline-none font-medium h-12"
-                    placeholder="Enter a topic or keyword to generate an article...">
-
-                <div class="h-6 w-px bg-white/10"></div>
-
-                <input id="niche-input" type="text"
-                    class="bg-transparent border-none text-cyan-400 text-sm font-medium outline-none px-4 w-48 placeholder-slate-600 focus:text-cyan-300 transition-colors"
-                    placeholder="Niche (e.g. SaaS, Finance)">
-
-                <div class="h-6 w-px bg-white/10"></div>
-                <div class="flex items-center gap-2">
-                    <select id="profile-select"
-                        class="bg-transparent border-none text-fuchsia-400 text-sm font-bold outline-none px-2 cursor-pointer appearance-none uppercase tracking-wide text-center">
-                        <option value="default" class="bg-[#050505]">WORKSPACE: DEFAULT</option>
-                        <option value="tech_startup" class="bg-[#050505]">WORKSPACE: TECH</option>
-                        <option value="legal_client" class="bg-[#050505]">WORKSPACE: LEGAL</option>
-                    </select>
-                    <button id="add-workspace-btn" title="Create new workspace"
-                        class="w-9 h-9 rounded-full bg-fuchsia-500/15 hover:bg-fuchsia-500/25 border border-fuchsia-500/30 text-fuchsia-400 flex items-center justify-center transition-all shadow-[0_0_10px_rgba(217,70,239,0.2)] hover:shadow-[0_0_18px_rgba(217,70,239,0.3)] shrink-0">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4">
+                    </button>
+                    <button id="open-brain-btn" class="sidebar-btn flex items-center justify-between group">
+                        <span>Style Memory</span>
+                        <svg class="w-4 h-4 text-[#8B8B93] group-hover:text-[#8b5cf6] transition-colors" fill="none"
+                            stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4">
+                            </path>
+                        </svg>
+                    </button>
+                    <button id="open-cartographer-btn" class="sidebar-btn flex items-center justify-between group">
+                        <span>Cartographer</span>
+                        <svg class="w-4 h-4 text-[#8B8B93] group-hover:text-[#8b5cf6] transition-colors" fill="none"
+                            stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7">
                             </path>
                         </svg>
                     </button>
                 </div>
-
-                <button id="generate-btn" title="Start generating content"
-                    class="bg-white/10 hover:bg-white/20 text-white px-8 h-12 rounded-full font-semibold text-sm transition-all border border-white/5 hover:border-white/20 ml-2 tracking-wide">
-                    GENERATE
-                </button>
             </div>
 
-            <!-- Agent Progress Pipeline -->
-            <div class="flex items-center justify-center gap-12 py-2 select-none">
-                <div id="agent-research"
-                    class="flex flex-col items-center gap-2 text-slate-500 border border-transparent p-3 rounded-2xl transition-all">
-                    <div
-                        class="w-8 h-8 rounded-full border border-current flex items-center justify-center text-xs mono-text">
-                        01</div>
-                    <span class="text-[10px] uppercase font-bold tracking-widest text-slate-400">Research</span>
-                </div>
-                <!-- Connector -->
-                <div class="h-px w-16 bg-gradient-to-r from-transparent via-slate-700 to-transparent"></div>
-
-                <div id="agent-psychology"
-                    class="flex flex-col items-center gap-2 text-slate-500 border border-transparent p-3 rounded-2xl transition-all">
-                    <div
-                        class="w-8 h-8 rounded-full border border-current flex items-center justify-center text-xs mono-text">
-                        02</div>
-                    <span class="text-[10px] uppercase font-bold tracking-widest text-slate-400">Strategy</span>
-                </div>
-                <!-- Connector -->
-                <div class="h-px w-16 bg-gradient-to-r from-transparent via-slate-700 to-transparent"></div>
-
-                <div id="agent-writer"
-                    class="flex flex-col items-center gap-2 text-slate-500 border border-transparent p-3 rounded-2xl transition-all">
-                    <div
-                        class="w-8 h-8 rounded-full border border-current flex items-center justify-center text-xs mono-text">
-                        03</div>
-                    <span class="text-[10px] uppercase font-bold tracking-widest text-slate-400">Writing</span>
-                </div>
-            </div>
-
-            <!-- Editor & Blueprint Split View -->
-            <div class="flex-1 flex gap-6 min-h-0 relative z-10">
-                <!-- Blueprint Column -->
-                <div class="w-[380px] shrink-0 glass-panel rounded-2xl p-6 flex flex-col overflow-hidden">
-                    <h2
-                        class="text-[11px] font-bold text-slate-400 mb-6 uppercase tracking-widest bg-white/5 inline-block px-3 py-1 rounded">
-                        Article Outline & Blueprint</h2>
-                    <div id="blueprint-content" class="flex-1 overflow-y-auto pr-2 space-y-3">
-                        <div class="text-slate-600 text-[13px] opacity-70 text-center mt-10 mono-text">Waiting for a
-                            topic to be generated...</div>
-                    </div>
-                </div>
-
-                <!-- Editor Column -->
+            <!-- Main Editor Canvas -->
+            <div class="flex-1 flex flex-col min-h-0 relative glass-panel rounded-3xl overflow-hidden">
                 <div
-                    class="flex-1 glass-panel rounded-2xl p-1 flex flex-col relative overflow-hidden bg-gradient-to-b from-white/[0.03] to-transparent">
-                    <!-- Top Action Bar -->
-                    <div class="h-14 border-b border-white/5 flex items-center justify-between px-6">
-                        <span class="text-[11px] font-bold tracking-widest uppercase text-cyan-400/80 mono-text">Final
-                            Draft Layout</span>
-                        <div class="flex gap-2">
-                            <button id="copy-md-btn" title="Copy as Markdown (Text with formatting symbols)"
-                                class="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] uppercase font-bold tracking-wider transition-colors border border-white/5 shadow-sm">Copy
-                                Markdown</button>
-                            <button id="copy-html-btn" title="Copy as formatted HTML"
-                                class="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] uppercase font-bold tracking-wider transition-colors border border-white/5 shadow-sm">Copy
-                                Rich Text</button>
-                        </div>
-                    </div>
-
-                    <!-- Viewer / Editor -->
-                    <div class="flex-1 p-8 overflow-y-auto relative">
-                        <!-- Read-only HTML render -->
-                        <div id="article-content" class="prose-custom max-w-none">
-                            <div class="h-full flex flex-col items-center justify-center opacity-20 pt-20">
-                                <svg class="w-20 h-20 text-cyan-400 mb-6" fill="none" stroke="currentColor"
-                                    viewBox="0 0 24 24" stroke-width="0.5">
-                                    <path stroke-linecap="round" stroke-linejoin="round"
-                                        d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10">
-                                    </path>
-                                </svg>
-                                <span class="mono-text tracking-widest text-sm uppercase">Standing By</span>
-                            </div>
-                        </div>
-
-                        <!-- Editable Textarea -->
-                        <textarea id="article-editor"
-                            class="w-full h-full min-h-[500px] bg-transparent text-slate-200 mono-text text-[13px] leading-relaxed resize-none outline-none hidden placeholder-slate-700"
-                            spellcheck="false"
-                            placeholder="Your draft will appear here. Edit this box freely..."></textarea>
-                    </div>
-
-                    <!-- Human Feedback Bar -->
-                    <div id="approve-container" class="absolute bottom-6 left-6 right-6 hidden">
-                        <button id="approve-btn"
-                            title="Submit your edits so the AI can learn your writing style for future articles"
-                            class="w-full bg-cyan-500/[0.15] hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 backdrop-blur-xl py-4 rounded-xl text-[12px] font-bold tracking-[0.1em] transition-all uppercase cyber-glow-cyan shadow-xl group">
-                            Save Edits & Improve AI Writing Style
-                            <span class="inline-block ml-2 group-hover:translate-x-1 transition-transform">→</span>
-                        </button>
+                    class="flex items-center justify-between px-8 py-5 shrink-0 border-b border-white/5 bg-[#0F0F11]/50 backdrop-blur-sm z-10">
+                    <div class="text-sm font-semibold text-white">Generated Article</div>
+                    <div class="flex gap-3">
+                        <button id="copy-md-btn" class="btn-outline text-xs">Copy Text</button>
+                        <button id="copy-html-btn" class="btn-outline text-xs">Copy Formatted</button>
                     </div>
                 </div>
+
+                <div class="flex-1 overflow-y-auto px-8 md:px-16 py-8 relative">
+                    <div id="article-content" class="prose-custom max-w-3xl mx-auto h-full">
+                        <div class="h-full flex flex-col items-center justify-center opacity-40">
+                            <svg class="w-8 h-8 text-slate-500 mb-4" fill="none" stroke="currentColor"
+                                viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z">
+                                </path>
+                            </svg>
+                            <span class="text-xs uppercase tracking-widest font-medium text-slate-500">Ready to
+                                write</span>
+                        </div>
+                    </div>
+                    <textarea id="article-editor" spellcheck="false"
+                        class="w-full h-full min-h-[600px] bg-transparent border-none text-slate-300 text-base leading-relaxed resize-none hidden max-w-3xl mx-auto block p-4 rounded-xl focus:bg-white/5 transition-colors"></textarea>
+                </div>
+
+                <div id="approve-container"
+                    class="absolute bottom-0 left-0 right-0 p-6 hidden bg-gradient-to-t from-[#0F0F11] via-[#0F0F11] to-transparent">
+                    <button id="approve-btn" class="w-full max-w-md mx-auto block btn-sleek text-sm">
+                        Save Edits & Improve AI Writing Style
+                    </button>
+                </div>
             </div>
-        </main>
+
+        </div>
     </div>
 
-    <!-- PRE-GENERATION CLARIFICATION MODAL -->
-    <div id="clarify-modal" class="fixed inset-0 z-50 flex items-center justify-center hidden">
-        <!-- Backdrop -->
-        <div class="absolute inset-0 bg-black/60 backdrop-blur-md" id="clarify-backdrop"></div>
 
-        <!-- Modal Content -->
-        <div class="relative w-full max-w-2xl glass-panel bg-white/[0.03] border border-cyan-500/20 rounded-2xl p-8 shadow-[0_0_50px_rgba(34,211,238,0.1)] transform transition-all scale-95 opacity-0"
-            id="clarify-panel">
-            <div class="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-cyan-500 to-magenta-500 rounded-t-2xl"></div>
+    <!-- ==================== MODALS ==================== -->
 
-            <div class="flex items-center gap-4 mb-6">
-                <div
-                    class="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                            d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z">
+    <!-- Blueprint Modal -->
+    <div id="blueprint-modal" class="fixed inset-0 z-[60] flex hidden">
+        <div id="blueprint-backdrop"
+            class="absolute inset-0 bg-black/70 backdrop-blur-md opacity-0 transition-opacity duration-500"></div>
+        <div id="blueprint-panel"
+            class="relative w-full md:w-[400px] bg-[#0F0F11] h-full transform -translate-x-full transition-transform duration-500 flex flex-col shadow-2xl border-r border-white/5 p-8">
+            <div class="flex items-center justify-between mb-8 pb-6 border-b border-white/5">
+                <h2 class="text-xl font-semibold text-white tracking-tight">Article Blueprint</h2>
+                <button id="close-blueprint-btn"
+                    class="text-slate-500 hover:text-[#3b82f6] bg-white/5 hover:bg-white/10 rounded-full p-2 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
                         </path>
                     </svg>
-                </div>
-                <div>
-                    <h2 class="text-xl font-bold text-white tracking-tight">Agent Briefing</h2>
-                    <p class="text-xs text-cyan-400/70 mono-text uppercase tracking-widest mt-1">Provide context for
-                        better results</p>
-                </div>
+                </button>
             </div>
-
-            <div id="clarify-loading" class="py-12 flex flex-col items-center justify-center gap-4">
-                <div class="w-8 h-8 rounded-full border-2 border-cyan-500 border-t-transparent animate-spin"></div>
-                <p class="text-sm text-slate-400 mono-text animate-pulse">Analyzing keyword and generating questions...
-                </p>
-            </div>
-
-            <div id="clarify-form" class="hidden space-y-6">
-                <div id="questions-container" class="space-y-4">
-                    <!-- Questions injected here by JS -->
-                </div>
-
-                <div class="flex justify-end gap-3 pt-4 border-t border-white/10">
-                    <button id="clarify-skip-btn"
-                        class="px-6 py-2.5 rounded-xl border border-white/10 text-slate-400 text-sm font-medium hover:bg-white/5 hover:text-white transition-colors">
-                        Skip & Generate
-                    </button>
-                    <button id="clarify-submit-btn"
-                        class="px-6 py-2.5 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-sm font-bold tracking-wide hover:bg-cyan-500/30 hover:shadow-[0_0_20px_rgba(34,211,238,0.2)] transition-all">
-                        SUBMIT ANSWERS
-                    </button>
+            <div id="blueprint-content" class="flex-1 overflow-y-auto space-y-4 pr-2 text-sm text-[#8B8B93]">
+                <div class="flex flex-col items-center justify-center h-40 opacity-40">
+                    <p class="text-xs font-medium uppercase tracking-wider text-center">No strategy mapped yet</p>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- AI BRAIN MODAL -->
-    <div id="brain-modal" class="fixed inset-0 z-[100] flex justify-end hidden">
-        <div id="brain-backdrop"
-            class="absolute inset-0 bg-black/60 backdrop-blur-md opacity-0 transition-opacity duration-300"></div>
-        <div id="brain-panel"
-            class="relative w-full max-w-md h-full bg-[#08080a] border-l border-white/10 shadow-2xl transform translate-x-full transition-transform duration-500 flex flex-col">
-            <div class="p-8 border-b border-white/5 flex items-center justify-between">
-                <div>
-                    <h2 class="text-xl font-bold text-white tracking-tight flex items-center gap-3">
-                        <span class="p-2 rounded-lg bg-cyan-500/10 text-cyan-400">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5s3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253">
-                                </path>
-                            </svg>
-                        </span>
-                        Neural Memory Bank
-                    </h2>
-                    <p class="text-[10px] text-slate-500 uppercase tracking-widest mt-2 ml-1">Persistent Writing
-                        Constraints</p>
+    <!-- Clarify / Quick Questions -->
+    <div id="clarify-modal" class="fixed inset-0 z-[70] flex items-center justify-center hidden p-4">
+        <div id="clarify-backdrop" class="absolute inset-0 bg-black/70 backdrop-blur-md transition-opacity"></div>
+        <div id="clarify-panel"
+            class="relative w-full max-w-2xl bg-[#0F0F11] border border-white/5 rounded-3xl shadow-2xl transform transition-all scale-95 opacity-0 p-10 overflow-hidden">
+
+            <h2 class="text-2xl font-semibold text-white mb-2">Quick Questions</h2>
+            <p class="text-[#8B8B93] text-sm mb-10">Help the AI focus on what matters to you.</p>
+
+            <div id="clarify-loading" class="py-16 flex flex-col items-center">
+                <div class="w-8 h-8 rounded-full border-2 border-[#8b5cf6] border-t-transparent animate-spin mb-4">
                 </div>
-                <button id="close-brain-btn" class="text-slate-500 hover:text-white transition-colors">
+                <div class="text-xs uppercase font-semibold text-slate-500 tracking-wider">Analyzing Topic...</div>
+            </div>
+
+            <div id="clarify-form" class="hidden flex flex-col gap-8 max-h-[60vh] overflow-y-auto pr-2">
+                <div id="questions-container" class="space-y-6"></div>
+                <div
+                    class="flex flex-col sm:flex-row items-center gap-4 justify-end pt-6 border-t border-white/5 mt-4 sticky bottom-0 bg-[#0F0F11] pb-2">
+                    <button id="clarify-skip-btn"
+                        class="text-sm font-semibold text-slate-500 hover:text-[#3b82f6] transition-colors px-4">Skip
+                        Questions</button>
+                    <button id="clarify-submit-btn" class="btn-sleek text-sm px-6 py-2.5 w-full sm:w-auto">Submit
+                        Answers</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Style Memory -->
+    <div id="brain-modal" class="fixed inset-0 z-[80] flex hidden">
+        <div id="brain-backdrop"
+            class="absolute inset-0 bg-black/70 backdrop-blur-md opacity-0 transition-opacity duration-500"></div>
+        <div id="brain-panel"
+            class="relative w-full md:w-[500px] ml-auto h-full bg-[#0F0F11] transform translate-x-full transition-transform duration-500 flex flex-col shadow-2xl p-8 md:p-10 border-l border-white/5">
+            <div class="flex items-center justify-between mb-2">
+                <h2 class="text-2xl font-semibold text-white">Style Memory</h2>
+                <button id="close-brain-btn"
+                    class="text-slate-500 hover:text-[#3b82f6] bg-white/5 hover:bg-white/10 rounded-full p-2 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
+                        </path>
+                    </svg>
+                </button>
+            </div>
+            <p class="text-[#8B8B93] text-sm mb-10 pr-6">The AI learns your writing preferences as you edit generated
+                articles. You can also add rules manually.</p>
+
+            <div class="flex items-center gap-3 pb-6 border-b border-white/5 mb-6">
+                <input id="new-rule-input" type="text"
+                    class="flex-1 bg-black/50 border border-white/10 rounded-xl text-base text-white placeholder-slate-600 py-3 px-4 focus:bg-[#0F0F11] focus:border-[#3b82f6] transition-all font-medium"
+                    placeholder="E.g. Use a friendly, conversational tone">
+                <button id="add-rule-btn" class="btn-sleek py-3 px-6">Add</button>
+            </div>
+
+            <div id="rules-container" class="flex-1 overflow-y-auto space-y-4 pr-2"></div>
+        </div>
+    </div>
+
+    <!-- Workspace Partition -->
+    <div id="workspace-modal-overlay" class="fixed inset-0 z-[90] flex items-center justify-center hidden p-4">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-md"></div>
+        <div id="workspace-modal-panel"
+            class="relative w-full max-w-md bg-[#0F0F11] border border-white/5 rounded-3xl shadow-2xl transform scale-95 opacity-0 transition-all duration-300 p-10">
+            <h2 class="text-2xl font-semibold text-white mb-2 mt-2">New Workspace</h2>
+            <p class="text-[#8B8B93] text-sm mb-8">Group your knowledge and style rules into isolated projects.</p>
+
+            <input id="modal-workspace-input" type="text"
+                class="w-full bg-black/50 border border-white/10 rounded-xl text-lg text-white py-3 px-5 mb-8 focus:bg-[#0F0F11] focus:border-[#3b82f6] transition-all font-medium"
+                placeholder="E.g. Tech Blog">
+
+            <div class="flex items-center justify-end gap-4">
+                <button id="workspace-cancel-btn"
+                    class="text-sm font-semibold text-slate-500 hover:text-[#3b82f6] transition-colors px-4">Cancel</button>
+                <button id="workspace-create-btn" class="btn-sleek text-sm w-full sm:w-auto px-6 py-2.5">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cartographer -->
+    <div id="cartographer-modal" class="fixed inset-0 z-[60] flex hidden">
+        <div id="cartographer-backdrop"
+            class="absolute inset-0 bg-black/70 backdrop-blur-md opacity-0 transition-opacity duration-500"></div>
+        <div id="cartographer-panel"
+            class="relative w-full md:w-[800px] h-full bg-[#0F0F11] transform -translate-x-full transition-transform duration-500 flex flex-col shadow-2xl p-8 md:p-12 border-r border-white/5">
+
+            <div class="flex items-center justify-between mb-4 shrink-0">
+                <h2 class="text-3xl font-semibold text-white">Cartographer</h2>
+                <button id="close-cartographer-btn"
+                    class="text-slate-500 hover:text-[#3b82f6] bg-white/5 hover:bg-white/10 rounded-full p-2.5 transition-colors">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
                         </path>
@@ -447,77 +573,47 @@
                 </button>
             </div>
 
-            <div class="p-8 space-y-4 bg-white/[0.01]">
-                <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Add Manual
-                    Constraint</label>
-                <div class="flex gap-2">
-                    <input id="new-rule-input" type="text"
-                        class="flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white outline-none focus:border-cyan-500/50 transition-all"
-                        placeholder="E.g. Never use the word 'delve'">
-                    <button id="add-rule-btn"
-                        class="bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 px-5 rounded-xl text-lg transition-all border border-cyan-500/20">+</button>
+            <p class="text-[#8B8B93] text-[15px] mb-10 max-w-xl pr-4">Enter a high-level business topic. DeepSeek will
+                autonomously generate a perfectly mapped Pillar & Spoke SEO strategy based on search volume intent.</p>
+
+            <div class="flex flex-col gap-4 mb-10 shrink-0 pb-10 border-b border-white/5">
+                <div class="flex flex-col md:flex-row items-center gap-4">
+                    <input id="cartographer-topic-input" type="text"
+                        class="flex-1 w-full bg-black/50 border border-white/10 rounded-xl text-lg text-white placeholder-slate-600 py-4 px-6 focus:bg-[#0F0F11] focus:border-[#3b82f6] transition-all font-medium"
+                        placeholder="E.g. Cloud Security">
+                    <button id="cartographer-map-btn"
+                        class="w-full md:w-auto btn-sleek text-base px-8 py-4 shrink-0">Build Strategy
+                        Map</button>
                 </div>
+                <input id="cartographer-niche-input" type="text"
+                    class="w-full bg-black/50 border border-white/10 rounded-xl text-lg text-white placeholder-slate-600 py-4 px-6 focus:bg-[#0F0F11] focus:border-[#3b82f6] transition-all font-medium"
+                    placeholder="Niche/Industry (e.g., B2B SaaS for CTOs or Local Plumbing Business)">
             </div>
 
-            <div id="rules-container" class="flex-1 overflow-y-auto p-8 space-y-4">
-                <!-- Rules injected here -->
-            </div>
-
-            <div class="p-8 bg-black/40 border-t border-white/5">
-                <p class="text-[10px] text-slate-500 leading-relaxed italic">
-                    Note: Rules are automatically generated when you save edits to an article, but can be manually
-                    pruned or added here.
-                </p>
-            </div>
-        </div>
-    </div>
-
-    <!-- WORKSPACE CREATION MODAL -->
-    <div id="workspace-modal-overlay"
-        class="fixed inset-0 z-[110] flex items-center justify-center hidden bg-black/80 backdrop-blur-md">
-        <div id="workspace-modal-panel"
-            class="relative w-full max-w-sm bg-[#0a0a0c] border border-white/10 rounded-2xl p-8 shadow-[0_0_60px_rgba(217,70,239,0.1)] transform transition-all duration-300 scale-95 opacity-0">
-            <div class="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-fuchsia-500 to-cyan-500 rounded-t-2xl"></div>
-
-            <div class="flex items-center gap-3 mb-6">
+            <div id="cartographer-loading" class="hidden flex-1 flex flex-col items-center justify-center pt-8">
                 <div
-                    class="w-10 h-10 rounded-xl bg-fuchsia-500/10 border border-fuchsia-500/30 flex items-center justify-center text-fuchsia-400">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4">
-                        </path>
-                    </svg>
+                    class="w-10 h-10 rounded-full border-[3px] border-[#8b5cf6] border-t-transparent animate-spin mb-6">
                 </div>
-                <div>
-                    <h2 class="text-lg font-bold text-white tracking-tight">New Workspace</h2>
-                    <p class="text-[10px] text-fuchsia-400/70 mono-text uppercase tracking-widest mt-0.5">Isolated AI
-                        memory partition</p>
-                </div>
+                <div class="text-sm font-semibold text-slate-500" id="cartographer-loading-text">Analyzing Search
+                    Intent...</div>
+                <div class="text-xs text-slate-600 mt-2">DeepSeek is traversing the semantic topography. Keep the page
+                    open.</div>
             </div>
 
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Workspace
-                        Name</label>
-                    <input id="modal-workspace-input" type="text" maxlength="40"
-                        class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 outline-none focus:border-fuchsia-500/50 focus:bg-white/[0.08] transition-all"
-                        placeholder="e.g. Health Blog, SaaS Startup">
-                </div>
-                <div class="flex justify-end gap-3 pt-2">
-                    <button id="workspace-cancel-btn"
-                        class="px-5 py-2.5 rounded-xl border border-white/10 text-slate-400 text-sm font-medium hover:bg-white/5 hover:text-white transition-colors">
-                        Cancel
-                    </button>
-                    <button id="workspace-create-btn"
-                        class="px-5 py-2.5 rounded-xl bg-fuchsia-500/20 border border-fuchsia-500/40 text-fuchsia-300 text-sm font-bold tracking-wide hover:bg-fuchsia-500/30 hover:shadow-[0_0_20px_rgba(217,70,239,0.2)] transition-all">
-                        CREATE
-                    </button>
-                </div>
+            <div id="cartographer-results" class="flex-1 overflow-y-auto space-y-10 hidden pr-4"></div>
+
+            <div id="cartographer-empty" class="flex-1 flex flex-col items-center justify-center opacity-40">
+                <svg class="w-16 h-16 text-slate-600 mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                        d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7">
+                    </path>
+                </svg>
+                <div class="text-sm font-semibold text-slate-500 mb-2">Ready to explore</div>
             </div>
         </div>
     </div>
 
-    <!-- JS -->
-    <script src="/static/js/console.js?v=5.0"></script>
+    <script src="/static/js/console.js?v=9.0"></script>
 </body>
 
 </html>

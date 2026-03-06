@@ -116,3 +116,32 @@ class WorkspaceResponse(BaseModel):
     slug: str
     
     model_config = {"from_attributes": True}
+
+
+class CampaignCreateRequest(BaseModel):
+    seed_topic: str
+    profile_name: str = "default"
+    niche_context: str = ""
+
+class SpokeKeyword(BaseModel):
+    keyword: str
+    kd: int
+    vol: int
+    intent: str
+    angle: str
+
+class PillarKeyword(BaseModel):
+    keyword: str
+    kd: int
+    vol: int
+
+class CampaignResponse(BaseModel):
+    id: int
+    profile_name: str
+    seed_topic: str
+    pillar: PillarKeyword
+    spokes: list[SpokeKeyword]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+

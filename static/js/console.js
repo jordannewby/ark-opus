@@ -153,6 +153,35 @@ function updateSEOAudit(content) {
 // -------------------------------------------------------------------------
 // MODAL & CLARIFICATION LOGIC
 // -------------------------------------------------------------------------
+
+// Blueprint Modal Handlers
+const blueprintModal = document.getElementById('blueprint-modal');
+const openBlueprintBtn = document.getElementById('open-blueprint-btn');
+const closeBlueprintBtn = document.getElementById('close-blueprint-btn');
+const blueprintBackdrop = document.getElementById('blueprint-backdrop');
+const blueprintPanel = document.getElementById('blueprint-panel');
+
+if (openBlueprintBtn && blueprintModal) {
+    openBlueprintBtn.addEventListener('click', () => {
+        blueprintModal.classList.remove('hidden');
+        setTimeout(() => {
+            blueprintBackdrop.classList.remove('opacity-0');
+            blueprintPanel.classList.remove('-translate-x-full');
+        }, 10);
+    });
+
+    const closeBlueprint = () => {
+        blueprintBackdrop.classList.add('opacity-0');
+        blueprintPanel.classList.add('-translate-x-full');
+        setTimeout(() => {
+            blueprintModal.classList.add('hidden');
+        }, 500);
+    };
+
+    closeBlueprintBtn.addEventListener('click', closeBlueprint);
+    blueprintBackdrop.addEventListener('click', closeBlueprint);
+}
+
 const modalEls = {
     modal: document.getElementById('clarify-modal'),
     panel: document.getElementById('clarify-panel'),
@@ -320,6 +349,21 @@ async function executeGeneration(userContext) {
                                 case 'phase3_start':
                                     updateAgentUI('writer');
                                     terminalLog("WRITER", payload.message, "#22d3ee");
+                                    // Prepare editor for streaming
+                                    els.articlePane.classList.add('hidden');
+                                    const editorPrep = document.getElementById('article-editor');
+                                    editorPrep.value = "";
+                                    editorPrep.classList.remove('hidden');
+                                    break;
+                                case 'content':
+                                    const streamEditor = document.getElementById('article-editor');
+                                    if (payload.data === "RETRY_CLEAR") {
+                                        streamEditor.value = "";
+                                    } else {
+                                        streamEditor.value += payload.data;
+                                        // Auto-scroll editor if user hasn't scrolled up
+                                        streamEditor.scrollTop = streamEditor.scrollHeight;
+                                    }
                                     break;
                                 case 'complete':
                                     renderArticle(payload.post);
@@ -580,3 +624,199 @@ wsEls.input.addEventListener('keydown', (e) => {
 
 // Run Initial Sync
 syncWorkspaces();
+
+// -------------------------------------------------------------------------
+// CARTOGRAPHER LOGIC
+// -------------------------------------------------------------------------
+
+const cartEls = {
+    modal: document.getElementById('cartographer-modal'),
+    backdrop: document.getElementById('cartographer-backdrop'),
+    panel: document.getElementById('cartographer-panel'),
+    openBtn: document.getElementById('open-cartographer-btn'),
+    closeBtn: document.getElementById('close-cartographer-btn'),
+    input: document.getElementById('cartographer-topic-input'),
+    nicheInput: document.getElementById('cartographer-niche-input'),
+    mapBtn: document.getElementById('cartographer-map-btn'),
+    loading: document.getElementById('cartographer-loading'),
+    results: document.getElementById('cartographer-results'),
+    empty: document.getElementById('cartographer-empty')
+};
+
+function toggleCartographer(show) {
+    if (show) {
+        cartEls.modal.classList.remove('hidden');
+        setTimeout(() => {
+            cartEls.backdrop.classList.remove('opacity-0');
+            cartEls.panel.classList.remove('-translate-x-full');
+        }, 10);
+        loadCampaigns();
+    } else {
+        cartEls.backdrop.classList.add('opacity-0');
+        cartEls.panel.classList.add('-translate-x-full');
+        setTimeout(() => cartEls.modal.classList.add('hidden'), 500);
+    }
+}
+
+cartEls.openBtn.addEventListener('click', () => toggleCartographer(true));
+cartEls.closeBtn.addEventListener('click', () => toggleCartographer(false));
+cartEls.backdrop.addEventListener('click', () => toggleCartographer(false));
+
+els.profileSelect.addEventListener('change', () => {
+    if (!cartEls.modal.classList.contains('hidden')) {
+        loadCampaigns();
+    }
+});
+
+function renderCampaign(campaign) {
+    let html = `
+    <div class="bg-black/40 border border-indigo-500/20 rounded-2xl overflow-hidden mb-8 shadow-lg">
+        <!-- Pillar -->
+        <div class="p-6 bg-indigo-900/10 border-b border-indigo-500/20 flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <div class="w-12 h-12 rounded-xl bg-indigo-500/20 flex items-center justify-center border border-indigo-500/40 text-indigo-400">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                </div>
+                <div>
+                    <h3 class="text-xs uppercase tracking-widest text-indigo-400 font-bold mb-1">Pillar Core</h3>
+                    <div class="text-xl text-white font-bold">${campaign.pillar.keyword.toUpperCase()}</div>
+                </div>
+            </div>
+            <div class="flex gap-4">
+                <div class="text-right">
+                    <div class="text-[10px] uppercase text-slate-500 tracking-widest">Diff</div>
+                    <div class="text-white font-mono font-bold">${campaign.pillar.kd}</div>
+                </div>
+                <div class="text-right">
+                    <div class="text-[10px] uppercase text-slate-500 tracking-widest">Vol</div>
+                    <div class="text-emerald-400 font-mono font-bold">${campaign.pillar.vol.toLocaleString()}</div>
+                </div>
+            </div>
+        </div>
+        <!-- Spokes -->
+        <div class="p-6 relative space-y-4">
+            <div class="absolute left-10 top-0 bottom-6 w-px bg-indigo-500/10 line-tree"></div>`;
+
+    if (campaign.spokes && campaign.spokes.length > 0) {
+        campaign.spokes.forEach(spoke => {
+            html += `
+            <div class="relative pl-12">
+                <!-- Connector Line -->
+                <div class="absolute left-10 top-1/2 w-4 h-px bg-indigo-500/20 -translate-y-1/2 line-branch"></div>
+                
+                <div class="bg-white/[0.02] border border-white/5 hover:border-indigo-500/30 transition-colors rounded-xl p-4 flex items-center justify-between group">
+                    <div>
+                        <div class="flex items-center gap-3 mb-1">
+                            <span class="text-sm font-bold text-slate-200 group-hover:text-indigo-300 transition-colors">${spoke.keyword}</span>
+                            <span class="text-[10px] px-2 py-0.5 rounded bg-white/5 border border-white/10 uppercase tracking-widest text-slate-400 font-mono">${spoke.intent}</span>
+                        </div>
+                        <p class="text-xs text-slate-500 leading-snug">${spoke.angle}</p>
+                    </div>
+                    <div class="flex items-center gap-6">
+                        <div class="text-right whitespace-nowrap hidden sm:block">
+                            <div class="text-xs font-mono font-bold ${spoke.kd > 45 ? 'text-rose-400' : 'text-emerald-400'}">KD: ${spoke.kd}</div>
+                            <div class="text-xs font-mono font-bold text-slate-400">VOL: ${spoke.vol.toLocaleString()}</div>
+                        </div>
+                        <button class="generate-spoke-btn shrink-0 w-10 h-10 rounded-full bg-indigo-500/10 hover:bg-indigo-500 border border-indigo-500/30 flex items-center justify-center text-indigo-400 hover:text-white transition-all shadow-[0_0_10px_rgba(99,102,241,0.1)] hover:shadow-[0_0_20px_rgba(99,102,241,0.5)]" data-keyword="${spoke.keyword}" title="Generate Article for this Spoke">
+                            <svg class="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>`;
+        });
+    }
+
+    html += `</div></div>`;
+    return html;
+}
+
+async function loadCampaigns() {
+    try {
+        const profile = els.profileSelect ? els.profileSelect.value : "default";
+        const res = await fetch('/campaigns?profile_name=' + profile);
+        if (!res.ok) throw new Error("Failed to load campaigns");
+        const campaigns = await res.json();
+
+        if (campaigns.length === 0) {
+            cartEls.results.innerHTML = "";
+            cartEls.results.classList.add('hidden');
+            cartEls.empty.classList.remove('hidden');
+            cartEls.loading.classList.add('hidden');
+            return;
+        }
+
+        cartEls.empty.classList.add('hidden');
+        cartEls.loading.classList.add('hidden');
+        cartEls.results.classList.remove('hidden');
+
+        let allHtml = "";
+        campaigns.forEach(c => allHtml += renderCampaign(c));
+        cartEls.results.innerHTML = allHtml;
+
+        attachSpokeListeners();
+    } catch (e) {
+        console.error("Cartographer Load Error:", e);
+    }
+}
+
+cartEls.mapBtn.addEventListener('click', async () => {
+    const topic = cartEls.input.value.trim();
+    if (!topic) return;
+
+    cartEls.mapBtn.disabled = true;
+    cartEls.empty.classList.add('hidden');
+    cartEls.results.classList.add('hidden');
+    cartEls.loading.classList.remove('hidden');
+
+    try {
+        const profile = els.profileSelect ? els.profileSelect.value : "default";
+        const nicheContext = cartEls.nicheInput ? cartEls.nicheInput.value.trim() : "";
+        const res = await fetch('/campaigns/plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                seed_topic: topic,
+                profile_name: profile,
+                niche_context: nicheContext
+            })
+        });
+
+        if (!res.ok) throw new Error("Failed to map campaign");
+        const campaign = await res.json();
+
+        // Setup UI for new campaign block on top
+        cartEls.input.value = "";
+        cartEls.loading.classList.add('hidden');
+        cartEls.results.classList.remove('hidden');
+
+        // Re-load all to ensure exact rendering ordering (could also prepend html)
+        await loadCampaigns();
+
+    } catch (e) {
+        console.error("Cartographer Map Error:", e);
+        cartEls.loading.classList.add('hidden');
+        cartEls.empty.classList.remove('hidden');
+        alert("Failed to map campaign: " + e.message);
+    } finally {
+        cartEls.mapBtn.disabled = false;
+    }
+});
+
+function attachSpokeListeners() {
+    const btns = cartEls.results.querySelectorAll('.generate-spoke-btn');
+    btns.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const kw = e.currentTarget.getAttribute('data-keyword');
+            if (!kw) return;
+
+            // Pop main main generation UI context
+            toggleCartographer(false);
+
+            els.keywordInput.value = kw;
+            // Optionally, scroll to top of UI
+
+            // Auto trigger the pipeline
+            els.generateBtn.click();
+        });
+    });
+}

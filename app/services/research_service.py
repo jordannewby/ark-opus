@@ -70,7 +70,7 @@ class ResearchAgent:
         if not DATAFORSEO_LOGIN or not DATAFORSEO_PASSWORD:
             raise ValueError("DataForSEO credentials missing from environment.")
 
-    async def research(self, keyword: str, niche: str = "default", user_context: str = "", profile_name: str = "default") -> dict:
+    async def research(self, keyword: str, niche: str = "default", user_context: str = "", profile_name: str = "default", mcp_session=None) -> dict:
         """Run full research pipeline for *keyword* via localized MCP server."""
         niche = niche.strip().lower().replace(" ", "-") if niche and niche != "default" else "default"
         cached = self._get_cached(keyword)
@@ -82,19 +82,6 @@ class ResearchAgent:
             if DEBUG_MODE:
                 print(f"[DEBUG] Cache Hit! Returning data for {keyword}")
             return cached
-
-        # Step A: Initialize DataForSEO MCP Server via sub-process
-        env = os.environ.copy()
-        if "PATH" not in env:
-            env["PATH"] = os.defpath
-        env["DATAFORSEO_USERNAME"] = DATAFORSEO_LOGIN
-        env["DATAFORSEO_PASSWORD"] = DATAFORSEO_PASSWORD
-        
-        server_params = StdioServerParameters(
-            command="npx",
-            args=["-y", "dataforseo-mcp-server"],
-            env=env
-        )
         
         # Step B: Exa discovery is now handled by R1 via native tools (Scout & Extract)
         exa_results = []
@@ -103,15 +90,23 @@ class ResearchAgent:
         from ..settings import DEBUG_MODE
         
         if DEBUG_MODE:
-            print(f"\n[DEBUG] Spinning up ephemeral MCP Subprocess for DataForSEO...")
+            print(f"\n[DEBUG] Using global persistent MCP Session...")
             
         executed_tools = []
         exa_queries_log: list[str] = []
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
+        
+        # We use a dummy context to avoid a massive 200-line git diff of indentation
+        from contextlib import asynccontextmanager
+        @asynccontextmanager
+        async def dummy_context():
+            yield mcp_session
+            
+        async with dummy_context() as _:
+            async with dummy_context() as session:
+                if not session:
+                    raise ValueError("Global MCP Session not initialized")
                 if DEBUG_MODE:
-                    print(f"[DEBUG] MCP Server Initialized successfully.")
+                    print(f"[DEBUG] MCP Session attached successfully.")
                 
                 # Fetch available DataForSEO tools
                 tools_response = await session.list_tools()
