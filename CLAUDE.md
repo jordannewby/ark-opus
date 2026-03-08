@@ -5,7 +5,7 @@
 
 ## Key Paths
 - `app/main.py` — FastAPI app, `/generate` SSE endpoint, `/posts/{id}/approve`, `/clarify`, `/rules`, `/workspaces`, `/campaigns/plan`, `/campaigns`
-- `app/services/` — All agents: briefing_agent, research_service, psychology_agent, writer_service, feedback_service, research_intel_service, cartographer_service
+- `app/services/` — All agents: briefing_agent, research_service, psychology_agent, writer_service, readability_service, feedback_service, research_intel_service, cartographer_service
 - `app/models.py` — ORM models: `Post`, `UserStyleRule`, `ResearchCache`, `Workspace`, `ResearchRun`, `NichePlaybook`, `ContentCampaign`
 - `app/schemas.py` — Pydantic schemas (includes `WorkspaceCreate`, `WorkspaceResponse`, `StyleRuleCreate`, `ResearchRunCapture`, `NichePlaybookResponse`, `CampaignResponse`)
 - `app/services/prompts/` — LLM prompt templates (writer.md, persuasion.md)
@@ -23,6 +23,7 @@
 - **Playbook Boundaries** — Niche playbooks are injected within `<niche_playbook>` XML tags with explicit instruction to DeepSeek-R1 to use them ONLY for strategic patterns, NOT past topic research.
 - **Frontend State Management** — Global variables (`lastGeneratedMarkdown`, `currentPostId`, `currentQuestions`) are cleared before each generation to prevent UI artifacts from previous runs.
 - **Research Intelligence** — ResearchAgent self-improves via a 4-phase loop: Capture ($0) → Recall (~200 tokens) → Reinforce ($0 on /approve) → Distill (~$0.001/10 runs via Gemini Flash). Niche playbooks are scoped by `(profile_name, niche)`.
+- **Readability Enforcement** — WriterService enforces 5th-grade readability (target ≤5.9) via dual-gate validation: SEO structure first, then composite readability scoring (ARI primary, Coleman-Liau secondary, Flesch-Kincaid cross-check). Max 5 iterative rewrites. Zero API cost. READABILITY_DIRECTIVE injected dynamically (never modifies writer.md).
 - **API keys** — ANTHROPIC_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY, EXA_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD (in .env only)
 
 ## NEVER

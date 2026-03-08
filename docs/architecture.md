@@ -37,11 +37,13 @@ Load this file when working on pipeline logic, agent behavior, or the workspace 
 
 ### Phase 3 — WriterService (`app/services/writer_service.py`)
 - **Model**: `claude-3-5-sonnet-20241022` via native `anthropic` SDK
-- **Logic**: Operates in an **iterative SEO loop** (max 3 attempts). Each draft is validated by `verify_seo_score`. If validation fails, feedback is injected into the next attempt's prompt.
-- **SEO Validation**: Static method checks for word count (min 1500), H2 count (min 5), list/table density (min 3 blocks), and Information Gain Density (min 2.0). 
-- **Prompt**: `app/services/prompts/writer.md` — Anti-AI-slop rules (bans: "delve", "tapestry", "crucial", corporate fluff) + dynamic SEO length directive (2,000-2,500 words).
+- **Logic**: Operates in an **iterative dual-gate loop** (max 5 attempts). Each draft is validated by two sequential gates:
+  1. **Gate 1 (SEO)**: `verify_seo_score` checks word count (min 1500), H2 count (min 5), list/table density (min 3 blocks), and Information Gain Density (min 2.0)
+  2. **Gate 2 (Readability)**: `verify_readability` enforces 5th-grade reading level (target ≤5.9) using composite scoring: ARI (primary), Coleman-Liau (secondary), Flesch-Kincaid (cross-check). Masks SEO keywords during scoring to prevent inflation.
+- **Readability Service** (`app/services/readability_service.py`): Zero-cost pure Python implementation. `READABILITY_DIRECTIVE` injected dynamically into prompt (never modifies `writer.md`). Per-sentence analysis identifies complex sentences. Typical convergence: 1-2 passes for SEO, 1-2 passes for readability.
+- **Prompt**: `app/services/prompts/writer.md` — Anti-AI-slop rules (bans: "delve", "tapestry", "crucial", corporate fluff) + dynamic SEO length directive (2,000-2,500 words) + `READABILITY_DIRECTIVE` (5th grade, short sentences, active voice).
 - **Input**: Psychology blueprint + UserStyleRules from DB (scoped to active workspace)
-- **Output**: 2,500+ word Markdown article streamed in real-time. Yields `debug` events for iteration tracking and `content` events for prose. 
+- **Output**: 2,500+ word Markdown article streamed in real-time. Yields `debug` events for iteration tracking (SEO pass/fail, Readability pass/fail with grade metrics) and `content` events for prose. Yields `RETRY_CLEAR` on validation failure to reset editor. 
 
 ### Phase 6 — FeedbackAgent (`app/services/feedback_service.py`)
 - **Model**: `gemini-2.5-flash`
@@ -155,6 +157,7 @@ Connection configured in `app/database.py` — Neon PostgreSQL with `pool_pre_pi
 ## Anti-AI-Slop Enforcement
 
 - Banned words list in `app/services/prompts/writer.md` (delve, tapestry, crucial, foster, etc.)
+- **5th-grade readability enforcement** via `readability_service.py` — composite scoring (ARI, Coleman-Liau, Flesch-Kincaid) with keyword masking. Enforces short sentences (10-14 words), active voice, immediate technical term explanations.
 - PAS framework enforced via `app/services/prompts/persuasion.md`
 - Identity Hooks target reader psychology via specific audience archetypes
 - UserStyleRules from FeedbackAgent mathematically converge on the user's exact writing style over runs
