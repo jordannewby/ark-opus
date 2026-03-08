@@ -19,6 +19,9 @@
 - **Zero Hallucination** — enforce strict tool schemas in ResearchAgent; hallucinated tools trigger an error block to force R1 self-correction
 - **Iterative Tooling** — ResearchAgent runs an iterative loop (max 5) allowing R1 to mix DataForSEO MCP tools with native Exa tools (`exa_scout_search`, `exa_extract_full_text`)
 - **Multi-tenant** — all DB queries must filter by `profile_name` (workspace scope)
+- **Cache Isolation** — ResearchCache uses composite unique key `(keyword, profile_name, niche)` to prevent cross-workspace/niche pollution. All cache lookups require exact match on all three fields.
+- **Playbook Boundaries** — Niche playbooks are injected within `<niche_playbook>` XML tags with explicit instruction to DeepSeek-R1 to use them ONLY for strategic patterns, NOT past topic research.
+- **Frontend State Management** — Global variables (`lastGeneratedMarkdown`, `currentPostId`, `currentQuestions`) are cleared before each generation to prevent UI artifacts from previous runs.
 - **Research Intelligence** — ResearchAgent self-improves via a 4-phase loop: Capture ($0) → Recall (~200 tokens) → Reinforce ($0 on /approve) → Distill (~$0.001/10 runs via Gemini Flash). Niche playbooks are scoped by `(profile_name, niche)`.
 - **API keys** — ANTHROPIC_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY, EXA_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD (in .env only)
 

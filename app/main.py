@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager, AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from .database import Base, engine, get_db
+from .database import Base, engine, get_db, migrate_research_cache
 from .models import Post, ResearchRun, UserStyleRule, Workspace
 from .schemas import (
     BlueprintResponse,
@@ -35,6 +35,7 @@ from .schemas import (
 from .services.research_service import ResearchAgent
 from .services.cartographer_service import CartographerService
 
+migrate_research_cache()
 Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager

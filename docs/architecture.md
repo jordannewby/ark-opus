@@ -22,12 +22,13 @@ Load this file when working on pipeline logic, agent behavior, or the workspace 
 - **Models**: `deepseek-reasoner` (DeepSeek-R1) for agentic tool decisions
 - **Tools**: DataForSEO MCP server + Native Exa.ai tools (`exa_scout_search`, `exa_extract_full_text`)
 - **Agentic Logic**: DeepSeek-R1 runs in an **iterative loop** (max 5 iterations). It autonomously orchestrates both MCP tools (Keyword Ideas, Live SERP, etc.) and native Exa tools to scout and extract full article bodies (truncated to 20,000 chars for context safety).
-- **Niche Playbook Injection**: Before the agentic loop, `_get_niche_playbook()` retrieves distilled or heuristic intelligence for the current `(profile_name, niche)` and injects it into R1's prompt (~200 extra tokens). Omitted entirely on cold start.
+- **Niche Playbook Injection**: Before the agentic loop, `_get_niche_playbook()` retrieves distilled or heuristic intelligence for the current `(profile_name, niche)` and injects it into R1's prompt (~200 extra tokens) wrapped in `<niche_playbook>` XML tags. A **CRITICAL INSTRUCTION** explicitly directs R1 to use the playbook ONLY for strategic patterns (tool sequence, KD thresholds, audience insights) and NOT to research past topics mentioned within. Omitted entirely on cold start.
 - **Fallback / Safety**: Circuit breaker forces output at 5 iterations. Hallucinated tools return a simulated error to allow R1 to self-correct.
 - **Opportunity Score Algorithm**: Filters semantic entities by Volume, CPC, KD — discards any keyword with KD > 65
 - **Output**: Stripped "Information Gap" — what Page 1 competitors missed
 - **Telemetry Capture**: After each run, `_capture_run_telemetry()` stores tool sequence, KD stats, Exa queries, entity clusters, and info gap into `ResearchRun`. Triggers distillation check.
 - **Noise filter**: `_strip_webhook_noise` removes large DataForSEO webhook payloads from MCP schemas before passing to R1
+- **Cache Strategy**: ResearchCache enforces strict multi-tenant isolation via composite unique constraint `(keyword, profile_name, niche)`. Cache lookups require exact match on all three fields. Existing entries are checked for expiration (default 24h TTL) and deleted if stale. Migration adds `profile_name` and `niche` columns to legacy cache entries with `'default'` values.
 
 ### Phase 2 — PsychologyAgent (`app/services/psychology_agent.py`)
 - **Model**: `deepseek-chat` (DeepSeek-V3)
@@ -76,6 +77,54 @@ A closed-loop system that makes the ResearchAgent self-improving across runs. Fo
 
 ---
 
+## State Management & Bleed Prevention
+
+Ares Engine implements multi-layered state isolation to prevent topic bleed across keyword generations:
+
+### Backend Cache Isolation
+- **ResearchCache Table**: Composite unique key `(keyword, profile_name, niche)` enforces strict workspace and niche scoping
+- **Cache Lookup**: `_get_cached(keyword, profile_name, niche)` in `research_service.py` requires exact match on all three fields
+- **Cache Save**: `_save_cache(keyword, profile_name, niche, result)` upserts with full composite key
+- **Migration**: `migrate_research_cache()` in `app/database.py` adds `profile_name` and `niche` columns to existing cache entries with `'default'` values
+
+### Playbook Topic Boundaries
+- **XML Wrapper**: Niche playbooks injected within `<niche_playbook>` tags in R1 prompt
+- **Critical Instruction**: Explicit direction to DeepSeek-R1: "Use playbook STRICTLY for tone, audience insights, and strategic style. DO NOT research past topics. Focus EXCLUSIVELY on current Target Keyword: '{keyword}'"
+- **Location**: `_build_agentic_prompt()` method in `research_service.py` (lines ~902-911)
+
+### Frontend State Clearing
+- **Global Variables**: `lastGeneratedMarkdown`, `currentPostId`, `currentQuestions` cleared at two points:
+  1. Generate button click handler (line ~246 in `console.js`)
+  2. `executeGeneration()` function start (line ~304 in `console.js`)
+- **Editor Clear**: Article editor explicitly cleared on `phase3_start` SSE event (line ~364)
+- **Dual Clear Strategy**: Ensures state is cleared whether user completes clarification modal or skips it
+
+### Verification
+Test multi-tenant cache isolation:
+```bash
+# 1. Workspace "blog-a", keyword "python tutorials" → Research A
+# 2. Workspace "blog-b", keyword "python tutorials" → Research B (different)
+# 3. Check DB: SELECT keyword, profile_name, niche FROM research_cache WHERE keyword = 'python tutorials'
+# Expected: 2 distinct rows
+```
+
+Test playbook boundary enforcement:
+```bash
+# 1. Generate "react hooks" in niche "web-dev" (creates playbook)
+# 2. Generate "vue composition" in same niche
+# Expected: Research focuses ONLY on Vue, not React (check debug logs)
+```
+
+Test frontend state clearing:
+```bash
+# 1. Generate "Keyword A"
+# 2. Browser console: verify lastGeneratedMarkdown contains article A
+# 3. Click generate "Keyword B" (no refresh)
+# 4. Browser console: verify all globals empty before new fetch
+```
+
+---
+
 ## Multi-Tenant Workspace System
 
 Workspaces partition Neon PostgreSQL by `profile_name`, isolating `UserStyleRule` memory per client/project.
@@ -93,7 +142,7 @@ Workspaces partition Neon PostgreSQL by `profile_name`, isolating `UserStyleRule
 Tables managed via SQLAlchemy ORM in `app/models.py`:
 - `Post` — generated articles (`title`, `content`, `original_ai_content`, `human_edited_content`, `profile_name`, `research_run_id`, `updated_at`)
 - `UserStyleRule` — style memory rules scoped by `profile_name`
-- `ResearchCache` — cached keyword research to reduce API calls
+- `ResearchCache` — cached keyword research to reduce API calls. Composite unique constraint `(keyword, profile_name, niche)` ensures multi-tenant isolation. Includes TTL expiration (default 24h). Migration applied via `migrate_research_cache()` in `app/database.py`.
 - `Workspace` — persistent workspace definitions (`name`, `slug`, unique)
 - `ContentCampaign` — stores hub-and-spoke mappings (`seed_topic`, `pillar_keyword`, `spoke_keywords_json`, `profile_name`)
 - `ResearchRun` — per-run telemetry (tool sequence, KD stats, Exa queries, entity clusters, `quality_score`, `is_distilled`). Linked to `Post` via bidirectional `post_id`/`research_run_id`.

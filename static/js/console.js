@@ -242,6 +242,11 @@ els.generateBtn.addEventListener('click', async () => {
 
     els.generateBtn.disabled = true;
 
+    // CRITICAL: Clear ALL global state variables before new generation
+    lastGeneratedMarkdown = "";
+    currentPostId = null;
+    currentQuestions = [];
+
     // Reset UI State for new run
     els.terminal.innerHTML = "";
     els.articlePane.innerHTML = "";
@@ -295,6 +300,10 @@ els.generateBtn.addEventListener('click', async () => {
 
 // MAIN GENERATION LOOP (Step 2)
 async function executeGeneration(userContext) {
+    // CRITICAL: Ensure state is cleared even if user skips modal
+    lastGeneratedMarkdown = "";
+    currentPostId = null;
+
     const kw = els.keywordInput.value.trim();
     const rawNiche = els.nicheInput ? els.nicheInput.value.trim() : "";
     const niche = rawNiche ? rawNiche : "default";
@@ -349,10 +358,10 @@ async function executeGeneration(userContext) {
                                 case 'phase3_start':
                                     updateAgentUI('writer');
                                     terminalLog("WRITER", payload.message, "#22d3ee");
-                                    // Prepare editor for streaming
+                                    // CRITICAL: Clear editor for new article (prevents previous content bleed)
                                     els.articlePane.classList.add('hidden');
                                     const editorPrep = document.getElementById('article-editor');
-                                    editorPrep.value = "";
+                                    editorPrep.value = "";  // Explicitly clear previous article
                                     editorPrep.classList.remove('hidden');
                                     break;
                                 case 'content':

@@ -32,9 +32,12 @@ class UserStyleRule(Base):
 
 class ResearchCache(Base):
     __tablename__ = "research_cache"
+    __table_args__ = (UniqueConstraint("keyword", "profile_name", "niche", name="uix_cache_composite"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    keyword: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    keyword: Mapped[str] = mapped_column(String(200), index=True)
+    profile_name: Mapped[str] = mapped_column(String(50), default="default", server_default="default")
+    niche: Mapped[str] = mapped_column(String(100), default="default", server_default="default")
     result_json: Mapped[str] = mapped_column(Text)
     cache_ttl_hours: Mapped[int] = mapped_column(Integer, default=24)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
