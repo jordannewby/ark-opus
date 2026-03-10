@@ -14,7 +14,8 @@ from contextlib import asynccontextmanager, AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from .database import Base, engine, get_db, migrate_research_cache
+from sqlalchemy.exc import OperationalError
+from .database import Base, engine, get_db, migrate_research_cache, SessionLocal
 from .models import Post, ResearchRun, UserStyleRule, Workspace
 from .schemas import (
     BlueprintResponse,
@@ -300,7 +301,14 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 profile_name=payload.profile_name,
             )
             db.add(post)
-            db.commit()
+            try:
+                db.commit()
+            except OperationalError:
+                db.rollback()
+                db.close()
+                db = SessionLocal()
+                db.add(post)
+                db.commit()
             db.refresh(post)
 
             # Link Post ↔ ResearchRun for quality scoring feedback loop
@@ -310,7 +318,18 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 research_run = db.get(ResearchRun, run_id)
                 if research_run:
                     research_run.post_id = post.id
-                db.commit()
+                try:
+                    db.commit()
+                except OperationalError:
+                    db.rollback()
+                    db.close()
+                    db = SessionLocal()
+                    post = db.merge(post)
+                    research_run = db.get(ResearchRun, run_id) if run_id else None
+                    if research_run:
+                        research_run.post_id = post.id
+                    post.research_run_id = run_id
+                    db.commit()
                 db.refresh(post)
 
             print(f"✅ [ARES] Generation complete for: {keyword}")

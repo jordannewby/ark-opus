@@ -1,9 +1,11 @@
 """
 Readability Service for Ares Engine
 ====================================
-Composite readability scorer using ARI (primary), Coleman-Liau (secondary),
-and Flesch-Kincaid (cross-check). Designed to integrate with WriterService's
-existing iterative SEO loop.
+ARI-primary readability scorer with FK cross-check and sentence length
+enforcement. CLI is computed for transparency but advisory only — it
+over-penalizes technical vocabulary that IS the SEO strategy.
+
+Designed to integrate with WriterService's existing iterative SEO loop.
 
 Zero paid dependencies. Zero API cost. Pure Python.
 """
@@ -287,26 +289,42 @@ def compute_flesch_kincaid_grade(text: str) -> float:
 # ---------------------------------------------------------------------------
 
 def compute_composite_grade(ari: float, cli: float, fk: float) -> float:
-    """Compute composite grade using 2-of-3 voting logic.
+    """Compute composite grade using ARI as primary score.
     
-    If 2+ scores agree the text is at or below target, it passes.
-    The composite is the median of the three scores, which naturally
-    dampens any one formula's outlier behavior.
+    ARI is the primary gatekeeper (character-based, deterministic, same
+    approach as Hemingway App). FK is a cross-check with a +1.0 buffer
+    for syllable counting noise. CLI is reported but advisory only —
+    it consistently over-penalizes technical vocabulary.
+    
+    The composite grade IS the ARI score. CLI and FK are still computed
+    and reported in debug output for transparency.
     """
-    scores = sorted([ari, cli, fk])
-    # Median of 3 = middle value
-    return scores[1]
+    return ari
 
 
 def passes_readability(
     ari: float,
     cli: float,
     fk: float,
-    target: float = 5.9
+    target: float = 8.0,
+    avg_sentence_length: float = 0.0,
+    max_sentence_length: float = 15.0
 ) -> bool:
-    """Check if at least 2 of 3 formulas score at or below target grade."""
-    at_or_below = sum(1 for s in [ari, cli, fk] if s <= target)
-    return at_or_below >= 2
+    """Check readability using ARI as primary gate + sentence length enforcement.
+    
+    Pass conditions (ALL must be true):
+      1. ARI at or below target grade
+      2. FK at or below target + 1.0 (cross-check with syllable noise buffer)
+      3. Average sentence length at or below max_sentence_length
+    
+    CLI is advisory only — reported in debug but does not block publishing.
+    This prevents technical vocabulary (long words that ARE the SEO keywords)
+    from creating an impossible gate.
+    """
+    ari_ok = ari <= target
+    fk_ok = fk <= target + 1.0
+    sentences_ok = avg_sentence_length <= max_sentence_length if avg_sentence_length > 0 else True
+    return ari_ok and fk_ok and sentences_ok
 
 
 # ---------------------------------------------------------------------------
@@ -367,16 +385,16 @@ def find_complex_sentences(
 
 def analyze_readability(
     content: str,
-    target_grade: float = 5.9,
+    target_grade: float = 8.0,
     keywords: list[str] | None = None
 ) -> ReadabilityScore:
-    """Full readability analysis with composite scoring.
+    """Full readability analysis with ARI-primary scoring.
     
     This is the main entry point for WriterService integration.
     
     Args:
         content: Raw Markdown article content from the writer
-        target_grade: Maximum acceptable grade level (default 5.9 for 5th grade)
+        target_grade: Maximum acceptable ARI grade level (default 8.0)
         keywords: SEO target keywords to exclude from scoring
     
     Returns:
@@ -393,14 +411,18 @@ def analyze_readability(
     cli = compute_coleman_liau(scoring_text)
     fk = compute_flesch_kincaid_grade(scoring_text)
     
-    # Step 4: Composite + pass/fail
-    composite = compute_composite_grade(ari, cli, fk)
-    passed = passes_readability(ari, cli, fk, target_grade)
-    
-    # Step 5: Count stats
+    # Step 4: Count stats (needed for pass check)
     words = count_words(clean)
     sents = count_sentences(clean)
     avg_sent_len = round(words / sents, 1) if sents > 0 else 0.0
+    
+    # Step 5: Composite + pass/fail (ARI-primary with sentence length gate)
+    composite = compute_composite_grade(ari, cli, fk)
+    passed = passes_readability(
+        ari, cli, fk, target_grade,
+        avg_sentence_length=avg_sent_len,
+        max_sentence_length=15.0
+    )
     
     # Step 6: Find complex sentences (use clean text, not masked)
     complex_sents = [] if passed else find_complex_sentences(clean, threshold=8.0)
@@ -447,40 +469,57 @@ def _build_feedback(
     """Build structured feedback for Claude's readability retry loop.
     
     This feedback is injected into the writer prompt on the next iteration,
-    exactly like SEO validation feedback is today.
+    exactly like SEO validation feedback is today. Diagnoses specific
+    failure reasons under the ARI-primary scoring model.
     """
     lines = []
-    lines.append(f"READABILITY REVISION REQUIRED — Current grade: {composite} | Target: ≤{target}")
-    lines.append(f"  ARI: {ari} | Coleman-Liau: {cli} | Flesch-Kincaid: {fk}")
+    lines.append(f"READABILITY REVISION REQUIRED — ARI grade: {ari} | Target: ≤{target}")
+    lines.append(f"  FK cross-check: {fk} (target: ≤{target + 1.0}) | CLI advisory: {cli}")
+    lines.append(f"  Avg sentence length: {avg_sent_len} words (max: 15)")
     lines.append("")
     
-    # Diagnose the root cause
+    # Diagnose each failure reason specifically
+    failures = []
+    
     if avg_sent_len > 15:
-        lines.append(f"PRIMARY ISSUE: Sentences are too long (avg {avg_sent_len} words). Target: 10-14 words per sentence.")
-        lines.append("ACTION: Break long sentences into two or three shorter ones. Each sentence should hold one idea.")
+        failures.append("SENTENCES TOO LONG")
+        lines.append(f"ISSUE: Avg sentence length is {avg_sent_len} words. Must be ≤15.")
+        lines.append("ACTION: Split long sentences. One idea per sentence. Aim for 8-14 words each.")
+        lines.append("")
+    
+    if ari > target:
+        failures.append("ARI TOO HIGH")
+        lines.append(f"ISSUE: ARI grade is {ari}. Must be ≤{target}.")
+        lines.append("ACTION: Use shorter, simpler words where possible. Replace long words with")
+        lines.append("  common alternatives EXCEPT for SEO keywords and technical terms that")
+        lines.append("  your audience searches for. Those MUST stay — explain them in plain words.")
+        lines.append("")
+    
+    if fk > target + 1.0:
+        failures.append("FK TOO HIGH")
+        lines.append(f"ISSUE: Flesch-Kincaid grade is {fk}. Must be ≤{target + 1.0}.")
+        lines.append("ACTION: Reduce syllable count. Swap multi-syllable words for shorter ones")
+        lines.append("  where the meaning stays the same. 'use' not 'utilize', 'help' not 'facilitate'.")
+        lines.append("")
     
     # Flag specific offending sentences
     if complex_sentences:
-        lines.append("")
-        lines.append(f"TOP {len(complex_sentences)} COMPLEX SENTENCES TO REWRITE:")
+        lines.append(f"TOP {len(complex_sentences)} SENTENCES TO SIMPLIFY:")
         for i, sent in enumerate(complex_sentences, 1):
-            # Truncate very long sentences for prompt efficiency
             display = sent.text[:150] + "..." if len(sent.text) > 150 else sent.text
-            lines.append(f"  {i}. [Grade {sent.avg_grade}] \"{display}\"")
+            lines.append(f"  {i}. [ARI {sent.ari_grade}] \"{display}\"")
         lines.append("")
-        lines.append("Rewrite each sentence above at a 5th grade level.")
     
-    # Universal guidance
-    lines.append("")
+    # Universal rules — always included
     lines.append("RULES FOR THIS REVISION:")
     lines.append("- DO NOT remove any facts, statistics, data points, or insights")
     lines.append("- DO NOT remove or merge any H2 sections")
     lines.append("- DO NOT reduce the word count below the SEO minimum")
     lines.append("- DO NOT remove list blocks or table blocks")
-    lines.append("- USE short sentences (under 15 words each)")
-    lines.append("- USE common, everyday words (1-2 syllables)")
-    lines.append("- WHEN using a technical term, explain it right away in plain words")
+    lines.append("- KEEP all SEO keywords and technical terms — explain them simply")
+    lines.append("- KEEP sentences SHORT: 8-14 words each, one idea per sentence")
     lines.append("- USE active voice ('Hackers steal data' not 'Data is stolen by hackers')")
+    lines.append("- SWAP long common words for short ones: 'use' not 'utilize', 'show' not 'demonstrate'")
     lines.append("- KEEP the same structure, sections, and SEO keywords")
     
     return "\n".join(lines)
@@ -492,7 +531,7 @@ def _build_feedback(
 
 def verify_readability(
     content: str,
-    target_grade: float = 5.9,
+    target_grade: float = 8.0,
     keywords: list[str] | None = None
 ) -> dict:
     """Verify readability — matches the return pattern of verify_seo_score.
@@ -524,25 +563,28 @@ def verify_readability(
 # ---------------------------------------------------------------------------
 
 READABILITY_DIRECTIVE = """
-## READABILITY REQUIREMENT — 5th Grade Level
+## READABILITY REQUIREMENT — Simple, Short, Clear
 
-Write every sentence at a 5th grade reading level. This is non-negotiable.
+Write in short, punchy sentences. This is non-negotiable.
 
-RULES:
-- Keep sentences SHORT: 10-14 words max. One idea per sentence.
-- Use COMMON words: prefer 1-2 syllable words over longer ones.
-- Use ACTIVE voice: "Hackers steal data" not "Data is stolen by hackers."
-- When you MUST use a technical term, explain it immediately in plain language.
-  Example: "Ransomware is a type of attack. It locks your files until you pay."
-- Vary sentence length slightly to maintain rhythm and personality.
-  Mix 8-word sentences with 14-word sentences. Avoid robotic uniformity.
-- This does NOT mean writing for children. It means explaining complex ideas simply.
-  Ernest Hemingway wrote about war and death at a 5th grade level.
+SENTENCE RULES:
+- MAXIMUM 14 words per sentence. Hard ceiling. No exceptions.
+- One idea per sentence. Period. Then start a new one.
+- Vary between 6-14 words for rhythm. Don't be robotic.
+- NEVER chain clauses with commas, semicolons, or dashes into long runs.
 
-WHAT TO PRESERVE:
-- Every fact, statistic, and data point from the research brief
-- All SEO keywords in headings and body text
-- All H2 sections, list blocks, and table blocks
-- The emotional hooks and identity triggers from the psychology blueprint
-- The personality and style rules from the workspace
+WORD RULES:
+- Use short, common words whenever possible. 'Use' not 'utilize'. 'Show' not 'demonstrate'. 'Help' not 'facilitate'.
+- KEEP all SEO keywords and technical terms — these are what the audience searches for.
+- When you use a technical term, explain it right away in plain words on the NEXT sentence.
+  Example: "MFA adds a second lock to your accounts. It asks for a code from your phone after your password."
+- Prefer active voice. "Hackers steal data" not "Data is stolen by hackers."
+
+THIS IS NOT DUMBING DOWN:
+- Include every fact, statistic, and data point from the research brief.
+- Keep all SEO keywords in headings and body text.
+- Keep all H2 sections, list blocks, and table blocks.
+- Keep the emotional hooks and identity triggers from the psychology blueprint.
+- Keep the personality and style rules from the workspace.
+- Think Hemingway, not children's book. Short and direct, not simple-minded.
 """.strip()

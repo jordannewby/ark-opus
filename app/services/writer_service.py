@@ -39,7 +39,7 @@ class WriterService:
         )
 
         prompt_instructions = (
-            "Write a full ~2,500 word blog post based on the following psychological blueprint:\n\n"
+            "Write a full ~2,000 word blog post based on the following psychological blueprint:\n\n"
             f"{json.dumps(blueprint, indent=2)}\n\n"
             "MANDATORY:\n"
             "- Deliver the 'Information Gap' hook in the first 150 words.\n"
@@ -104,7 +104,7 @@ class WriterService:
 
                     # --- Gate 2: Readability Validation ---
                     read_keywords = semantic_keywords if semantic_keywords else []
-                    read_result = verify_readability(full_content, target_grade=5.9, keywords=read_keywords)
+                    read_result = verify_readability(full_content, target_grade=8.0, keywords=read_keywords)
 
                     if read_result["pass"]:
                         details = read_result["details"]
