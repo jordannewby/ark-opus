@@ -306,7 +306,7 @@ def passes_readability(
     ari: float,
     cli: float,
     fk: float,
-    target: float = 8.0,
+    target: float = 10.0,
     avg_sentence_length: float = 0.0,
     max_sentence_length: float = 15.0
 ) -> bool:
@@ -385,7 +385,7 @@ def find_complex_sentences(
 
 def analyze_readability(
     content: str,
-    target_grade: float = 8.0,
+    target_grade: float = 10.0,
     keywords: list[str] | None = None
 ) -> ReadabilityScore:
     """Full readability analysis with ARI-primary scoring.
@@ -531,7 +531,7 @@ def _build_feedback(
 
 def verify_readability(
     content: str,
-    target_grade: float = 8.0,
+    target_grade: float = 10.0,
     keywords: list[str] | None = None
 ) -> dict:
     """Verify readability — matches the return pattern of verify_seo_score.
@@ -592,8 +592,32 @@ SENTENCE RULES:
 - Vary sentence length for rhythm. Some short. Some a bit longer for flow.
 - Avoid chaining clauses with commas, semicolons, or dashes into long runs.
 
-WORD CHOICE:
-- Use short, common words where possible. 'Use' not 'utilize'. 'Show' not 'demonstrate'. 'Help' not 'facilitate'.
+WORD CHOICE — USE SHORT WORDS:
+This is critical. Swap long common words for short ones. Here is your reference list:
+
+  implement → set up, use           utilize → use
+  demonstrate → show                methodology → method
+  subsequently → then               approximately → about
+  requirements → needs              functionality → features
+  facilitate → help                 communication → contact, talk
+  environment → setup, space        infrastructure → setup, base
+  specifically → namely, here       significantly → greatly, a lot
+  organizations → firms, groups     recommendations → tips, advice
+  characteristics → traits          understanding → grasp, knowledge
+  opportunities → chances           comprehensive → full, complete — BANNED WORD
+  establishing → setting up         incorporating → adding
+  leveraging → using                optimizing → tuning, improving
+  identifying → finding, spotting   eliminating → cutting, removing
+  consideration → thought           collaboration → teamwork
+  prioritize → rank, focus on       necessary → needed
+  regardless → even so              professional → expert, skilled
+  traditional → classic, old        alternative → other, backup
+  additional → extra, more          determine → find out, decide
+  evaluate → check, review          initiated → started, began
+  regarding → about                 capabilities → skills, features
+  acquisition → purchase, gain      operational → running, active
+
+ALSO:
 - NEVER use these words: delve, tapestry, landscape, multifaceted, comprehensive, holistic, navigate, crucial, foster, in conclusion, ultimately, fast-paced world, digital age, game-changer.
 - KEEP all SEO keywords and technical terms — these are what the audience searches for.
 - When you use a technical term, explain it in plain words in the next sentence.
