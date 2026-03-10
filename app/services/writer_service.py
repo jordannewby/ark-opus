@@ -58,6 +58,7 @@ class WriterService:
             "2. NO CLICHES: Do NOT use 'In conclusion', 'Ultimately', 'In today's digital age', or 'game-changer'.\n"
             "3. FORMATTING: The very first ## H2 MUST focus entirely on the 'Information Gap' as a pattern interrupt.\n"
             "4. CADENCE: Max 2-3 sentences per paragraph. Short, punchy delivery. White space between every paragraph.\n"
+            "5. NO FAKE ASSETS: Do NOT reference specific templates, tools, downloads, checklists, frameworks, or products that do not actually exist. Do NOT promise deliverables the reader cannot access. Do NOT name fake templates like 'QuickBooks Integration Template' or 'Security Audit Checklist'. Instead, give actionable steps the reader can follow directly in the article.\n"
         )
 
         # Inject Dynamic Human Style Rules

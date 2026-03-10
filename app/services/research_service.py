@@ -159,14 +159,22 @@ class ResearchAgent:
                         
                         # Call DeepSeek-R1
                         r1_response = await self._call_deepseek_r1(messages)
-                        
+
+                        if DEBUG_MODE:
+                            # Show first 500 chars of R1's raw response to diagnose tool skipping
+                            print(f"[DEBUG] R1 raw response (first 500 chars): {r1_response[:500]}")
+
                         # Parse the response for tool_calls vs final analysis
                         parsed = self._parse_r1_response(r1_response)
                         tool_calls = parsed.get("tool_calls", [])
                         
                         # If R1 returned an information_gap, it's done researching
                         if parsed.get("information_gap"):
-                            info_gap_from_loop = parsed["information_gap"]
+                            # Capture full expanded research output (unique_angles, competitor_weaknesses, etc.)
+                            if any(k in parsed for k in ["unique_angles", "competitor_weaknesses", "data_points", "practitioner_insights"]):
+                                info_gap_from_loop = parsed  # Full dict with all fields
+                            else:
+                                info_gap_from_loop = parsed["information_gap"]  # Legacy string format
                             if DEBUG_MODE:
                                 print(f"[DEBUG] R1 produced Information Gap. Exiting loop.")
                             break
@@ -326,8 +334,17 @@ class ResearchAgent:
         long_tail_text = long_tail.content[0].text if long_tail and hasattr(long_tail, 'content') and long_tail.content else None
 
         # Step E: Use Information Gap from iterative loop, or fallback to dedicated analysis
+        # R1 now returns an expanded dict with multiple keys, not just a string
         if info_gap_from_loop:
-            info_gap = info_gap_from_loop
+            # Try to parse as JSON if it's a string (R1 sometimes returns stringified JSON)
+            if isinstance(info_gap_from_loop, str):
+                try:
+                    parsed_gap = json.loads(info_gap_from_loop)
+                    if isinstance(parsed_gap, dict) and "information_gap" in parsed_gap:
+                        info_gap_from_loop = parsed_gap
+                except (json.JSONDecodeError, TypeError):
+                    pass  # It's a plain string, that's fine
+            info_gap = info_gap_from_loop  # Will be unpacked in the result dict construction
         else:
             compiled_text = self._strip_html(json.dumps({
                 "keyword": keyword,
@@ -341,14 +358,50 @@ class ResearchAgent:
             }))
             info_gap = await self._analyze_information_gap(keyword, compiled_text, user_context)
 
+        # Extract real on_page and backlink data from MCP results (if R1 gathered them)
+        on_page_data = mcp_results.get("on_page")
+        on_page_text = on_page_data.content[0].text if on_page_data and hasattr(on_page_data, 'content') and on_page_data.content else None
+        real_on_page = {}
+        if on_page_text:
+            try:
+                real_on_page = json.loads(on_page_text)
+            except Exception:
+                real_on_page = {"raw": on_page_text[:2000]}
+
+        backlink_data = mcp_results.get("backlinks")
+        backlink_text = backlink_data.content[0].text if backlink_data and hasattr(backlink_data, 'content') and backlink_data.content else None
+        real_backlinks = {}
+        if backlink_text:
+            try:
+                real_backlinks = json.loads(backlink_text)
+            except Exception:
+                real_backlinks = {"raw": backlink_text[:2000]}
+
+        # Parse expanded info gap fields from R1's final output
+        unique_angles = []
+        competitor_weaknesses = []
+        data_points = []
+        practitioner_insights = []
+        if isinstance(info_gap, dict):
+            # R1 returned the new expanded format
+            unique_angles = info_gap.get("unique_angles", [])
+            competitor_weaknesses = info_gap.get("competitor_weaknesses", [])
+            data_points = info_gap.get("data_points", [])
+            practitioner_insights = info_gap.get("practitioner_insights", [])
+            info_gap = info_gap.get("information_gap", str(info_gap))
+
         result = {
             "keyword": keyword,
             "information_gap": info_gap,
+            "unique_angles": unique_angles,
+            "competitor_weaknesses": competitor_weaknesses,
+            "data_points": data_points,
+            "practitioner_insights": practitioner_insights,
             "competitor_headers": competitor_headers,
             "people_also_ask": paa,
             "semantic_entities": semantic_entities,
-            "on_page_metrics": {"avg_word_count": 1850, "header_density": "Every 150 words"},
-            "backlink_authority": {"authority_sources": ["wikipedia.org", "hbr.org", "forbes.com"]},
+            "on_page_metrics": real_on_page if real_on_page else {"note": "on_page tool not used this run"},
+            "backlink_authority": real_backlinks if real_backlinks else {"note": "backlink tool not used this run"},
             "elite_competitors": exa_results,
             "executed_tools": executed_tools if 'executed_tools' in locals() else [],
         }
@@ -884,20 +937,30 @@ class ResearchAgent:
             f"USER DIRECTIVE / INTENT CONTEXT:\n{user_context if user_context else 'None provided. Assume general intent.'}\n\n"
             "You have access to the following tools:\n"
             f"{json.dumps(available_tools, indent=2)}\n\n"
-            "YOUR MISSION:\n"
-            "1. Use tools iteratively to gather comprehensive SEO data for this keyword.\n"
-            "2. You MUST call 'dataforseo_labs_google_keyword_ideas' and 'serp_organic_live_advanced' as your baseline.\n"
-            "3. Use 'exa_scout_search' to discover high-authority competitor articles. You may call it multiple times with different queries.\n"
-            "4. Once you find good articles via scout, use 'exa_extract_full_text' to read their actual content.\n"
-            "5. When you have enough data, output your FINAL analysis.\n\n"
-            "RESPONSE FORMAT:\n"
-            "- To request tools, return JSON: {\"tool_calls\": [{\"tool_name\": \"...\", \"arguments\": {...}}, ...]}\n"
-            "- When DONE researching, return JSON: {\"information_gap\": \"2-3 sentence analysis of what Page 1 is missing\"}\n\n"
+            "CRITICAL: You MUST call tools before producing any final output. Do NOT skip to the final analysis.\n\n"
+            "STEP 1 — CALL THESE TOOLS FIRST (mandatory, do these on your first iteration):\n"
+            "Return JSON: {\"tool_calls\": [{\"tool_name\": \"dataforseo_labs_google_keyword_ideas\", \"arguments\": {\"keywords\": [\"" + keyword + "\"], \"location_code\": 2840, \"language_code\": \"en\"}}, {\"tool_name\": \"serp_organic_live_advanced\", \"arguments\": {\"keyword\": \"" + keyword + "\", \"location_code\": 2840, \"language_code\": \"en\", \"depth\": 10}}]}\n\n"
+            "STEP 2 — AFTER receiving Step 1 results, call at least 2 of these strategic tools:\n"
+            "- 'exa_scout_search' with different queries (exact topic, contrarian angle, case studies)\n"
+            "- 'exa_extract_full_text' to read the best articles found\n"
+            "- Any tool with 'backlink' in the name for authority analysis\n"
+            "- Any tool with 'on_page' in the name for competitor structure\n"
+            "- Any tool with 'related' or 'long_tail' in the name for underserved angles\n"
+            "Use ONLY exact tool names from the tool list above. Do NOT guess names.\n\n"
+            "STEP 3 — ONLY after completing Steps 1 and 2, output your final analysis as JSON:\n"
+            "{\n"
+            '  "information_gap": "2-3 sentences: the specific expert angle Page 1 is ignoring",\n'
+            '  "unique_angles": ["3-5 content angles that differentiate from Page 1"],\n'
+            '  "competitor_weaknesses": ["2-3 weaknesses in top-ranking content"],\n'
+            '  "data_points": ["statistics or benchmarks found in competitor content"],\n'
+            '  "practitioner_insights": ["1-2 real-world findings from Exa articles"]\n'
+            "}\n\n"
             "RULES:\n"
-            "- ZERO HALLUCINATION: Use only the exact tool names provided above.\n"
-            "- Return ONLY valid JSON. No markdown blocks or other text.\n"
-            "- You may request multiple tools per iteration.\n"
-            "- Be strategic: scout first, then extract only the best articles."
+            "- You MUST call tools in Steps 1 and 2 BEFORE outputting Step 3.\n"
+            "- To call tools, return: {\"tool_calls\": [{\"tool_name\": \"...\", \"arguments\": {...}}]}\n"
+            "- Return ONLY valid JSON. No markdown, no extra text.\n"
+            "- You may call multiple tools per iteration.\n"
+            "- ZERO HALLUCINATION: Use only exact tool names from the list above."
         )
         if niche_intel:
             prompt += (

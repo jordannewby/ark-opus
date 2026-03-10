@@ -21,11 +21,11 @@ Load this file when working on pipeline logic, agent behavior, or the workspace 
 ### Phase 1 — ResearchAgent (`app/services/research_service.py`)
 - **Models**: `deepseek-reasoner` (DeepSeek-R1) for agentic tool decisions
 - **Tools**: DataForSEO MCP server + Native Exa.ai tools (`exa_scout_search`, `exa_extract_full_text`)
-- **Agentic Logic**: DeepSeek-R1 runs in an **iterative loop** (max 5 iterations). It autonomously orchestrates both MCP tools (Keyword Ideas, Live SERP, etc.) and native Exa tools to scout and extract full article bodies (truncated to 20,000 chars for context safety).
+- **Agentic Logic**: DeepSeek-R1 runs in an **iterative loop** (max 5 iterations). It autonomously orchestrates both MCP tools (Keyword Ideas, Live SERP, etc.) and native Exa tools to scout and extract full article bodies (truncated to 20,000 chars for context safety). The agentic prompt uses a **3-step sequencing pattern** to prevent R1 from skipping tools: Step 1 provides a literal JSON example of mandatory tool calls (keyword_ideas + SERP) pre-filled with the target keyword; Step 2 lists strategic tools (Exa scout/extract, backlinks, on_page, related keywords); Step 3 defines the final output format — placed last so R1 doesn't fill it in prematurely. A `CRITICAL` preamble enforces tool-calling before any final analysis. Debug logging (`[DEBUG] R1 raw response`) prints the first 500 chars of each R1 response to diagnose tool-skipping.
 - **Niche Playbook Injection**: Before the agentic loop, `_get_niche_playbook()` retrieves distilled or heuristic intelligence for the current `(profile_name, niche)` and injects it into R1's prompt (~200 extra tokens) wrapped in `<niche_playbook>` XML tags. A **CRITICAL INSTRUCTION** explicitly directs R1 to use the playbook ONLY for strategic patterns (tool sequence, KD thresholds, audience insights) and NOT to research past topics mentioned within. Omitted entirely on cold start.
 - **Fallback / Safety**: Circuit breaker forces output at 5 iterations. Hallucinated tools return a simulated error to allow R1 to self-correct.
 - **Opportunity Score Algorithm**: Filters semantic entities by Volume, CPC, KD — discards any keyword with KD > 65
-- **Output**: Stripped "Information Gap" — what Page 1 competitors missed
+- **Expanded Output**: R1 returns an expanded dict with keys: `information_gap` (string), `unique_angles` (list), `competitor_weaknesses` (list), `data_points` (list), `practitioner_insights` (list). Legacy string format still supported via fallback. String responses auto-parsed via `json.loads` in case R1 returns stringified JSON. On-page metrics and backlink authority extracted from real MCP tool results (no hardcoded placeholders). All fields unpacked into the top-level result dict for downstream consumption by PsychologyAgent and WriterService.
 - **Telemetry Capture**: After each run, `_capture_run_telemetry()` stores tool sequence, KD stats, Exa queries, entity clusters, and info gap into `ResearchRun`. Triggers distillation check.
 - **Noise filter**: `_strip_webhook_noise` removes large DataForSEO webhook payloads from MCP schemas before passing to R1
 - **Cache Strategy**: ResearchCache enforces strict multi-tenant isolation via composite unique constraint `(keyword, profile_name, niche)`. Cache lookups require exact match on all three fields. Existing entries are checked for expiration (default 24h TTL) and deleted if stale. Migration adds `profile_name` and `niche` columns to legacy cache entries with `'default'` values.
@@ -104,7 +104,7 @@ Ares Engine implements multi-layered state isolation to prevent topic bleed acro
 ### Playbook Topic Boundaries
 - **XML Wrapper**: Niche playbooks injected within `<niche_playbook>` tags in R1 prompt
 - **Critical Instruction**: Explicit direction to DeepSeek-R1: "Use playbook STRICTLY for tone, audience insights, and strategic style. DO NOT research past topics. Focus EXCLUSIVELY on current Target Keyword: '{keyword}'"
-- **Location**: `_build_agentic_prompt()` method in `research_service.py` (lines ~902-911)
+- **Location**: `_build_agentic_prompt()` method in `research_service.py`
 
 ### Frontend State Clearing
 - **Global Variables**: `lastGeneratedMarkdown`, `currentPostId`, `currentQuestions` cleared at two points:
