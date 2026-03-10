@@ -563,28 +563,47 @@ def verify_readability(
 # ---------------------------------------------------------------------------
 
 READABILITY_DIRECTIVE = """
-## READABILITY REQUIREMENT — Simple, Short, Clear
+## READABILITY & SCANNABILITY — Write for How People Actually Read
 
-Write in short, punchy sentences. This is non-negotiable.
+Research shows people don't read blogs — they scan. They read headings, first sentences, and bold text.
+Design every section so a reader who ONLY reads the headings and first sentences still gets 80% of the value.
+
+STRUCTURE FIRST (non-negotiable):
+- Start with a single # H1 title
+- Use at least 5 ## H2 section headings throughout the article
+- Include at least 3 list blocks or table blocks
+- Maintain 1,500-1,800 word count. Tight and valuable, no padding or fluff.
+- New ## H2 heading every 150-200 words to break up the text
+
+LAYER-CAKE SCANNING FORMAT:
+- Every ## H2 heading should be a clear, benefit-driven statement — not vague labels
+  GOOD: "## Why Most SMBs Get Breached in the First Year"
+  BAD: "## Introduction" or "## Overview" or "## Background"
+- The FIRST sentence after every heading must deliver the key takeaway of that section
+  The reader who only reads this sentence should understand the main point
+- Use bold text on ONE key phrase per section to anchor the scanner's eye
+- Max 2-3 sentences per paragraph. Then white space. Then next paragraph.
+- Use bullet points and numbered lists to break up dense information
+- Front-load value: put the most important information at the TOP of each section
 
 SENTENCE RULES:
-- MAXIMUM 14 words per sentence. Hard ceiling. No exceptions.
-- One idea per sentence. Period. Then start a new one.
-- Vary between 6-14 words for rhythm. Don't be robotic.
-- NEVER chain clauses with commas, semicolons, or dashes into long runs.
+- Aim for 8-14 words per sentence. Keep most sentences in this range.
+- One idea per sentence. Then start a new one.
+- Vary sentence length for rhythm. Some short. Some a bit longer for flow.
+- Avoid chaining clauses with commas, semicolons, or dashes into long runs.
 
-WORD RULES:
-- Use short, common words whenever possible. 'Use' not 'utilize'. 'Show' not 'demonstrate'. 'Help' not 'facilitate'.
+WORD CHOICE:
+- Use short, common words where possible. 'Use' not 'utilize'. 'Show' not 'demonstrate'. 'Help' not 'facilitate'.
+- NEVER use these words: delve, tapestry, landscape, multifaceted, comprehensive, holistic, navigate, crucial, foster, in conclusion, ultimately, fast-paced world, digital age, game-changer.
 - KEEP all SEO keywords and technical terms — these are what the audience searches for.
-- When you use a technical term, explain it right away in plain words on the NEXT sentence.
-  Example: "MFA adds a second lock to your accounts. It asks for a code from your phone after your password."
+- When you use a technical term, explain it in plain words in the next sentence.
 - Prefer active voice. "Hackers steal data" not "Data is stolen by hackers."
 
-THIS IS NOT DUMBING DOWN:
-- Include every fact, statistic, and data point from the research brief.
-- Keep all SEO keywords in headings and body text.
-- Keep all H2 sections, list blocks, and table blocks.
-- Keep the emotional hooks and identity triggers from the psychology blueprint.
-- Keep the personality and style rules from the workspace.
-- Think Hemingway, not children's book. Short and direct, not simple-minded.
+PRESERVE EVERYTHING:
+- Every fact, statistic, and data point from the research brief
+- All SEO keywords in headings and body text
+- All ## H2 sections, list blocks, and table blocks
+- The emotional hooks and identity triggers from the psychology blueprint
+- The personality and style rules from the workspace
+- NEVER cut content to simplify. Rewrite sentences, don't delete them.
 """.strip()

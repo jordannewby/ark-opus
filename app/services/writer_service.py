@@ -34,12 +34,12 @@ class WriterService:
 
         # 1. Build Base Prompts
         system_instructions = self.base_system_prompt + (
-            "\n\nTarget the optimal SEO blog length for ranking and high engagement (approximately 2,000 to 2,500 words). "
+            "\n\nTarget the optimal SEO blog length for ranking and high engagement (approximately 1,500 to 1,800 words). "
             "Be highly comprehensive, but eliminate all rambling and fluff. Conclude naturally once the Information Gap is fully addressed."
         )
 
         prompt_instructions = (
-            "Write a full ~2,000 word blog post based on the following psychological blueprint:\n\n"
+            "Write a focused ~1,600 word blog post based on the following psychological blueprint:\n\n"
             f"{json.dumps(blueprint, indent=2)}\n\n"
             "MANDATORY:\n"
             "- Deliver the 'Information Gap' hook in the first 150 words.\n"
@@ -57,7 +57,7 @@ class WriterService:
             "1. NO AI FLUFF: Do NOT use the words 'delve', 'tapestry', 'landscape', 'multifaceted', 'comprehensive', 'holistic', 'navigate', or 'crucial'.\n"
             "2. NO CLICHES: Do NOT use 'In conclusion', 'Ultimately', 'In today's digital age', or 'game-changer'.\n"
             "3. FORMATTING: The very first ## H2 MUST focus entirely on the 'Information Gap' as a pattern interrupt.\n"
-            "4. CADENCE: Max 3 sentences per paragraph. Short, punchy, aggressive delivery.\n"
+            "4. CADENCE: Max 2-3 sentences per paragraph. Short, punchy delivery. White space between every paragraph.\n"
         )
 
         # Inject Dynamic Human Style Rules
@@ -134,7 +134,7 @@ class WriterService:
                                 f"(ARI: {details['ari_grade']}, "
                                 f"CLI: {details['coleman_liau_grade']}, "
                                 f"FK: {details['flesch_kincaid_grade']}) "
-                                f"| Target: ≤5.9 "
+                                f"| Target: ≤8.0 "
                                 f"| Avg sentence: {details['avg_sentence_length']} words "
                                 f"| {details['complex_sentence_count']} complex sentences"
                             )
@@ -148,11 +148,22 @@ class WriterService:
                         # Clear editor for next attempt
                         yield {"type": "content", "data": "RETRY_CLEAR"}
                 else:
+                    issues = []
+                    if score['banned_words_used']:
+                        issues.append(f"Banned words found: {', '.join(score['banned_words_found'])}")
+                    if not score['word_count_ok']:
+                        issues.append(f"Word count too low ({score['word_count']} words, need 1500+)")
+                    if not score['h1_ok']:
+                        issues.append(f"H1 heading issue (found {score['h1_count']}, need exactly 1)")
+                    if not score['h2_ok']:
+                        issues.append(f"Not enough H2 headings (found {score['h2_count']}, need 5+)")
+                    if not score['lists_tables_ok']:
+                        issues.append(f"Not enough list/table blocks (found {score['list_table_blocks']}, need 3+)")
+                    if not score['info_gain_ok']:
+                        issues.append(f"Information gain density too low ({score['info_gain_density']:.1f}, need 2.0+)")
                     v_feedback = (
                         f"SEO Validation Failed (Iteration {attempt}).\n"
-                        f"Issues: {', '.join(score['banned_words_found']) if score['banned_words_used'] else ''} "
-                        f"{'| Length too short' if not score['word_count_ok'] else ''} "
-                        f"{'| Missing H2s' if not score['h2_ok'] else ''}."
+                        + ("Issues:\n- " + "\n- ".join(issues) if issues else "Unknown validation failure")
                     )
                     yield {"type": "debug", "message": f"Writer Iteration {attempt} failed: {v_feedback}"}
                     

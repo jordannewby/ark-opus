@@ -242,6 +242,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
     print(f"🚀 [ARES] Starting unified generation for: {keyword} (niche: {niche})")
 
     async def event_generator():
+        nonlocal db
         start_time = time.time()
         try:
             if DEBUG_MODE:

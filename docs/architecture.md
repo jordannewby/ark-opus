@@ -39,11 +39,12 @@ Load this file when working on pipeline logic, agent behavior, or the workspace 
 - **Model**: `claude-3-5-sonnet-20241022` via native `anthropic` SDK
 - **Logic**: Operates in an **iterative dual-gate loop** (max 5 attempts). Each draft is validated by two sequential gates:
   1. **Gate 1 (SEO)**: `verify_seo_score` checks word count (min 1500), H2 count (min 5), list/table density (min 3 blocks), and Information Gain Density (min 2.0)
-  2. **Gate 2 (Readability)**: `verify_readability` enforces 5th-grade reading level (target ≤5.9) using composite scoring: ARI (primary), Coleman-Liau (secondary), Flesch-Kincaid (cross-check). Masks SEO keywords during scoring to prevent inflation.
-- **Readability Service** (`app/services/readability_service.py`): Zero-cost pure Python implementation. `READABILITY_DIRECTIVE` injected dynamically into prompt (never modifies `writer.md`). Per-sentence analysis identifies complex sentences. Typical convergence: 1-2 passes for SEO, 1-2 passes for readability.
-- **Prompt**: `app/services/prompts/writer.md` — Anti-AI-slop rules (bans: "delve", "tapestry", "crucial", corporate fluff) + dynamic SEO length directive (2,000-2,500 words) + `READABILITY_DIRECTIVE` (5th grade, short sentences, active voice).
+  2. **Gate 2 (Readability)**: `verify_readability` enforces 8th-grade reading level (target ≤8.0) using composite scoring: ARI (primary gate), Flesch-Kincaid (cross-check, target +1.0 buffer), Coleman-Liau (advisory only — over-penalizes technical vocabulary). Also enforces avg sentence length ≤15 words. Masks SEO keywords during scoring to prevent inflation.
+- **Readability Service** (`app/services/readability_service.py`): Zero-cost pure Python implementation. ARI is the primary gatekeeper (character-based, deterministic). FK cross-check uses +1.0 buffer to absorb syllable-counting noise. CLI is advisory only — reported in debug but does not block publishing (it over-penalizes technical vocabulary that IS the SEO strategy). `READABILITY_DIRECTIVE` injected dynamically into prompt (never modifies `writer.md`). Uses **layer-cake scanning format** — optimized for how busy readers actually read (scan headings, first sentences, bold text). Requires benefit-driven H2 headings every 150-200 words, key takeaway as first sentence of each section, bold anchor phrase per section. Per-sentence analysis identifies complex sentences. Typical convergence: 1-2 passes for SEO, 1-2 passes for readability.
+- **Prompt**: `app/services/prompts/writer.md` — Anti-AI-slop rules (bans: "delve", "tapestry", "crucial", corporate fluff) + dynamic SEO length directive (1,500-1,800 words) + `READABILITY_DIRECTIVE` (layer-cake scanning: benefit-driven H2s every 150-200 words, first-sentence takeaways, bold text anchoring, H1 + ≥5 H2s + ≥3 list/table blocks; 8th grade target, 8-14 words/sentence soft aim, active voice, banned AI-slop words list embedded in directive).
+- **SEO Feedback**: On validation failure, reports all 6 conditions with specific counts: word count, H1 count, H2 count, list/table blocks, information gain density, and banned words found. Eliminates blind retry loops.
 - **Input**: Psychology blueprint + UserStyleRules from DB (scoped to active workspace)
-- **Output**: 2,500+ word Markdown article streamed in real-time. Yields `debug` events for iteration tracking (SEO pass/fail, Readability pass/fail with grade metrics) and `content` events for prose. Yields `RETRY_CLEAR` on validation failure to reset editor. 
+- **Output**: ~1,600 word Markdown article streamed in real-time. Yields `debug` events for iteration tracking (SEO pass/fail with specific failure reasons, Readability pass/fail with grade metrics) and `content` events for prose. Yields `RETRY_CLEAR` on validation failure to reset editor.
 
 ### Phase 6 — FeedbackAgent (`app/services/feedback_service.py`)
 - **Model**: `gemini-2.5-flash`
@@ -76,6 +77,17 @@ A closed-loop system that makes the ResearchAgent self-improving across runs. Fo
 - **Debug Propagation**: Forwarding `debug` events from all backend agents (Phase 1 tool decisions, Phase 3 iteration logs) to the Cyber-Glass terminal for full visibility.
 - Each phase streams progress events (tool decisions, intermediate results) in real time.
 - DataForSEO MCP tool names are streamed directly to the UI as R1 selects them
+
+---
+
+## SSL Retry on Post-Generation Commit
+
+The DB session (`db`) is checked out via FastAPI's `Depends(get_db)` before `event_generator()` starts. With up to 5 iterations of Claude API calls (15-30s each), total generation can run 2-3 minutes. Neon PostgreSQL drops idle SSL connections before that completes. `pool_pre_ping` only helps at checkout time, not for connections already held open.
+
+**Fix** (in `app/main.py`, `event_generator()`):
+- `nonlocal db` declared at top of generator so reassignment works across Python's closure scoping
+- Both post-generation `db.commit()` calls wrapped in `try/except OperationalError` → rollback → close → `SessionLocal()` → re-add/merge → commit
+- Only applied to the two commits after article generation (Post save + ResearchRun linking), not every commit in the file
 
 ---
 
@@ -157,7 +169,7 @@ Connection configured in `app/database.py` — Neon PostgreSQL with `pool_pre_pi
 ## Anti-AI-Slop Enforcement
 
 - Banned words list in `app/services/prompts/writer.md` (delve, tapestry, crucial, foster, etc.)
-- **5th-grade readability enforcement** via `readability_service.py` — composite scoring (ARI, Coleman-Liau, Flesch-Kincaid) with keyword masking. Enforces short sentences (10-14 words), active voice, immediate technical term explanations.
+- **8th-grade readability enforcement** via `readability_service.py` — ARI-primary scoring with FK cross-check (+1.0 buffer) and CLI advisory. Keyword masking prevents technical SEO terms from inflating scores. Enforces avg sentence length ≤15 words, active voice, immediate technical term explanations. READABILITY_DIRECTIVE uses **layer-cake scanning format**: benefit-driven H2s every 150-200 words, first-sentence takeaways per section, bold anchor phrases, 1,500-1,800 word target. Embeds banned AI-slop words list directly in the directive. Aims for 8-14 words/sentence (soft target, not hard ceiling).
 - PAS framework enforced via `app/services/prompts/persuasion.md`
 - Identity Hooks target reader psychology via specific audience archetypes
 - UserStyleRules from FeedbackAgent mathematically converge on the user's exact writing style over runs
