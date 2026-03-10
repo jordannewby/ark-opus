@@ -202,7 +202,7 @@ async def plan_campaign(req: CampaignCreateRequest, db: Session = Depends(get_db
 
 # --- Orchestration Endpoints ---
 
-@app.get("/research/{keyword}", response_model=ResearchResponse)
+@app.get("/research/{keyword:path}", response_model=ResearchResponse)
 async def research_keyword(keyword: str, niche: str = "default", db: Session = Depends(get_db)):
     agent = ResearchAgent(db)
     return await agent.research(keyword, niche=niche)
@@ -226,7 +226,7 @@ async def clarify_intent(keyword: str):
     questions = await agent.get_clarifying_questions(keyword)
     return {"questions": questions}
 
-@app.post("/generate/{keyword}")
+@app.post("/generate/{keyword:path}")
 async def generate_article(keyword: str, payload: GeneratePayload, request: Request, db: Session = Depends(get_db)):
     from .services.psychology_agent import PsychologyAgent
     from .services.writer_service import WriterService
