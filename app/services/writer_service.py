@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from anthropic import AsyncAnthropic
 from ..settings import ANTHROPIC_API_KEY
+from .readability_service import verify_readability, READABILITY_DIRECTIVE
 
 
 class WriterService:
@@ -68,9 +69,10 @@ class WriterService:
                 prompt_instructions += f"- {rule.rule_description}\n"
             prompt_instructions += "--------------------------------------------------------\n"
 
+        prompt_instructions += f"\n\n{READABILITY_DIRECTIVE}"
         prompt_instructions += "\nFollow all system prompt guidelines strictly. Write directly in Markdown."
 
-        max_attempts = 3
+        max_attempts = 5
         v_feedback = ""
 
         for attempt in range(1, max_attempts + 1):
@@ -99,8 +101,52 @@ class WriterService:
 
                 if score["passed"]:
                     yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed SEO validation."}
-                    yield {"status": "success", "text": full_content}
-                    return
+
+                    # --- Gate 2: Readability Validation ---
+                    read_keywords = semantic_keywords if semantic_keywords else []
+                    read_result = verify_readability(full_content, target_grade=5.9, keywords=read_keywords)
+
+                    if read_result["pass"]:
+                        details = read_result["details"]
+                        yield {
+                            "type": "debug",
+                            "message": (
+                                f"Writer Iteration {attempt}: Readability PASS — "
+                                f"Grade {details['composite_grade']} "
+                                f"(ARI: {details['ari_grade']}, "
+                                f"CLI: {details['coleman_liau_grade']}, "
+                                f"FK: {details['flesch_kincaid_grade']})"
+                            )
+                        }
+                        yield {"status": "success", "text": full_content}
+                        return
+                    else:
+                        details = read_result["details"]
+                        v_feedback = (
+                            f"Readability Validation Failed (Iteration {attempt}).\n"
+                            f"{read_result['feedback']}"
+                        )
+                        yield {
+                            "type": "debug",
+                            "message": (
+                                f"Writer Iteration {attempt}: Readability FAIL — "
+                                f"Grade {details['composite_grade']} "
+                                f"(ARI: {details['ari_grade']}, "
+                                f"CLI: {details['coleman_liau_grade']}, "
+                                f"FK: {details['flesch_kincaid_grade']}) "
+                                f"| Target: ≤5.9 "
+                                f"| Avg sentence: {details['avg_sentence_length']} words "
+                                f"| {details['complex_sentence_count']} complex sentences"
+                            )
+                        }
+
+                        if attempt == max_attempts:
+                            yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
+                            yield {"status": "success", "text": full_content}
+                            return
+
+                        # Clear editor for next attempt
+                        yield {"type": "content", "data": "RETRY_CLEAR"}
                 else:
                     v_feedback = (
                         f"SEO Validation Failed (Iteration {attempt}).\n"

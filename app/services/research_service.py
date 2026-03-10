@@ -73,7 +73,7 @@ class ResearchAgent:
     async def research(self, keyword: str, niche: str = "default", user_context: str = "", profile_name: str = "default", mcp_session=None) -> dict:
         """Run full research pipeline for *keyword* via localized MCP server."""
         niche = niche.strip().lower().replace(" ", "-") if niche and niche != "default" else "default"
-        cached = self._get_cached(keyword)
+        cached = self._get_cached(keyword, profile_name, niche)
         
         from ..settings import DEBUG_MODE
         
@@ -353,7 +353,7 @@ class ResearchAgent:
             "executed_tools": executed_tools if 'executed_tools' in locals() else [],
         }
 
-        self._save_cache(keyword, result)
+        self._save_cache(keyword, profile_name, niche, result)
 
         run_id = await self._capture_run_telemetry(
             keyword=keyword,
@@ -900,7 +900,15 @@ class ResearchAgent:
             "- Be strategic: scout first, then extract only the best articles."
         )
         if niche_intel:
-            prompt += f"\n\n{niche_intel}"
+            prompt += (
+                "\n\n<niche_playbook>\n"
+                f"{niche_intel}\n"
+                "</niche_playbook>\n\n"
+                "CRITICAL INSTRUCTION: The <niche_playbook> above contains historical data and past topics. "
+                "You must use it STRICTLY for tone, audience insights, and strategic style. "
+                "DO NOT research or write about the specific past topics mentioned in the playbook. "
+                f"You must focus EXCLUSIVELY on your current Target Keyword: '{keyword}'"
+            )
         return prompt
 
     async def _call_deepseek_r1(self, messages: list[dict]) -> str:
@@ -990,11 +998,15 @@ class ResearchAgent:
     # Cache Layer
     # ------------------------------------------------------------------
 
-    def _get_cached(self, keyword: str) -> dict | None:
+    def _get_cached(self, keyword: str, profile_name: str, niche: str) -> dict | None:
         """Return cached result if it exists and hasn't expired."""
         row = (
             self.db.query(ResearchCache)
-            .filter(ResearchCache.keyword == keyword.lower())
+            .filter(
+                ResearchCache.keyword == keyword.lower(),
+                ResearchCache.profile_name == profile_name,
+                ResearchCache.niche == niche
+            )
             .first()
         )
         if row is None:
@@ -1010,11 +1022,15 @@ class ResearchAgent:
 
         return json.loads(row.result_json)
 
-    def _save_cache(self, keyword: str, result: dict) -> None:
+    def _save_cache(self, keyword: str, profile_name: str, niche: str, result: dict) -> None:
         """Upsert research result into the cache table."""
         row = (
             self.db.query(ResearchCache)
-            .filter(ResearchCache.keyword == keyword.lower())
+            .filter(
+                ResearchCache.keyword == keyword.lower(),
+                ResearchCache.profile_name == profile_name,
+                ResearchCache.niche == niche
+            )
             .first()
         )
         payload = json.dumps(result, ensure_ascii=False)
@@ -1025,6 +1041,8 @@ class ResearchAgent:
         else:
             row = ResearchCache(
                 keyword=keyword.lower(),
+                profile_name=profile_name,
+                niche=niche,
                 result_json=payload,
                 cache_ttl_hours=CACHE_TTL_HOURS,
             )

@@ -22,6 +22,28 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 class Base(DeclarativeBase):
     pass
 
+def migrate_research_cache():
+    """One-time migration: Add profile_name and niche to research_cache."""
+    from sqlalchemy import text, inspect
+    inspector = inspect(engine)
+
+    # Check if migration already applied
+    if 'research_cache' not in inspector.get_table_names():
+        return  # Table doesn't exist yet, will be created with correct schema
+
+    columns = [col['name'] for col in inspector.get_columns('research_cache')]
+    if 'profile_name' in columns:
+        return  # Migration already applied
+
+    with engine.begin() as conn:
+        # Add new columns with default values
+        conn.execute(text("ALTER TABLE research_cache ADD COLUMN profile_name VARCHAR(50) DEFAULT 'default'"))
+        conn.execute(text("ALTER TABLE research_cache ADD COLUMN niche VARCHAR(100) DEFAULT 'default'"))
+        # Drop old unique constraint
+        conn.execute(text("ALTER TABLE research_cache DROP CONSTRAINT IF EXISTS research_cache_keyword_key"))
+        # Add composite unique constraint
+        conn.execute(text("ALTER TABLE research_cache ADD CONSTRAINT uix_cache_composite UNIQUE (keyword, profile_name, niche)"))
+
 def get_db():
     db = SessionLocal()
     try:
