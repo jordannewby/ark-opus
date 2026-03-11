@@ -630,4 +630,5 @@ PRESERVE EVERYTHING:
 - The emotional hooks and identity triggers from the psychology blueprint
 - The personality and style rules from the workspace
 - NEVER cut content to simplify. Rewrite sentences, don't delete them.
+- NEVER fabricate statistics, percentages, or dollar amounts. Use only data from the research brief. No stat is better than a fake stat.
 """.strip()

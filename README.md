@@ -81,7 +81,7 @@ The backend operates entirely inside FastAPI (`app/main.py`), utilizing the `/ge
 3.  **Phase 2: Strategic Logic (`app/services/psychology_agent.py`)**
     *   DeepSeek-V3 (`deepseek-chat`) acts as the "Persuasion Architect," injecting the Information Gap into the PAS framework to return a structured JSON psychological blueprint.
 4.  **Phase 3: Prose Logic (`app/services/writer_service.py`)**
-    *   `gemini-2.5-pro` violently enforces a strict "Anti-AI" system prompt (`writer.md`), banning fluff words and drafting the heavy-duty Markdown article.
+    *   `gemini-2.5-pro` violently enforces a strict "Anti-AI" system prompt (`writer.md`), banning fluff words, strictly enforcing the "No Fabricated Data" constraint, and drafting the heavy-duty Markdown article.
 5.  **Phase 6: Self-Correction Loop (`app/services/feedback_service.py`)**
     *   When a human edits the generated Markdown in the UI, `gemini-2.5-flash` semantically diffs the original against the edit to extract permanent `UserStyleRule` entities to Neon PostgreSQL (scoped by `profile_name`), ensuring the AI converges on the user's exact writing style over time.
 
