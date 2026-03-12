@@ -79,11 +79,11 @@ Never use any of these words or patterns:
 - **The Stem Scan:** Start every H2 and H3 with a high-value noun. (e.g., Use "SEO Metrics" instead of "How to Watch Metrics").
 - **First-Word Salience:** The first word of every paragraph should be a "hook" word. Avoid starting with "The," "A," or "This."
 
-## 3. EYE-ANCHORING (BREAKING THE WALL)
+## 3. EYE-ANCHORING (STRICTLY ENFORCED)
 - **The "Awkward Element" Rule:** Every 300 words, you MUST switch formats. If you just had three paragraphs, add a Table, a Bulleted List, or a Bolded "Pro-Tip" box.
 - **Mobile-First White Space:** Ensure no block of text exceeds 4 lines of vertical space. 
 
 ## 4. FORMATTING CONSTRAINTS
-- **Sentence Cap:** Max 18 words per sentence (Optimized for 2026 mobile readability).
+- **Sentence Cap:** Max 15 words per sentence (Optimized for 2026 mobile readability).
 - **Subheading Frequency:** An H2/H3 must appear every 150–200 words to prevent "scroll-fatigue."
 - **Active Voice:** Use direct "Practitioner-to-Peer" language.
