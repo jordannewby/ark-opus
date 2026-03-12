@@ -290,7 +290,8 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     return
                 elif result.get("status") == "success":
                     article_content = result["text"]
-                    
+                    readability_scores = result.get("readability_score")  # Extract readability scores
+
             if DEBUG_MODE:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 3 (Claude 3.5 Sonnet) completed in {round(time.time() - p3_start, 2)}s'})}\n\n"
 
@@ -300,6 +301,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 content=article_content,
                 original_ai_content=article_content,
                 profile_name=payload.profile_name,
+                readability_score=readability_scores,  # Save readability analytics
             )
             db.add(post)
             try:

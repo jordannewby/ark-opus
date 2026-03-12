@@ -125,7 +125,17 @@ class WriterService:
                     read_keywords.extend(NICHE_TERMS)
                     # Deduplicate while preserving order
                     read_keywords = list(dict.fromkeys(read_keywords))
-                    read_result = verify_readability(full_content, target_grade=10.0, keywords=read_keywords)
+                    read_result = verify_readability(full_content, target_grade=7.5, keywords=read_keywords)
+
+                    # DEBUG: Validate keyword masking effectiveness
+                    if read_keywords:
+                        import logging
+                        logging.debug(f"[READABILITY] Masking {len(read_keywords)} keywords: {read_keywords[:10]}...")
+                        sample_text = full_content[:500]
+                        from app.services.readability_service import mask_keywords, strip_markdown
+                        sample_masked = mask_keywords(strip_markdown(sample_text), read_keywords)
+                        logging.debug(f"[READABILITY] Original: {sample_text[:100]}")
+                        logging.debug(f"[READABILITY] Masked: {sample_masked[:100]}")
 
                     if read_result["pass"]:
                         details = read_result["details"]
@@ -139,7 +149,17 @@ class WriterService:
                                 f"FK: {details['flesch_kincaid_grade']})"
                             )
                         }
-                        yield {"status": "success", "text": full_content}
+                        # Include readability scores for database tracking
+                        yield {
+                            "status": "success",
+                            "text": full_content,
+                            "readability_score": {
+                                "ari": details['ari_grade'],
+                                "fk": details['flesch_kincaid_grade'],
+                                "cli": details['coleman_liau_grade'],
+                                "avg_sentence_length": details['avg_sentence_length']
+                            }
+                        }
                         return
                     else:
                         details = read_result["details"]
@@ -155,7 +175,7 @@ class WriterService:
                                 f"(ARI: {details['ari_grade']}, "
                                 f"CLI: {details['coleman_liau_grade']}, "
                                 f"FK: {details['flesch_kincaid_grade']}) "
-                                f"| Target: ≤10.0 "
+                                f"| Target: ≤7.5 "
                                 f"| Avg sentence: {details['avg_sentence_length']} words "
                                 f"| {details['complex_sentence_count']} complex sentences"
                             )

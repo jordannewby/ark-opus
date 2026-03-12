@@ -306,25 +306,35 @@ def passes_readability(
     ari: float,
     cli: float,
     fk: float,
-    target: float = 10.0,
+    target: float = 7.5,
     avg_sentence_length: float = 0.0,
-    max_sentence_length: float = 15.0
+    max_sentence_length: float = 12.0,
+    complex_sentence_count: int = 0,
+    total_sentence_count: int = 0
 ) -> bool:
     """Check readability using ARI as primary gate + sentence length enforcement.
-    
+
     Pass conditions (ALL must be true):
-      1. ARI at or below target grade
-      2. FK at or below target + 1.0 (cross-check with syllable noise buffer)
-      3. Average sentence length at or below max_sentence_length
-    
+      1. ARI at or below target grade (≤7.5)
+      2. FK at or below target + 1.5 (cross-check with syllable noise buffer)
+      3. Average sentence length at or below max_sentence_length (≤12 words)
+      4. Complex sentences (>15 words) ≤ 20% of total sentences
+
     CLI is advisory only — reported in debug but does not block publishing.
     This prevents technical vocabulary (long words that ARE the SEO keywords)
     from creating an impossible gate.
     """
     ari_ok = ari <= target
-    fk_ok = fk <= target + 1.0
+    fk_ok = fk <= target + 1.5  # Increased buffer for 7th-grade syllable noise
     sentences_ok = avg_sentence_length <= max_sentence_length if avg_sentence_length > 0 else True
-    return ari_ok and fk_ok and sentences_ok
+
+    # Gate 4: Limit complex sentences to 20% of total
+    complex_ok = True
+    if total_sentence_count > 0:
+        complex_ratio = complex_sentence_count / total_sentence_count
+        complex_ok = complex_ratio <= 0.20
+
+    return ari_ok and fk_ok and sentences_ok and complex_ok
 
 
 # ---------------------------------------------------------------------------
@@ -418,10 +428,17 @@ def analyze_readability(
     
     # Step 5: Composite + pass/fail (ARI-primary with sentence length gate)
     composite = compute_composite_grade(ari, cli, fk)
+
+    # Count sentences >15 words for complex gate
+    long_sentences = [s for s in split_sentences(clean) if count_words(s) > 15]
+    complex_count = len(long_sentences)
+
     passed = passes_readability(
         ari, cli, fk, target_grade,
         avg_sentence_length=avg_sent_len,
-        max_sentence_length=15.0
+        max_sentence_length=12.0,
+        complex_sentence_count=complex_count,
+        total_sentence_count=sents
     )
     
     # Step 6: Find complex sentences (use clean text, not masked)

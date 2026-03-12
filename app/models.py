@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, func, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -16,6 +16,7 @@ class Post(Base):
     content: Mapped[str] = mapped_column(Text)
     original_ai_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     human_edited_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    readability_score: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Stores {"ari": 7.2, "fk": 8.1, "cli": 7.8}
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
 
