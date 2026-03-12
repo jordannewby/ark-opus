@@ -15,8 +15,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from sqlalchemy.exc import OperationalError
-from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, SessionLocal
-from .models import Post, ResearchRun, UserStyleRule, Workspace
+from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, SessionLocal
+from .models import Post, ResearchRun, UserStyleRule, Workspace, WriterRun
 from .schemas import (
     BlueprintResponse,
     GenerateFullResponse,
@@ -38,6 +38,7 @@ from .services.cartographer_service import CartographerService
 
 migrate_research_cache()
 migrate_posts_readability()
+migrate_writer_learning()
 Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager
@@ -131,7 +132,23 @@ async def approve_and_train_post(
             post.original_ai_content,
             data.content,
         )
-    
+
+        # Fire writer readability scoring and distillation
+        from .services.writer_intel_service import WriterIntelService
+        background_tasks.add_task(
+            WriterIntelService.score_writer_run,
+            post_id,
+            db
+        )
+        # Extract niche from post for distillation
+        niche = post.niche if post.niche else "general"
+        background_tasks.add_task(
+            WriterIntelService.maybe_distill,
+            post.profile_name,
+            niche,
+            db
+        )
+
     # Update the primary content string
     post.content = data.content
     
@@ -279,9 +296,9 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             # Phase 3
             yield f"data: {json.dumps({'event': 'phase3_start', 'message': 'Drafting final prose...'})}\n\n"
             p3_start = time.time()
-            writer_service = WriterService(db=db) 
+            writer_service = WriterService(db=db)
             article_content = ""
-            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name):
+            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, payload.niche):
                 if result.get("type") == "content":
                     yield f"data: {json.dumps({'event': 'content', 'data': result['data']})}\n\n"
                 elif result.get("type") == "debug":
@@ -302,6 +319,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 content=article_content,
                 original_ai_content=article_content,
                 profile_name=payload.profile_name,
+                niche=payload.niche.strip().lower().replace(" ", "-") if payload.niche else None,
                 readability_score=readability_scores,  # Save readability analytics
             )
             db.add(post)
@@ -314,6 +332,20 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 db.add(post)
                 db.commit()
             db.refresh(post)
+
+            # Capture WriterRun telemetry for learning loop
+            if readability_scores:
+                writer_run = WriterRun(
+                    profile_name=payload.profile_name,
+                    niche=payload.niche.strip().lower().replace(" ", "-") if payload.niche else "general",
+                    post_id=post.id,
+                    ari_score=readability_scores["ari"],
+                    flesch_kincaid_score=readability_scores["fk"],
+                    coleman_liau_score=readability_scores["cli"],
+                    avg_sentence_length=readability_scores["avg_sentence_length"]
+                )
+                db.add(writer_run)
+                db.commit()
 
             # Link Post ↔ ResearchRun for quality scoring feedback loop
             run_id = research_data_dict.get("research_run_id")

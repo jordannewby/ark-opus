@@ -23,7 +23,7 @@ class WriterService:
         with open(prompt_path, "r", encoding="utf-8") as f:
             self.base_system_prompt = f.read()
 
-    async def produce_article(self, blueprint: dict, profile_name: str = "default"):
+    async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general"):
         """
         Takes a blueprint JSON and streams a formatted Markdown article using Anthropic.
         Enforces Information Gain, E-E-A-T, and Entity Density rules with an iterative SEO loop.
@@ -70,6 +70,35 @@ class WriterService:
             for rule in style_rules:
                 prompt_instructions += f"- {rule.rule_description}\n"
             prompt_instructions += "--------------------------------------------------------\n"
+
+        # Inject WriterPlaybook (Readability Learning)
+        from ..models import WriterPlaybook
+        import json
+
+        normalized_niche = niche.strip().lower().replace(" ", "-") if niche else "general"
+        writer_playbook = self.db.query(WriterPlaybook).filter(
+            WriterPlaybook.profile_name == profile_name,
+            WriterPlaybook.niche == normalized_niche
+        ).first()
+
+        if writer_playbook:
+            playbook_data = json.loads(writer_playbook.playbook_json)
+            prompt_instructions += "\n--- READABILITY PLAYBOOK (LEARNED FROM PAST SUCCESSES) ---\n"
+            prompt_instructions += f"This niche typically achieves ARI: {playbook_data['avg_ari_baseline']} grade level.\n"
+            prompt_instructions += f"Target sentence length: {playbook_data['structure_template']['target_avg_sentence_length']} words.\n"
+
+            if playbook_data.get('effective_sentence_patterns'):
+                prompt_instructions += "\nEffective sentence patterns for this niche:\n"
+                for pattern in playbook_data['effective_sentence_patterns'][:3]:  # Top 3
+                    prompt_instructions += f"- {pattern['pattern']} (avg ARI: {pattern['avg_ari']})\n"
+
+            if playbook_data.get('preferred_word_swaps'):
+                prompt_instructions += "\nPreferred word simplifications:\n"
+                for complex_word, simple_words in list(playbook_data['preferred_word_swaps'].items())[:5]:
+                    prompt_instructions += f"- Instead of '{complex_word}', use: {', '.join(simple_words)}\n"
+
+            prompt_instructions += f"(Playbook version {playbook_data['version']}, based on {playbook_data['runs_distilled']} successful articles)\n"
+            prompt_instructions += "----------------------------------------------------------------\n"
 
         # Pre-flight simplicity primer
         prompt_instructions += """

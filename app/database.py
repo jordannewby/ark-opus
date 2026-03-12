@@ -67,6 +67,63 @@ def migrate_posts_readability():
         """))
         print("[OK] Added readability_score column to posts table")
 
+def migrate_writer_learning():
+    """One-time migration: Add writer_runs and writer_playbooks tables, and niche column to posts."""
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
+
+    # Check if posts.niche column exists
+    if 'posts' in existing_tables:
+        columns = [col['name'] for col in inspector.get_columns('posts')]
+        if 'niche' not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE posts ADD COLUMN niche VARCHAR(100) DEFAULT NULL"))
+                print("[OK] Added niche column to posts table")
+
+    # Check if already migrated
+    if 'writer_runs' in existing_tables and 'writer_playbooks' in existing_tables:
+        return
+
+    with engine.begin() as conn:
+        if 'writer_runs' not in existing_tables:
+            conn.execute(text("""
+                CREATE TABLE writer_runs (
+                    id SERIAL PRIMARY KEY,
+                    profile_name VARCHAR(50) NOT NULL DEFAULT 'default',
+                    niche VARCHAR(100) NOT NULL,
+                    post_id INTEGER NOT NULL,
+                    ari_score FLOAT NOT NULL,
+                    flesch_kincaid_score FLOAT NOT NULL,
+                    coleman_liau_score FLOAT NOT NULL,
+                    avg_sentence_length FLOAT NOT NULL,
+                    readability_efficiency FLOAT,
+                    human_approved BOOLEAN DEFAULT FALSE,
+                    approved_at TIMESTAMP,
+                    is_distilled BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    CONSTRAINT uix_writer_run UNIQUE (profile_name, niche, post_id)
+                )
+            """))
+            print("[OK] Created writer_runs table")
+
+        if 'writer_playbooks' not in existing_tables:
+            conn.execute(text("""
+                CREATE TABLE writer_playbooks (
+                    id SERIAL PRIMARY KEY,
+                    profile_name VARCHAR(50) NOT NULL DEFAULT 'default',
+                    niche VARCHAR(100) NOT NULL,
+                    playbook_json TEXT NOT NULL,
+                    runs_distilled INTEGER DEFAULT 0,
+                    version INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP,
+                    CONSTRAINT uix_writer_playbook UNIQUE (profile_name, niche)
+                )
+            """))
+            print("[OK] Created writer_playbooks table")
+
 def get_db():
     db = SessionLocal()
     try:
