@@ -19,6 +19,7 @@ class PostResponse(BaseModel):
     content: str
     original_ai_content: str | None = None
     human_edited_content: str | None = None
+    readability_score: dict | None = None
     created_at: datetime
     updated_at: datetime | None = None
 

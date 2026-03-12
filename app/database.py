@@ -44,6 +44,29 @@ def migrate_research_cache():
         # Add composite unique constraint
         conn.execute(text("ALTER TABLE research_cache ADD CONSTRAINT uix_cache_composite UNIQUE (keyword, profile_name, niche)"))
 
+def migrate_posts_readability():
+    """One-time migration: Add readability_score JSON column to posts."""
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+
+    # Check if posts table exists
+    if 'posts' not in inspector.get_table_names():
+        return  # Table doesn't exist yet, will be created with column
+
+    # Check if column already exists
+    columns = [col['name'] for col in inspector.get_columns('posts')]
+    if 'readability_score' in columns:
+        return  # Already migrated
+
+    # Add the column
+    with engine.begin() as conn:
+        conn.execute(text("""
+            ALTER TABLE posts
+            ADD COLUMN readability_score JSONB DEFAULT NULL
+        """))
+        print("[OK] Added readability_score column to posts table")
+
 def get_db():
     db = SessionLocal()
     try:

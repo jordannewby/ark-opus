@@ -15,7 +15,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from sqlalchemy.exc import OperationalError
-from .database import Base, engine, get_db, migrate_research_cache, SessionLocal
+from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, SessionLocal
 from .models import Post, ResearchRun, UserStyleRule, Workspace
 from .schemas import (
     BlueprintResponse,
@@ -37,6 +37,7 @@ from .services.research_service import ResearchAgent
 from .services.cartographer_service import CartographerService
 
 migrate_research_cache()
+migrate_posts_readability()
 Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager
