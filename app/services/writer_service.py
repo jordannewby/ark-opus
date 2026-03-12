@@ -261,7 +261,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                 f"(ARI: {details['ari_grade']}, "
                                 f"CLI: {details['coleman_liau_grade']}, "
                                 f"FK: {details['flesch_kincaid_grade']}) "
-                                f"| Target: ≤7.5 "
+                                f"| ARI Target: ≤10.0 "
                                 f"| Avg sentence: {details['avg_sentence_length']} words "
                                 f"| {details['complex_sentence_count']} complex sentences"
                             )

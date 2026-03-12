@@ -316,10 +316,11 @@ def passes_readability(
     """Check readability using ARI as primary gate + sentence length enforcement.
 
     Pass conditions (ALL must be true):
-      1. ARI at or below target grade (≤7.5)
+      1. ARI at or below target grade (≤10.0 by default)
       2. FK at or below target + 1.5 (cross-check with syllable noise buffer)
       3. Average sentence length at or below max_sentence_length (≤12 words)
-      4. Complex sentences (>15 words) ≤ 20% of total sentences
+      4. Complex sentences (>15 words) ≤ 15% of total sentences
+      5. Sentence distribution: ≥80% of sentences must be 8-12 words
 
     CLI is advisory only — reported in debug but does not block publishing.
     This prevents technical vocabulary (long words that ARE the SEO keywords)
