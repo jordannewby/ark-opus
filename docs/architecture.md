@@ -41,6 +41,7 @@ Load this file when working on pipeline logic, agent behavior, or the workspace 
   1. **Gate 1 (SEO)**: `verify_seo_score` checks word count (min 1500), H2 count (min 5), list/table density (min 3 blocks), and Information Gain Density (min 2.0)
   2. **Gate 2 (Readability)**: `verify_readability` enforces 7th-8th grade reading level (target ≤7.5) using composite scoring: ARI (primary gate), Flesch-Kincaid (cross-check, target +1.5 buffer), Coleman-Liau (advisory only — over-penalizes technical vocabulary). Also enforces avg sentence length ≤12 words and complex sentence gate (≤20% of sentences can exceed 15 words). Broad keyword masking during scoring: semantic keywords + blueprint entities + 33 common niche terms (security, business, software, etc.) that inflate ARI but have no shorter synonym. Readability scores (ARI, FK, CLI, avg sentence length) persisted to Post.readability_score JSON column for analytics.
 - **Readability Service** (`app/services/readability_service.py`): Zero-cost pure Python implementation. ARI is the primary gatekeeper (character-based, deterministic). FK cross-check uses +1.5 buffer to absorb syllable-counting noise. CLI is advisory only — reported in debug but does not block publishing (it over-penalizes technical vocabulary that IS the SEO strategy). `READABILITY_DIRECTIVE` injected dynamically into prompt (never modifies `writer.md`). Includes **pre-flight simplicity primer** before main directive and **7th-grade template sentences** for pattern-matching. Uses **layer-cake scanning format** — optimized for how busy readers actually read (scan headings, first sentences, bold text). Requires benefit-driven H2 headings every 150-200 words, key takeaway as first sentence of each section, bold anchor phrase per section. Includes a concrete **word-swap reference table** (implement→set up, utilize→use, demonstrate→show, etc.) giving Claude explicit short-word alternatives. Per-sentence analysis identifies complex sentences. Typical convergence: 1-2 passes for SEO, 1-2 passes for readability.
+- **Writer Intelligence Injection**: After UserStyleRules, fetches `WriterPlaybook` for `(profile_name, niche)` and injects learned readability patterns (~100 tokens). Includes niche-specific ARI baseline, target sentence length, effective sentence patterns (future LLM distillation), and preferred word swaps (future LLM distillation). Example: "This niche typically achieves ARI: 7.15 grade level. Target sentence length: 11.2 words. (Playbook version 1, based on 10 successful articles)". Omitted on cold start (first 10 articles in a niche).
 - **Prompt**: `app/services/prompts/writer.md` — Anti-AI-slop rules (bans: "delve", "tapestry", "crucial", corporate fluff) + dynamic SEO length directive (1,500-1,800 words) + **pre-flight simplicity primer** (7th-grade readability checklist) + `READABILITY_DIRECTIVE` (layer-cake scanning: benefit-driven H2s every 150-200 words, first-sentence takeaways, bold text anchoring, H1 + ≥5 H2s + ≥3 list/table blocks; 7th-8th grade target ≤7.5, 8-12 words/sentence MANDATORY for 80% of sentences with 15-word hard ceiling, active voice, 7th-grade template sentences for pattern-matching, banned AI-slop words list + word-swap reference table embedded in directive). **No Fake Assets** constraint bans references to non-existent templates, tools, downloads, checklists, or frameworks — requires actionable steps instead. **No Fabricated Data** constraint bans inventing statistics, percentages, or study results not found in the research brief.
 - **SEO Feedback**: On validation failure, reports all 6 conditions with specific counts: word count, H1 count, H2 count, list/table blocks, information gain density, and banned words found. Eliminates blind retry loops.
 - **Input**: Psychology blueprint + UserStyleRules from DB (scoped to active workspace)
@@ -66,6 +67,27 @@ A closed-loop system that makes the ResearchAgent self-improving across runs. Fo
 - Stale playbook caveat appended when `updated_at` > 30 days old
 - 5% random prune of distilled `ResearchRun` rows >90 days old to manage DB growth
 - `is_distilled` flag marks consumed runs so they aren't re-distilled
+
+### Writer Intelligence Loop (`app/services/writer_intel_service.py`)
+
+A parallel closed-loop system that makes the WriterService self-improving for readability across runs. Mirrors the Research Intelligence architecture. Four phases:
+
+1. **Capture** ($0/run) — After each article generation, `WriterRun` telemetry is captured in `event_generator()` (app/main.py). Stores readability metrics (ARI, FK, CLI, avg_sentence_length) extracted from `Post.readability_score`. Data already in memory, zero API cost.
+2. **Recall** (~100 tokens) — `produce_article()` in `writer_service.py` fetches `WriterPlaybook` for `(profile_name, niche)` and injects learned patterns into Claude's prompt. Includes niche ARI baseline, target sentence length, and structure templates. Omitted on cold start (first 10 articles).
+3. **Reinforce** ($0 on `/approve`) — `WriterIntelService.score_writer_run()` computes readability efficiency on approval. Formula: `efficiency = (10.0 - ari_score) / 10.0`. Lower ARI = higher efficiency. Example: ARI 7.2 → efficiency 0.28. Persisted as `WriterRun.readability_efficiency`.
+4. **Distill** (~$0.001 per 10 runs) — `maybe_distill()` triggers when ≥10 undistilled runs accumulate AND ≥5 have efficiency ≥0.20 (ARI ≤8.0). Uses `_compute_heuristic_playbook()` (zero LLM cost, statistical averages) for MVP. Result upserted into `WriterPlaybook` with fields: `avg_ari_baseline`, `avg_readability_efficiency`, `target_avg_sentence_length`, `structure_template` (H2 frequency, list blocks). Versioned with `runs_distilled` counter.
+
+**Key behaviors:**
+- Niche normalization: `strip().lower().replace(" ", "-")` (identical to Research Intelligence)
+- Quality threshold: Only runs with `readability_efficiency ≥ 0.20` (ARI ≤8.0) included in distillation
+- Playbooks inject adaptive prompts: "This niche typically achieves ARI: 7.15 grade level. Target sentence length: 11.2 words."
+- `is_distilled` flag marks consumed runs to prevent re-distillation
+- Future: LLM-based distillation via Gemini Flash to extract sentence patterns and word swaps from article content
+
+**Complementary to UserStyleRule**:
+- `UserStyleRule` (FeedbackAgent) learns *what humans prefer* (tone, voice, specificity)
+- `WriterPlaybook` (WriterIntelService) learns *what achieves readability targets* (sentence patterns, word choices, structure)
+- Both systems feed into WriterService prompts, optimizing for different goals
 
 ---
 
@@ -154,13 +176,15 @@ Workspaces partition Neon PostgreSQL by `profile_name`, isolating `UserStyleRule
 ## Database Schema (Neon PostgreSQL)
 
 Tables managed via SQLAlchemy ORM in `app/models.py`:
-- `Post` — generated articles (`title`, `content`, `original_ai_content`, `human_edited_content`, `profile_name`, `research_run_id`, `readability_score`, `updated_at`). `readability_score` is a JSON column storing ARI, FK, CLI, and avg sentence length for analytics.
+- `Post` — generated articles (`title`, `content`, `original_ai_content`, `human_edited_content`, `profile_name`, `niche`, `research_run_id`, `readability_score`, `updated_at`). `readability_score` is a JSON column storing ARI, FK, CLI, and avg sentence length for analytics. `niche` added for WriterRun scoping.
 - `UserStyleRule` — style memory rules scoped by `profile_name`
 - `ResearchCache` — cached keyword research to reduce API calls. Composite unique constraint `(keyword, profile_name, niche)` ensures multi-tenant isolation. Includes TTL expiration (default 24h). Migration applied via `migrate_research_cache()` in `app/database.py`.
 - `Workspace` — persistent workspace definitions (`name`, `slug`, unique)
 - `ContentCampaign` — stores hub-and-spoke mappings (`seed_topic`, `pillar_keyword`, `spoke_keywords_json`, `profile_name`)
 - `ResearchRun` — per-run telemetry (tool sequence, KD stats, Exa queries, entity clusters, `quality_score`, `is_distilled`). Linked to `Post` via bidirectional `post_id`/`research_run_id`.
-- `NichePlaybook` — distilled niche-level intelligence. Composite unique constraint `(profile_name, niche)` for multi-tenant isolation. Versioned with `runs_distilled` counter.
+- `NichePlaybook` — distilled niche-level intelligence for research. Composite unique constraint `(profile_name, niche)` for multi-tenant isolation. Versioned with `runs_distilled` counter.
+- `WriterRun` — per-article readability telemetry (`ari_score`, `flesch_kincaid_score`, `coleman_liau_score`, `avg_sentence_length`, `readability_efficiency`, `human_approved`, `approved_at`, `is_distilled`). Composite unique constraint `(profile_name, niche, post_id)`. Linked to `Post` via `post_id`.
+- `WriterPlaybook` — distilled niche-level readability patterns. Composite unique constraint `(profile_name, niche)` for multi-tenant isolation. Stores JSON with `avg_ari_baseline`, `avg_readability_efficiency`, `target_avg_sentence_length`, `structure_template`, `effective_sentence_patterns` (future), `preferred_word_swaps` (future). Versioned with `runs_distilled` counter.
 
 Connection configured in `app/database.py` — Neon PostgreSQL with `pool_pre_ping`, `pool_recycle=300`, TCP keepalives.
 

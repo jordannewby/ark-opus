@@ -28,6 +28,7 @@ class WriterService:
         Takes a blueprint JSON and streams a formatted Markdown article using Anthropic.
         Enforces Information Gain, E-E-A-T, and Entity Density rules with an iterative SEO loop.
         """
+        import json # Explicitly import to prevent shadowing by local assignments later in the function
         entities = blueprint.get("entities", [])
         semantic_keywords = blueprint.get("semantic_keywords", [])
         information_gap = blueprint.get("information_gap", "")
@@ -73,7 +74,6 @@ class WriterService:
 
         # Inject WriterPlaybook (Readability Learning)
         from ..models import WriterPlaybook
-        import json
 
         normalized_niche = niche.strip().lower().replace(" ", "-") if niche else "general"
         writer_playbook = self.db.query(WriterPlaybook).filter(
@@ -168,6 +168,11 @@ Write your first draft as if explaining to a smart 13-year-old who knows basic i
                         "automated", "automation", "intelligence", "artificial",
                         "monitoring", "detection", "protection", "vulnerable",
                         "organization", "organizations", "productivity",
+                        
+                        # B2B / SMB Specific additions
+                        "investment", "financial", "development", "marketing", "owner", 
+                        "owners", "industry", "industries", "professional", "professionals",
+                        "experience", "experiences", "competitive", "competition"
                     ]
                     read_keywords.extend(NICHE_TERMS)
                     # Deduplicate while preserving order

@@ -31,9 +31,31 @@ function terminalLog(agent, message, color = "#22d3ee") {
 }
 
 function updateAgentUI(activeNode) {
+    // Desktop / Static nodes
     Object.values(els.agentNodes).forEach(node => node.classList.remove('agent-node-active'));
     if (activeNode && els.agentNodes[activeNode]) {
         els.agentNodes[activeNode].classList.add('agent-node-active');
+    }
+    
+    // Mobile Toast Node
+    const mobileToast = document.getElementById('mobile-agent-toast');
+    const mobileText = document.getElementById('mobile-agent-text');
+    
+    if (mobileToast && mobileText) {
+        if (!activeNode) {
+            mobileToast.classList.add('opacity-0');
+            mobileToast.classList.remove('opacity-100');
+            mobileText.textContent = 'Standby';
+        } else {
+            let label = 'Working...';
+            if (activeNode === 'research') label = 'Agent: Researching';
+            if (activeNode === 'psychology') label = 'Agent: Strategizing';
+            if (activeNode === 'writer') label = 'Agent: Writing Article';
+            
+            mobileText.textContent = label;
+            mobileToast.classList.remove('opacity-0');
+            mobileToast.classList.add('opacity-100');
+        }
     }
 }
 
@@ -450,6 +472,50 @@ brainEls.openBtn.addEventListener('click', () => toggleBrain(true));
 brainEls.closeBtn.addEventListener('click', () => toggleBrain(false));
 brainEls.backdrop.addEventListener('click', () => toggleBrain(false));
 
+// --- ACTIVITY CONSOLE LOGIC ---
+const consoleEls = {
+    panel: document.getElementById('docked-console'),
+    openBtn: document.getElementById('open-console-btn'),
+    closeBtn: document.getElementById('close-docked-console-btn')
+};
+
+let isConsoleOpen = false;
+
+function toggleConsole(show) {
+    isConsoleOpen = show;
+    if (show) {
+        // Expand the docked console
+        consoleEls.panel.classList.remove('h-0', 'opacity-0', 'mt-0', 'pointer-events-none');
+        consoleEls.panel.classList.add('h-48', 'mt-4', 'opacity-100', 'pointer-events-auto');
+        
+        // Scroll to bottom of terminal when opened
+        setTimeout(() => {
+            if(els.terminal) els.terminal.scrollTop = els.terminal.scrollHeight;
+        }, 300);
+    } else {
+        // Collapse the docked console
+        consoleEls.panel.classList.remove('h-48', 'mt-4', 'opacity-100', 'pointer-events-auto');
+        consoleEls.panel.classList.add('h-0', 'opacity-0', 'mt-0', 'pointer-events-none');
+    }
+}
+
+// Toggle on click of the sidebar menu button
+consoleEls.openBtn.addEventListener('click', () => {
+    // If on mobile, typing to open the console should properly close the sidebar so it's not cluttered
+    if (window.innerWidth < 768) {
+        document.getElementById('left-sidebar').classList.remove('sidebar-mobile-active');
+        const bd = document.getElementById('sidebar-backdrop');
+        if(bd) {
+            bd.classList.remove('opacity-100', 'pointer-events-auto');
+            bd.classList.add('opacity-0', 'pointer-events-none');
+        }
+    }
+    toggleConsole(!isConsoleOpen);
+});
+
+// Close button inside the console
+consoleEls.closeBtn.addEventListener('click', () => toggleConsole(false));
+
 async function loadRules() {
     brainEls.container.innerHTML = '<div class="text-slate-500 text-xs text-center mono-text animate-pulse py-10">Accessing memory blocks...</div>';
     try {
@@ -537,25 +603,78 @@ async function syncWorkspaces() {
         if (!res.ok) throw new Error('Failed to fetch workspaces');
         const workspaces = await res.json();
 
+        const list = document.getElementById('workspace-list');
+        const triggerName = document.getElementById('current-workspace-name');
         const currentVal = els.profileSelect.value;
-        els.profileSelect.innerHTML = '<option value="default" class="bg-[#050505]">WORKSPACE: DEFAULT</option>';
+        
+        list.innerHTML = '';
+
+        // Add DEFAULT option
+        const defaultItem = createWorkspaceItem({ name: 'DEFAULT', slug: 'default' }, currentVal === 'default');
+        list.appendChild(defaultItem);
 
         workspaces.forEach(ws => {
             if (ws.slug === 'default') return;
-            const option = document.createElement('option');
-            option.value = ws.slug;
-            option.textContent = `WORKSPACE: ${ws.name.toUpperCase()}`;
-            option.className = 'bg-[#050505]';
-            els.profileSelect.appendChild(option);
+            const item = createWorkspaceItem(ws, ws.slug === currentVal);
+            list.appendChild(item);
         });
 
-        if (Array.from(els.profileSelect.options).find(o => o.value === currentVal)) {
-            els.profileSelect.value = currentVal;
-        }
+        // Update trigger display
+        const activeWs = workspaces.find(w => w.slug === currentVal) || { name: 'DEFAULT' };
+        triggerName.textContent = activeWs.name.toUpperCase();
+        
     } catch (e) {
         console.error("Workspace sync error:", e);
     }
 }
+
+function createWorkspaceItem(ws, isActive) {
+    const div = document.createElement('div');
+    div.className = `workspace-option-item ${isActive ? 'active' : ''}`;
+    div.textContent = ws.name.toUpperCase();
+    div.dataset.slug = ws.slug;
+    
+    div.addEventListener('click', (e) => {
+        e.stopPropagation();
+        selectWorkspace(ws.slug, ws.name);
+    });
+    
+    return div;
+}
+
+function selectWorkspace(slug, name) {
+    els.profileSelect.value = slug;
+    document.getElementById('current-workspace-name').textContent = name.toUpperCase();
+    document.getElementById('workspace-options').classList.add('hidden');
+    
+    // Highlight active in list
+    document.querySelectorAll('.workspace-option-item').forEach(item => {
+        item.classList.toggle('active', item.dataset.slug === slug);
+    });
+    
+    // Trigger existing change logic
+    els.profileSelect.dispatchEvent(new Event('change'));
+}
+
+// Dropdown Toggle Logic
+document.getElementById('workspace-dropdown-container').addEventListener('click', (e) => {
+    // Don't toggle if we clicked the + button
+    if (e.target.id === 'add-workspace-btn') return;
+    
+    const options = document.getElementById('workspace-options');
+    const isHidden = options.classList.contains('hidden');
+    
+    // Close others
+    options.classList.toggle('hidden');
+});
+
+// Close when clicking outside
+document.addEventListener('click', (e) => {
+    const container = document.getElementById('workspace-dropdown-container');
+    if (!container.contains(e.target)) {
+        document.getElementById('workspace-options').classList.add('hidden');
+    }
+});
 
 function toggleWorkspaceModal(isVisible) {
     if (isVisible) {
@@ -602,14 +721,9 @@ async function createWorkspace() {
         if (!res.ok) throw new Error("Failed to save workspace");
         const ws = await res.json();
 
-        const option = document.createElement('option');
-        option.value = ws.slug;
-        option.textContent = `WORKSPACE: ${ws.name.toUpperCase()}`;
-        option.className = 'bg-[#050505]';
-
-        els.profileSelect.appendChild(option);
-        els.profileSelect.value = ws.slug;
-        els.profileSelect.dispatchEvent(new Event('change'));
+        // Update UI
+        await syncWorkspaces();
+        selectWorkspace(ws.slug, ws.name);
 
         toggleWorkspaceModal(false);
         terminalLog("SYSTEM", `Workspace "${ws.name}" created and saved to cloud.`, "#d946ef");
@@ -829,3 +943,60 @@ function attachSpokeListeners() {
         });
     });
 }
+
+// SIDEBAR TOGGLE LOGIC
+const toggleSidebarBtn = document.getElementById('toggle-sidebar-btn');
+const leftSidebar = document.getElementById('left-sidebar');
+const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+
+function toggleSidebar() {
+    if (!leftSidebar) return;
+    
+    const isMobile = window.innerWidth < 768; // Tailwind md breakpoint
+    
+    if (isMobile) {
+        // Mobile execution: toggle slide-in active class and backdrop
+        const isActive = leftSidebar.classList.contains('sidebar-mobile-active');
+        if (isActive) {
+            leftSidebar.classList.remove('sidebar-mobile-active');
+            if (sidebarBackdrop) {
+                sidebarBackdrop.classList.remove('opacity-100');
+                sidebarBackdrop.classList.add('pointer-events-none');
+            }
+        } else {
+            leftSidebar.classList.add('sidebar-mobile-active');
+            if (sidebarBackdrop) {
+                sidebarBackdrop.classList.remove('pointer-events-none');
+                sidebarBackdrop.classList.add('opacity-100');
+            }
+        }
+    } else {
+        // Desktop execution: toggle width collapse
+        leftSidebar.classList.toggle('sidebar-collapsed');
+        if (leftSidebar.classList.contains('sidebar-collapsed')) {
+            if (toggleSidebarBtn) {
+                toggleSidebarBtn.classList.add('bg-[rgba(255,255,255,0.08)]');
+                toggleSidebarBtn.classList.remove('bg-[rgba(255,255,255,0.03)]');
+            }
+        } else {
+            if (toggleSidebarBtn) {
+                toggleSidebarBtn.classList.add('bg-[rgba(255,255,255,0.03)]');
+                toggleSidebarBtn.classList.remove('bg-[rgba(255,255,255,0.08)]');
+            }
+        }
+    }
+}
+
+if (toggleSidebarBtn) toggleSidebarBtn.addEventListener('click', toggleSidebar);
+if (sidebarBackdrop) sidebarBackdrop.addEventListener('click', toggleSidebar);
+
+// Ensure sidebar reset on resize crossing the breakpoint
+window.addEventListener('resize', () => {
+    if (window.innerWidth >= 768 && leftSidebar && leftSidebar.classList.contains('sidebar-mobile-active')) {
+        leftSidebar.classList.remove('sidebar-mobile-active');
+        if (sidebarBackdrop) {
+            sidebarBackdrop.classList.remove('opacity-100');
+            sidebarBackdrop.classList.add('pointer-events-none');
+        }
+    }
+});

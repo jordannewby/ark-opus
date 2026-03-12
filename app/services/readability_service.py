@@ -517,8 +517,10 @@ def _build_feedback(
     if fk > target + 1.5:
         failures.append("FK TOO HIGH")
         lines.append(f"ISSUE: Flesch-Kincaid grade is {fk}. Must be ≤{target + 1.5}.")
-        lines.append("ACTION: Reduce syllable count. Swap multi-syllable words for shorter ones")
-        lines.append("  where the meaning stays the same. 'use' not 'utilize', 'help' not 'facilitate'.")
+        lines.append("ACTION: Reduce syllable count. Talk to a busy, local small business owner.")
+        lines.append("  REMOVE ALL CORPORATE JARGON (optimize, leverage, scalable, robust, seamless).")
+        lines.append("  Swap multi-syllable words for shorter ones where the meaning stays the same.")
+        lines.append("  'use' not 'utilize', 'help' not 'facilitate'. Write clearly and directly.")
         lines.append("")
     
     # Flag specific offending sentences
@@ -676,6 +678,10 @@ You MUST use these short alternatives. Longer versions will trigger readability 
   evaluate → check, review          initiated → started, began
   regarding → about                 capabilities → skills, features
   acquisition → purchase, gain      operational → running, active
+  individuals → people              purchasing → buying
+  expenditure → cost                assist → help
+  require → need                    implementing → doing
+  maximize → grow, boost            communicate → talk, share
 
 ENFORCEMENT: Before submitting your draft, search for each word in the LEFT column.
 If found, it MUST be replaced with the RIGHT column alternative unless it's a:
@@ -683,9 +689,10 @@ If found, it MUST be replaced with the RIGHT column alternative unless it's a:
   - Technical term your audience searches for
   - Proper noun or brand name
 NO EXCEPTIONS for common words. "Implement" always becomes "set up" or "use".
+CRITICAL SEO PRESERVATION: Do NOT modify or remove the SEO Keywords, Entities, or specific psychological hooks provided to you. You MUST include them naturally, but the rest of your sentences must be simple 7th-grade English.
 
 ALSO:
-- NEVER use these words: delve, tapestry, landscape, multifaceted, comprehensive, holistic, navigate, crucial, foster, in conclusion, ultimately, fast-paced world, digital age, game-changer.
+- NEVER use these words: optimize, leverage, scalable, robust, seamless, synergy, ecosystem, paradigm, delve, tapestry, landscape, multifaceted, comprehensive, holistic, navigate, crucial, foster, in conclusion, ultimately, fast-paced world, digital age, game-changer.
 - KEEP all SEO keywords and technical terms — these are what the audience searches for.
 - When you use a technical term, explain it in plain words in the next sentence.
 - Prefer active voice. "Hackers steal data" not "Data is stolen by hackers."

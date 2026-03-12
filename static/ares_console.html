@@ -10,15 +10,17 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap');
 
-        :root {
-            --bg-base: #050505;
-            --bg-elevated: #0F0F11;
-            --text-main: #FFFFFF;
-            --text-muted: #8B8B93;
-            --accent: #3b82f6;
-            /* Leveric Royal Blue */
-            --accent-hover: #8b5cf6;
-            /* Leveric Vibrant Purple */
+                :root {
+            --bg-base: #0e0e12;
+            --bg-elevated: #18181f;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent: #6366f1; /* Premium Indigo */
+            --accent-hover: #4f46e5;
+            --border-soft: rgba(255, 255, 255, 0.08);
+            --shadow-soft: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            --shadow-elevated: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            --focus-ring: 0 0 0 3px rgba(99, 102, 241, 0.2);
         }
 
         body {
@@ -61,13 +63,7 @@
             transition: all 0.5s ease;
         }
 
-        .agent-node-active {
-            opacity: 1 !important;
-            transform: scale(1.05) !important;
-            color: var(--accent) !important;
-            font-weight: 600;
-            text-shadow: 0 0 15px rgba(139, 92, 246, 0.4);
-        }
+        
 
         /* Dark mode Prose for generated text */
         .prose-custom h1 {
@@ -145,40 +141,7 @@
         }
 
         /* Input UX Enhancements */
-        .input-group {
-            position: relative;
-            width: 100%;
-        }
-
-        .input-group label {
-            position: absolute;
-            top: 0;
-            left: 0;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            font-weight: 600;
-            letter-spacing: 0.05em;
-            color: var(--text-muted);
-            transform: translateY(-120%);
-            opacity: 0;
-            transition: all 0.3s ease;
-            pointer-events: none;
-        }
-
-        .input-group input:focus+label,
-        .input-group input:not(:placeholder-shown)+label {
-            transform: translateY(-160%);
-            opacity: 1;
-            color: var(--accent);
-        }
-
-        .input-group input::placeholder {
-            transition: opacity 0.3s ease;
-        }
-
-        .input-group input:focus::placeholder {
-            opacity: 0.3;
-        }
+        
 
         input:focus,
         textarea:focus,
@@ -197,41 +160,9 @@
             border-bottom-color: var(--accent) !important;
         }
 
-        .btn-sleek {
-            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #3b82f6 100%);
-            background-size: 200% auto;
-            color: #FFFFFF;
-            border-radius: 9999px;
-            padding: 0.6rem 1.75rem;
-            transition: all 0.5s ease;
-            font-weight: 700;
-            font-size: 0.875rem;
-            letter-spacing: 0.05em;
-            box-shadow: 0 0 15px rgba(59, 130, 246, 0.3);
-        }
+        
 
-        .btn-sleek:hover {
-            background-position: right center;
-            box-shadow: 0 0 25px rgba(139, 92, 246, 0.5);
-            transform: translateY(-1px);
-        }
-
-        .btn-outline {
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            color: #8B8B93;
-            border-radius: 9999px;
-            padding: 0.5rem 1.5rem;
-            transition: all 0.3s;
-            font-weight: 500;
-            background: transparent;
-        }
-
-        .btn-outline:hover {
-            background-color: rgba(59, 130, 246, 0.05);
-            border-color: rgba(139, 92, 246, 0.4);
-            color: #8b5cf6;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        }
+        
 
         .sidebar-btn {
             width: 100%;
@@ -263,87 +194,299 @@
             color: #FFFFFF;
         }
 
+        
+    
+        /* Premium Input Styling */
+        .input-group label {
+            display: block;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            margin-bottom: 0.35rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .premium-input {
+            width: 100%;
+            background-color: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--border-soft);
+            color: var(--text-main);
+            border-radius: 8px;
+            padding: 0.65rem 1rem;
+            transition: all 0.2s ease;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+        }
+        
+        .premium-input:focus {
+            background-color: rgba(0, 0, 0, 0.4);
+            border-color: var(--accent);
+            box-shadow: var(--focus-ring);
+            outline: none;
+        }
+        
+        .premium-input::placeholder {
+            color: #52525b;
+        }
+
+        .btn-sleek {
+            background-color: var(--accent);
+            color: white;
+            font-weight: 600;
+            font-size: 0.875rem;
+            letter-spacing: 0.025em;
+            padding: 0.65rem 1.5rem;
+            border-radius: 12px;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+        }
+
+        .btn-sleek:hover {
+            background-color: var(--accent-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn-sleek:active {
+            transform: translateY(0);
+        }
+
+        .btn-outline {
+            background-color: rgba(255, 255, 255, 0.03);
+            color: var(--text-main);
+            border: 1px solid var(--border-soft);
+            padding: 0.5rem 1rem;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+
+        .btn-outline:hover {
+            background-color: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+
+        /* Workspace Custom Dropdown */
+        .workspace-option-item {
+            padding: 0.75rem 1rem;
+            color: #94a3b8;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            border-left: 2px solid transparent;
+        }
+
+        .workspace-option-item:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+            color: white;
+            padding-left: 1.25rem;
+            border-left-color: rgba(99, 102, 241, 0.3);
+        }
+
+        .workspace-option-item.active {
+            background-color: rgba(99, 102, 241, 0.1);
+            color: #818cf8;
+            border-left-color: var(--accent);
+            font-weight: 600;
+        }
+
+        .scrollbar-thin::-webkit-scrollbar {
+            width: 4px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+
+        .sidebar-container {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            width: 16rem;
+            opacity: 1;
+        }
+        .sidebar-collapsed {
+            width: 0 !important;
+            opacity: 0;
+            margin-right: -2rem; /* eliminate flex gap visually */
+            pointer-events: none;
+        }
+        
         .glass-panel {
             background-color: var(--bg-elevated);
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-soft);
+            box-shadow: var(--shadow-soft);
+        }
+        
+        
+
+        
+
+        .agent-node-active {
+            opacity: 1 !important;
+            transform: scale(1.02) !important;
+            color: var(--accent) !important;
+            font-weight: 600;
+        }
+
+    
+        @media (max-width: 767px) {
+            .sidebar-container {
+                position: absolute;
+                top: 0;
+                left: 0;
+                height: 100%;
+                z-index: 50;
+                background-color: var(--bg-elevated);
+                transform: translateX(-110%);
+                opacity: 0;
+                width: 85%;
+                max-width: 340px;
+                border-right: 1px solid rgba(255,255,255,0.05);
+                box-shadow: 20px 0 50px rgba(0,0,0,0.9);
+                pointer-events: none;
+                margin-right: 0;
+                border-radius: 0 1.5rem 1.5rem 0;
+                padding-top: 1.5rem;
+                padding-bottom: 2rem;
+                overflow-y: auto;
+            }
+            .sidebar-mobile-active {
+                transform: translateX(0);
+                opacity: 1;
+                pointer-events: auto;
+            }
+            .sidebar-collapsed {
+                width: 85% !important;
+                margin-right: 0;
+            }
+            
+            #generate-btn {
+                width: 100%;
+                padding-top: 0.75rem;
+                padding-bottom: 0.75rem;
+                font-size: 1rem;
+            }
+            
+            .premium-input {
+                padding: 0.85rem 1rem;
+            }
+            .sidebar-mobile-active {
+                transform: translateX(0);
+                opacity: 1;
+                pointer-events: auto;
+            }
+            .sidebar-collapsed {
+                width: 85% !important;
+                margin-right: 0;
+            }
         }
     </style>
 </head>
 
 <body>
-    <div class="ambient-glow"></div>
-    <div class="ambient-glow-2"></div>
+    
+    
 
     <div
-        class="flex flex-col h-full w-full px-6 md:px-12 pt-10 pb-6 relative z-10 box-border overflow-hidden max-w-[1600px] mx-auto">
+        class="flex flex-col h-full w-full px-5 md:px-12 pt-8 md:pt-10 pb-5 md:pb-6 relative z-10 box-border overflow-hidden max-w-[1600px] mx-auto">
+
+        <!-- Mobile Top Nav (Hidden on Desktop) -->
+        <div class="flex items-center justify-between mb-6 md:hidden w-full shrink-0">
+            <div class="text-[15px] font-bold tracking-[0.15em] text-white flex items-center gap-2.5">
+                <div class="w-2.5 h-2.5 rounded-full bg-cyan-500 shadow-[0_0_12px_rgba(34,211,238,0.8)]"></div>
+                ARES ENGINE
+            </div>
+            <button id="mobile-top-toggle-btn" onclick="document.getElementById('toggle-sidebar-btn').click()" class="text-slate-400 hover:text-white bg-white/5 border border-white/10 p-2.5 rounded-xl flex items-center justify-center transition-all bg-black/20" title="Menu">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+            </button>
+        </div>
 
         <!-- Header / Input Area -->
-        <div class="w-full flex flex-col md:flex-row items-end justify-between gap-8 shrink-0 mb-10">
-            <div class="flex-1 w-full max-w-4xl relative input-group group">
-                <input id="keyword-input" type="text"
-                    class="w-full bg-transparent border-0 border-b border-white/10 text-lg md:text-xl text-white placeholder-slate-600 py-3 transition-colors focus:border-[#3b82f6]"
-                    placeholder="What topic should we write about today?">
+        <div class="w-full flex flex-col md:flex-row md:items-end justify-between gap-6 md:gap-8 shrink-0 mb-8 md:mb-10">
+            <div class="flex-1 w-full md:max-w-4xl input-group">
                 <label for="keyword-input">Primary Topic</label>
-                <div
-                    class="absolute bottom-0 left-0 w-0 h-0.5 bg-gradient-to-r from-[#3b82f6] to-[#8b5cf6] transition-all duration-300 group-focus-within:w-full">
-                </div>
+                <input id="keyword-input" type="text"
+                    class="premium-input text-base md:text-lg"
+                    placeholder="What topic should we write about today?">
             </div>
 
-            <div class="flex flex-col md:flex-row items-center gap-5 pb-1 w-full md:w-auto">
-                <div class="relative input-group group w-40 text-center">
-                    <input id="niche-input" type="text"
-                        class="bg-transparent border-0 border-b border-white/10 text-base text-[#8B8B93] placeholder-slate-600 py-2 w-full text-center transition-colors focus:border-[#3b82f6]"
-                        placeholder="Industry or Niche">
-                    <label for="niche-input" class="!left-[50%] !-translate-x-[50%]">Domain</label>
-                    <div
-                        class="absolute bottom-0 left-[50%] -translate-x-[50%] w-0 h-0.5 bg-gradient-to-r from-[#3b82f6] to-[#8b5cf6] transition-all duration-300 group-focus-within:w-full">
+            <div class="flex flex-col sm:flex-row md:flex-row sm:items-end gap-4 md:gap-5 w-full md:w-auto mt-2 md:mt-0">
+                <div class="flex w-full sm:w-auto gap-4 md:gap-5">
+                    <div class="input-group flex-1 sm:w-32 md:w-40">
+                        <label for="niche-input">Domain</label>
+                        <input id="niche-input" type="text"
+                            class="premium-input text-sm"
+                            placeholder="Industry / Niche">
+                    </div>
+
+                    <div class="input-group flex-1 sm:w-auto">
+                        <label>Workspace</label>
+                        <div id="workspace-dropdown-container" class="flex items-center gap-2 bg-[rgba(0,0,0,0.2)] border border-[rgba(255,255,255,0.08)] rounded-xl px-4 py-3 md:py-2.5 transition-colors h-[50px] md:h-[42px] min-w-[120px] md:min-w-[140px] relative cursor-pointer group hover:border-white/20">
+                            <!-- Custom Select UI -->
+                            <div id="workspace-trigger" class="flex-1 flex items-center justify-between pointer-events-none">
+                                <span id="current-workspace-name" class="text-sm font-medium text-white truncate">DEFAULT</span>
+                                <svg class="w-4 h-4 text-slate-500 transition-transform duration-300 group-active:translate-y-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </div>
+                            
+                            <!-- Custom Options Menu (Hidden by default) -->
+                            <div id="workspace-options" class="hidden absolute top-full left-0 right-0 mt-2 bg-[#18181f] border border-white/10 rounded-xl shadow-2xl z-[100] overflow-hidden backdrop-blur-xl">
+                                <div id="workspace-list" class="max-h-60 overflow-y-auto py-1 scrollbar-thin">
+                                    <!-- Items added via JS -->
+                                </div>
+                            </div>
+
+                            <button id="add-workspace-btn"
+                                class="text-slate-500 hover:text-[#6366f1] transition-colors text-lg font-bold leading-none hover:scale-110 active:scale-95 pl-2 border-l border-white/10 ml-2 relative z-10">+</button>
+                            
+                            <!-- Hidden input to maintain compatibility with existing JS logic -->
+                            <input type="hidden" id="profile-select" value="default">
+                        </div>
                     </div>
                 </div>
 
-                <div
-                    class="flex items-center gap-2 bg-[#0F0F11] border border-white/5 rounded-full px-3 py-1.5 hover:border-white/10 transition-colors">
-                    <span class="text-[10px] uppercase tracking-wider text-slate-500 font-medium">Workspace</span>
-                    <select id="profile-select"
-                        class="bg-transparent border-none text-xs font-medium text-white appearance-none cursor-pointer outline-none max-w-[80px] text-ellipsis">
-                        <option value="default" class="bg-[#050505] text-white">Default</option>
-                    </select>
-                    <button id="add-workspace-btn"
-                        class="text-slate-500 hover:text-[#8b5cf6] transition-colors text-sm hover:scale-110 active:scale-95">+</button>
-                </div>
-
-                <button id="generate-btn"
-                    class="btn-sleek shrink-0 active:scale-95 active:shadow-none hover:shadow-[0_0_20px_rgba(139,92,246,0.4)]">
+                <button id="generate-btn" class="btn-sleek shrink-0 h-[50px] md:h-[42px] rounded-xl w-full md:w-auto mt-4 md:mt-[22px]">
                     Generate Article
                 </button>
             </div>
         </div>
 
         <!-- Ambient Pipeline Nodes -->
-        <div class="flex justify-center items-center py-2 px-6 gap-8 md:gap-24 shrink-0 mb-8 max-w-2xl mx-auto w-full">
-            <div id="agent-research" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">
-                Researching</div>
-            <div class="h-px w-8 bg-white/10 md:block hidden"></div>
-            <div id="agent-psychology" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">
-                Strategizing</div>
-            <div class="h-px w-8 bg-white/10 md:block hidden"></div>
-            <div id="agent-writer" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">
-                Writing</div>
+        <div id="agent-nodes-container" class="hidden md:flex justify-center items-center py-2 px-6 gap-8 md:gap-24 shrink-0 mb-8 max-w-2xl mx-auto w-full transition-all opacity-100">
+            <div id="agent-research" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">Researching</div>
+            <div class="h-px w-8 bg-[rgba(255,255,255,0.08)]"></div>
+            <div id="agent-psychology" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">Strategizing</div>
+            <div class="h-px w-8 bg-[rgba(255,255,255,0.08)]"></div>
+            <div id="agent-writer" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">Writing</div>
+        </div>
+
+        <!-- Mobile Toast Notification -->
+        <div id="mobile-agent-toast" class="md:hidden flex items-center justify-center -mt-2 mb-4 h-6 opacity-0 transition-opacity duration-300 pointer-events-none">
+            <div class="bg-[rgba(99,102,241,0.15)] border border-[rgba(99,102,241,0.3)] text-[#a5b4fc] px-4 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest shadow-[0_0_10px_rgba(99,102,241,0.2)] flex items-center gap-2">
+                <div class="w-1.5 h-1.5 bg-[#818cf8] rounded-full animate-pulse"></div>
+                <span id="mobile-agent-text">Standby</span>
+            </div>
         </div>
 
         <!-- Main Workspace Area -->
-        <div class="flex-1 flex flex-col md:flex-row gap-8 w-full overflow-hidden">
+        <div class="flex-1 flex flex-col md:flex-row gap-8 w-full overflow-hidden relative">
+
+            <!-- Mobile Sidebar Backdrop -->
+            <div id="sidebar-backdrop" class="md:hidden absolute inset-0 bg-black/80 z-40 opacity-0 pointer-events-none transition-opacity duration-300"></div>
 
             <!-- Left Sidebar -->
-            <div class="w-full md:w-64 flex flex-col shrink-0 gap-6 min-h-0">
+            <div id="left-sidebar" class="sidebar-container flex flex-col shrink-0 gap-6 min-h-0">
 
-                <!-- Telemetry -->
-                <div class="flex flex-col min-h-0 glass-panel rounded-3xl p-6">
-                    <div class="text-xs uppercase tracking-wider text-slate-500 mb-4 font-semibold">Activity Log</div>
-                    <div id="terminal-body"
-                        class="mono-text text-[11px] leading-relaxed text-[#8B8B93] space-y-3 overflow-y-auto"></div>
-                </div>
-
-                <!-- Audit -->
+                <!-- Audit (Quality Score) -->
                 <div class="shrink-0 glass-panel rounded-3xl p-6">
                     <div class="text-xs uppercase tracking-wider text-slate-500 mb-4 font-semibold">Quality Score</div>
                     <div class="flex items-center gap-5">
@@ -379,6 +522,8 @@
                     </div>
                 </div>
 
+
+
                 <!-- Tools Navigation -->
                 <div class="flex flex-col gap-1 mt-auto glass-panel rounded-3xl p-3">
                     <button id="open-blueprint-btn" class="sidebar-btn flex items-center justify-between group">
@@ -387,6 +532,12 @@
                             stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7">
                             </path>
+                        </svg>
+                    </button>
+                    <button id="open-console-btn" class="sidebar-btn flex items-center justify-between group">
+                        <span>Activity Console</span>
+                        <svg class="w-4 h-4 text-[#8B8B93] group-hover:text-[#8b5cf6] transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M4 17h16a2 2 0 002-2V9a2 2 0 00-2-2H4a2 2 0 00-2 2v6a2 2 0 002 2z"></path>
                         </svg>
                     </button>
                     <button id="open-brain-btn" class="sidebar-btn flex items-center justify-between group">
@@ -413,8 +564,13 @@
             <!-- Main Editor Canvas -->
             <div class="flex-1 flex flex-col min-h-0 relative glass-panel rounded-3xl overflow-hidden">
                 <div
-                    class="flex items-center justify-between px-8 py-5 shrink-0 border-b border-white/5 bg-[#0F0F11]/50 backdrop-blur-sm z-10">
-                    <div class="text-sm font-semibold text-white">Generated Article</div>
+                    class="flex items-center justify-between px-8 py-5 shrink-0 border-b border-white/5 bg-transparent z-10">
+                    <div class="flex items-center gap-4">
+                        <button id="toggle-sidebar-btn" class="hidden md:flex text-slate-500 hover:text-[#f8fafc] bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.08)] transition-all items-center justify-center p-2 rounded-lg hover:bg-[rgba(255,255,255,0.08)] shadow-sm" title="Toggle Sidebar">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"></path></svg>
+                        </button>
+                        <div class="text-sm font-semibold text-white">Generated Article</div>
+                    </div>
                     <div class="flex gap-3">
                         <button id="copy-md-btn" class="btn-outline text-xs">Copy Text</button>
                         <button id="copy-html-btn" class="btn-outline text-xs">Copy Formatted</button>
@@ -444,11 +600,31 @@
                         Save Edits & Improve AI Writing Style
                     </button>
                 </div>
+                </div>
             </div>
 
         </div>
     </div>
 
+    <!-- Docked Activity Console -->
+    <div id="docked-console" class="w-full shrink-0 flex flex-col transition-all duration-500 ease-in-out overflow-hidden h-0 opacity-0 mt-0 pointer-events-none origin-bottom">
+        <div class="flex-1 flex flex-col min-h-0 glass-panel rounded-3xl px-6 py-3.5 border border-white/5 shadow-2xl relative">
+            <div class="flex items-center justify-between mb-2 pb-2 border-b border-white/5 shrink-0">
+                <div class="flex items-center gap-2">
+                    <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M4 17h16a2 2 0 002-2V9a2 2 0 00-2-2H4a2 2 0 00-2 2v6a2 2 0 002 2z"></path>
+                    </svg>
+                    <h2 class="text-[11px] font-bold text-white tracking-widest uppercase">Activity Console</h2>
+                </div>
+                <button id="close-docked-console-btn" class="text-slate-500 hover:text-[#3b82f6] transition-colors p-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div id="terminal-body" class="flex-1 min-h-0 mono-text text-[11px] leading-relaxed text-[#8B8B93] overflow-y-auto scrollbar-thin pr-2 pb-1 space-y-2.5">
+                <div class="text-slate-600 mb-1 opacity-50 italic">Ares Engine attached. Standing by...</div>
+            </div>
+        </div>
+    </div>
 
     <!-- ==================== MODALS ==================== -->
 
@@ -612,8 +788,7 @@
             </div>
         </div>
     </div>
-
-    <script src="/static/js/console.js?v=9.0"></script>
+    <script src="/static/js/console.js?v=9.2"></script>
 </body>
 
 </html>
