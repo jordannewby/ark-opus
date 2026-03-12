@@ -84,6 +84,6 @@ Never use any of these words or patterns:
 - **Mobile-First White Space:** Ensure no block of text exceeds 4 lines of vertical space. 
 
 ## 4. FORMATTING CONSTRAINTS
-- **Sentence Cap:** Max 15 words per sentence (Optimized for 2026 mobile readability).
+- **Sentence Cap:** Target 8-12 words per sentence for 7th-grade readability. Most sentences must stay in this range. Occasionally extend to 14 words for natural rhythm, but never exceed 15 words.
 - **Subheading Frequency:** An H2/H3 must appear every 150–200 words to prevent "scroll-fatigue."
 - **Active Voice:** Use direct "Practitioner-to-Peer" language.

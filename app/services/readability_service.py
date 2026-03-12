@@ -579,7 +579,33 @@ def verify_readability(
 # Writer Prompt Directive (injected dynamically, not in writer.md)
 # ---------------------------------------------------------------------------
 
-READABILITY_DIRECTIVE = """
+SEVENTH_GRADE_TEMPLATES = """
+COPY THESE SENTENCE PATTERNS (all 7th-grade level):
+
+Opening Hooks:
+- "Most [audience] make this mistake: [specific error]." (7 words)
+- "[Stat]% of [group] fail because they skip [action]." (9 words)
+- "You need [number] things to [achieve goal]." (8 words)
+
+Explanatory Sentences:
+- "[Technical term] means [plain explanation in 6 words]."
+- "This happens when [cause]. It costs you [consequence]." (9-11 words)
+- "First, [action]. Next, [action]. Finally, [action]." (6-8 words)
+
+Transition Sentences:
+- "Here's why that matters." (4 words)
+- "Let's break this down into steps." (6 words)
+- "Now you know the basics. Apply them." (7 words)
+
+DO NOT copy these literally. Use them as structural templates.
+Your sentences should match this RHYTHM and LENGTH, not the exact words.
+""".strip()
+
+READABILITY_DIRECTIVE = f"""
+{SEVENTH_GRADE_TEMPLATES}
+
+---
+
 ## READABILITY & SCANNABILITY — Write for How People Actually Read
 
 Research shows people don't read blogs — they scan. They read headings, first sentences, and bold text.
@@ -603,14 +629,22 @@ LAYER-CAKE SCANNING FORMAT:
 - Use bullet points and numbered lists to break up dense information
 - Front-load value: put the most important information at the TOP of each section
 
-SENTENCE RULES:
-- Aim for 8-14 words per sentence. Keep most sentences in this range.
-- One idea per sentence. Then start a new one.
-- Vary sentence length for rhythm. Some short. Some a bit longer for flow.
-- Avoid chaining clauses with commas, semicolons, or dashes into long runs.
+SENTENCE RULES (MANDATORY — READABILITY GATE):
+- TARGET: 8-12 words per sentence. This is NOT a suggestion — 80% of your sentences must fall in this range.
+- HARD CEILING: Never exceed 15 words. If a sentence hits 15 words, split it into two sentences.
+- One idea per sentence. Period. New sentence.
+- Rhythm variation: Mix 6-word punchy sentences with 12-word explanatory ones. Avoid monotony.
+- NO clause chains: If you write a comma, check if it should be a period instead.
 
-WORD CHOICE — USE SHORT WORDS:
-This is critical. Swap long common words for short ones. Here is your reference list:
+EXAMPLES OF 7TH-GRADE SENTENCES (pattern-match these):
+  ✓ "Most SMBs get breached in the first year." (8 words)
+  ✓ "They skip basic security because it seems expensive." (9 words)
+  ✓ "That mistake costs them $200,000 on average." (8 words)
+  ✓ "You can prevent this with three simple steps." (9 words)
+  ✗ "Organizations that fail to implement comprehensive security protocols during their initial operational phase experience significantly higher breach rates." (19 words — BANNED)
+
+WORD CHOICE — MANDATORY SUBSTITUTIONS:
+You MUST use these short alternatives. Longer versions will trigger readability failure:
 
   implement → set up, use           utilize → use
   demonstrate → show                methodology → method
@@ -633,6 +667,13 @@ This is critical. Swap long common words for short ones. Here is your reference 
   evaluate → check, review          initiated → started, began
   regarding → about                 capabilities → skills, features
   acquisition → purchase, gain      operational → running, active
+
+ENFORCEMENT: Before submitting your draft, search for each word in the LEFT column.
+If found, it MUST be replaced with the RIGHT column alternative unless it's a:
+  - SEO keyword from the research brief
+  - Technical term your audience searches for
+  - Proper noun or brand name
+NO EXCEPTIONS for common words. "Implement" always becomes "set up" or "use".
 
 ALSO:
 - NEVER use these words: delve, tapestry, landscape, multifaceted, comprehensive, holistic, navigate, crucial, foster, in conclusion, ultimately, fast-paced world, digital age, game-changer.

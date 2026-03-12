@@ -71,6 +71,24 @@ class WriterService:
                 prompt_instructions += f"- {rule.rule_description}\n"
             prompt_instructions += "--------------------------------------------------------\n"
 
+        # Pre-flight simplicity primer
+        prompt_instructions += """
+
+---
+CRITICAL: 7TH-GRADE READABILITY REQUIREMENT
+---
+This article will be scored for 7th-grade readability (ARI ≤7.5).
+If you fail this gate, you will be asked to rewrite. Save time by writing simply from the start.
+
+PRE-FLIGHT CHECKLIST (review before writing each sentence):
+1. Is this sentence 8-12 words? (Count as you write)
+2. Did I use a word from the "short alternatives" list?
+3. Can I split this sentence at a comma?
+4. Am I explaining technical terms in simple language?
+
+Write your first draft as if explaining to a smart 13-year-old who knows basic industry concepts.
+"""
+
         prompt_instructions += f"\n\n{READABILITY_DIRECTIVE}"
         prompt_instructions += "\nFollow all system prompt guidelines strictly. Write directly in Markdown."
 
