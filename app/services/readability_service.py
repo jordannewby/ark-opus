@@ -491,17 +491,19 @@ def _build_feedback(
     """
     lines = []
     lines.append(f"READABILITY REVISION REQUIRED — ARI grade: {ari} | Target: ≤{target}")
-    lines.append(f"  FK cross-check: {fk} (target: ≤{target + 1.0}) | CLI advisory: {cli}")
-    lines.append(f"  Avg sentence length: {avg_sent_len} words (max: 15)")
+    lines.append(f"  FK cross-check: {fk} (target: ≤{target + 1.5}) | CLI advisory: {cli}")
+    lines.append(f"  Avg sentence length: {avg_sent_len} words (target: ≤12)")
     lines.append("")
     
     # Diagnose each failure reason specifically
     failures = []
     
-    if avg_sent_len > 15:
+    if avg_sent_len > 12:
         failures.append("SENTENCES TOO LONG")
-        lines.append(f"ISSUE: Avg sentence length is {avg_sent_len} words. Must be ≤15.")
-        lines.append("ACTION: Split long sentences. One idea per sentence. Aim for 8-14 words each.")
+        lines.append(f"ISSUE: Avg sentence length is {avg_sent_len} words. Must be ≤12.")
+        lines.append("ACTION: Split long sentences. Target 8-12 words. Example:")
+        lines.append("  BEFORE: 'Organizations must implement security protocols to protect data.' (9 words)")
+        lines.append("  AFTER: 'Companies need security rules. These protect their data.' (8 + 5 = 13 words, 2 sentences)")
         lines.append("")
     
     if ari > target:
@@ -512,9 +514,9 @@ def _build_feedback(
         lines.append("  your audience searches for. Those MUST stay — explain them in plain words.")
         lines.append("")
     
-    if fk > target + 1.0:
+    if fk > target + 1.5:
         failures.append("FK TOO HIGH")
-        lines.append(f"ISSUE: Flesch-Kincaid grade is {fk}. Must be ≤{target + 1.0}.")
+        lines.append(f"ISSUE: Flesch-Kincaid grade is {fk}. Must be ≤{target + 1.5}.")
         lines.append("ACTION: Reduce syllable count. Swap multi-syllable words for shorter ones")
         lines.append("  where the meaning stays the same. 'use' not 'utilize', 'help' not 'facilitate'.")
         lines.append("")
@@ -526,7 +528,14 @@ def _build_feedback(
             display = sent.text[:150] + "..." if len(sent.text) > 150 else sent.text
             lines.append(f"  {i}. [ARI {sent.ari_grade}] \"{display}\"")
         lines.append("")
-    
+
+    # Positive reinforcement - show what good looks like
+    lines.append("WHAT GOOD LOOKS LIKE (keep this style):")
+    lines.append("  ✓ 'Most SMBs skip backups. That costs them later.'")
+    lines.append("  ✓ 'You need three layers of protection.'")
+    lines.append("  ✓ 'First, encrypt all customer data at rest.'")
+    lines.append("")
+
     # Universal rules — always included
     lines.append("RULES FOR THIS REVISION:")
     lines.append("- DO NOT remove any facts, statistics, data points, or insights")
