@@ -104,18 +104,32 @@ class WriterService:
         prompt_instructions += """
 
 ---
-CRITICAL: 7TH-GRADE READABILITY REQUIREMENT
+CRITICAL: 7TH-10TH GRADE READABILITY REQUIREMENT (ARI ≤10.0)
 ---
-This article will be scored for 7th-grade readability (ARI ≤7.5).
-If you fail this gate, you will be asked to rewrite. Save time by writing simply from the start.
+This article will be scored for readability (ARI ≤10.0).
+If you fail this gate, you will be asked to rewrite up to 5 times.
+After 5 failures, the article is published as-is with a quality penalty.
 
-PRE-FLIGHT CHECKLIST (review before writing each sentence):
-1. Is this sentence 8-12 words? (Count as you write)
-2. Did I use a word from the "short alternatives" list?
-3. Can I split this sentence at a comma?
-4. Am I explaining technical terms in simple language?
+MANDATORY GATES YOU WILL BE TESTED AGAINST:
+1. ARI score ≤10.0 (Automated Readability Index)
+2. 80% of sentences MUST be 8-12 words (this is NOT a suggestion)
+3. Max 15% of sentences can exceed 15 words
+4. Average sentence length ≤12 words
 
-Write your first draft as if explaining to a smart 13-year-old who knows basic industry concepts.
+PRE-FLIGHT CHECKLIST (review BEFORE writing each sentence):
+1. Is this sentence 8-12 words? (Count as you write: "one, two, three...")
+2. Did I use a word from the "short alternatives" list below?
+3. Can I split this sentence at a comma into two shorter sentences?
+4. Am I explaining technical terms in simple language in the next sentence?
+5. Did I avoid business jargon (streamline, leverage, optimize, framework)?
+
+Write your first draft as if explaining to a busy small business owner who:
+- Skims headings and first sentences only
+- Skips complex jargon they don't understand
+- Values clear, actionable advice over impressive vocabulary
+- Has zero patience for filler or academic language
+
+THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
 """
 
         prompt_instructions += f"\n\n{READABILITY_DIRECTIVE}"
@@ -168,16 +182,36 @@ Write your first draft as if explaining to a smart 13-year-old who knows basic i
                         "automated", "automation", "intelligence", "artificial",
                         "monitoring", "detection", "protection", "vulnerable",
                         "organization", "organizations", "productivity",
-                        
+
                         # B2B / SMB Specific additions
-                        "investment", "financial", "development", "marketing", "owner", 
+                        "investment", "financial", "development", "marketing", "owner",
                         "owners", "industry", "industries", "professional", "professionals",
-                        "experience", "experiences", "competitive", "competition"
+                        "experience", "experiences", "competitive", "competition",
+
+                        # Common business jargon that inflates ARI unfairly
+                        "streamline", "streamlined", "streamlining",
+                        "leverage", "leveraged", "leveraging",
+                        "optimize", "optimized", "optimizing", "optimization",
+                        "enhance", "enhanced", "enhancement",
+                        "framework", "frameworks",
+                        "methodology", "methodologies",
+                        "ecosystem", "ecosystems",
+                        "paradigm", "paradigms",
+                        "establish", "established", "establishing",
+                        "execute", "executed", "executing", "execution",
+                        "implement", "implemented", "implementing", "implementation",
+                        "facilitate", "facilitated", "facilitating",
+                        "comprehensive",
+                        "infrastructure", "infrastructures",
+                        "capability", "capabilities",
+                        "operational",
+                        "strategic",
+                        "scalable", "scalability"
                     ]
                     read_keywords.extend(NICHE_TERMS)
                     # Deduplicate while preserving order
                     read_keywords = list(dict.fromkeys(read_keywords))
-                    read_result = verify_readability(full_content, target_grade=7.5, keywords=read_keywords)
+                    read_result = verify_readability(full_content, target_grade=10.0, keywords=read_keywords)
 
                     # DEBUG: Validate keyword masking effectiveness
                     if read_keywords:

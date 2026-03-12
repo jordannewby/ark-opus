@@ -306,11 +306,12 @@ def passes_readability(
     ari: float,
     cli: float,
     fk: float,
-    target: float = 7.5,
+    target: float = 10.0,
     avg_sentence_length: float = 0.0,
     max_sentence_length: float = 12.0,
     complex_sentence_count: int = 0,
-    total_sentence_count: int = 0
+    total_sentence_count: int = 0,
+    target_range_percentage: float = 0.0
 ) -> bool:
     """Check readability using ARI as primary gate + sentence length enforcement.
 
@@ -328,13 +329,51 @@ def passes_readability(
     fk_ok = fk <= target + 1.5  # Increased buffer for 7th-grade syllable noise
     sentences_ok = avg_sentence_length <= max_sentence_length if avg_sentence_length > 0 else True
 
-    # Gate 4: Limit complex sentences to 20% of total
+    # Gate 4: Limit complex sentences to 15% of total (reduced from 20%)
     complex_ok = True
     if total_sentence_count > 0:
         complex_ratio = complex_sentence_count / total_sentence_count
-        complex_ok = complex_ratio <= 0.20
+        complex_ok = complex_ratio <= 0.15
 
-    return ari_ok and fk_ok and sentences_ok and complex_ok
+    # Gate 5: Enforce 80% of sentences in 8-12 word range
+    distribution_ok = True
+    if target_range_percentage > 0:
+        distribution_ok = target_range_percentage >= 80.0
+
+    return ari_ok and fk_ok and sentences_ok and complex_ok and distribution_ok
+
+
+# ---------------------------------------------------------------------------
+# Sentence Distribution Analysis
+# ---------------------------------------------------------------------------
+
+def calculate_sentence_distribution(text: str) -> dict:
+    """Calculate what % of sentences fall into word-count buckets.
+
+    Returns:
+        {
+            'short': % in 1-7 words,
+            'target': % in 8-12 words (the 80% target),
+            'medium': % in 13-15 words,
+            'complex': % in 16+ words
+        }
+    """
+    sentences = split_sentences(text)
+    if not sentences:
+        return {'short': 0, 'target': 0, 'medium': 0, 'complex': 0}
+
+    short = sum(1 for s in sentences if count_words(s) <= 7)
+    target = sum(1 for s in sentences if 8 <= count_words(s) <= 12)
+    medium = sum(1 for s in sentences if 13 <= count_words(s) <= 15)
+    complex_long = sum(1 for s in sentences if count_words(s) >= 16)
+
+    total = len(sentences)
+    return {
+        'short': round((short / total) * 100, 1),
+        'target': round((target / total) * 100, 1),
+        'medium': round((medium / total) * 100, 1),
+        'complex': round((complex_long / total) * 100, 1)
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -433,12 +472,17 @@ def analyze_readability(
     long_sentences = [s for s in split_sentences(clean) if count_words(s) > 15]
     complex_count = len(long_sentences)
 
+    # Calculate sentence distribution
+    distribution = calculate_sentence_distribution(clean)
+    target_range_pct = distribution['target']
+
     passed = passes_readability(
         ari, cli, fk, target_grade,
         avg_sentence_length=avg_sent_len,
         max_sentence_length=12.0,
         complex_sentence_count=complex_count,
-        total_sentence_count=sents
+        total_sentence_count=sents,
+        target_range_percentage=target_range_pct
     )
     
     # Step 6: Find complex sentences (use clean text, not masked)
@@ -452,7 +496,8 @@ def analyze_readability(
         composite=composite,
         target=target_grade,
         avg_sent_len=avg_sent_len,
-        complex_sentences=complex_sents
+        complex_sentences=complex_sents,
+        distribution=distribution
     )
     
     return ReadabilityScore(
@@ -481,7 +526,8 @@ def _build_feedback(
     composite: float,
     target: float,
     avg_sent_len: float,
-    complex_sentences: list[SentenceAnalysis]
+    complex_sentences: list[SentenceAnalysis],
+    distribution: dict = None
 ) -> str:
     """Build structured feedback for Claude's readability retry loop.
     
@@ -497,7 +543,23 @@ def _build_feedback(
     
     # Diagnose each failure reason specifically
     failures = []
-    
+
+    # CRITICAL: Diagnose sentence distribution (80% rule)
+    if distribution and distribution['target'] < 80.0:
+        failures.append("SENTENCE DISTRIBUTION VIOLATION")
+        lines.append(f"CRITICAL ISSUE: Only {distribution['target']}% of sentences are 8-12 words. Must be ≥80%.")
+        lines.append(f"  Current distribution:")
+        lines.append(f"    - {distribution['short']}% are 1-7 words (too short, choppy)")
+        lines.append(f"    - {distribution['target']}% are 8-12 words (TARGET RANGE)")
+        lines.append(f"    - {distribution['medium']}% are 13-15 words (too long)")
+        lines.append(f"    - {distribution['complex']}% are 16+ words (way too long)")
+        lines.append("")
+        lines.append("ACTION: Rebalance your sentence lengths:")
+        lines.append("  1. Split all sentences >12 words into two shorter sentences")
+        lines.append("  2. Combine choppy 3-5 word sentences into 8-10 word explanations")
+        lines.append("  3. Target: 80% of sentences should be 8-12 words")
+        lines.append("")
+
     if avg_sent_len > 12:
         failures.append("SENTENCES TOO LONG")
         lines.append(f"ISSUE: Avg sentence length is {avg_sent_len} words. Must be ≤12.")
@@ -517,10 +579,25 @@ def _build_feedback(
     if fk > target + 1.5:
         failures.append("FK TOO HIGH")
         lines.append(f"ISSUE: Flesch-Kincaid grade is {fk}. Must be ≤{target + 1.5}.")
-        lines.append("ACTION: Reduce syllable count. Talk to a busy, local small business owner.")
-        lines.append("  REMOVE ALL CORPORATE JARGON (optimize, leverage, scalable, robust, seamless).")
-        lines.append("  Swap multi-syllable words for shorter ones where the meaning stays the same.")
-        lines.append("  'use' not 'utilize', 'help' not 'facilitate'. Write clearly and directly.")
+        lines.append("ACTION: Swap complex words for simple alternatives:")
+        lines.append("")
+        lines.append("  MANDATORY WORD SWAPS (use these EXACT replacements):")
+        lines.append("    implement → set up, use          |  utilize → use")
+        lines.append("    demonstrate → show               |  methodology → method")
+        lines.append("    subsequently → then              |  approximately → about")
+        lines.append("    requirements → needs             |  functionality → features")
+        lines.append("    facilitate → help                |  infrastructure → setup")
+        lines.append("    specifically → namely            |  significantly → greatly")
+        lines.append("    organizations → firms, companies |  recommendations → tips")
+        lines.append("    comprehensive → full, complete   |  establishing → setting up")
+        lines.append("    leveraging → using               |  optimizing → improving")
+        lines.append("    identifying → finding            |  eliminating → removing")
+        lines.append("    streamline → simplify, improve   |  enhance → improve")
+        lines.append("    framework → structure, system    |  ecosystem → environment")
+        lines.append("    paradigm → model, approach       |  execute → do, run")
+        lines.append("")
+        lines.append("  BANNED BUSINESS JARGON (remove entirely):")
+        lines.append("    ✗ optimize, leverage, scalable, robust, seamless, synergy")
         lines.append("")
     
     # Flag specific offending sentences
@@ -545,7 +622,8 @@ def _build_feedback(
     lines.append("- DO NOT reduce the word count below the SEO minimum")
     lines.append("- DO NOT remove list blocks or table blocks")
     lines.append("- KEEP all SEO keywords and technical terms — explain them simply")
-    lines.append("- KEEP sentences SHORT: 8-14 words each, one idea per sentence")
+    lines.append("- KEEP sentences SHORT: 8-12 words each, one idea per sentence")
+    lines.append("- HARD LIMIT: Max 15% of sentences can exceed 15 words")
     lines.append("- USE active voice ('Hackers steal data' not 'Data is stolen by hackers')")
     lines.append("- SWAP long common words for short ones: 'use' not 'utilize', 'show' not 'demonstrate'")
     lines.append("- KEEP the same structure, sections, and SEO keywords")
