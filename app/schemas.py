@@ -146,3 +146,42 @@ class CampaignResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
+class VerifiedSourceResponse(BaseModel):
+    id: int
+    research_run_id: int
+    profile_name: str
+    url: str
+    title: str
+    domain: str
+    credibility_score: float
+    domain_authority: int | None = None
+    publish_date: datetime | None = None
+    freshness_score: float | None = None
+    internal_citations_count: int
+    has_credible_citations: bool
+    citation_urls_json: str | None = None
+    is_academic: bool
+    is_authoritative_domain: bool
+    content_snippet: str | None = None
+    verification_passed: bool
+    rejection_reason: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class FactCitationResponse(BaseModel):
+    id: int
+    verified_source_id: int
+    research_run_id: int
+    fact_text: str
+    fact_type: str
+    source_url: str
+    source_title: str
+    citation_anchor: str
+    confidence_score: float
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+

@@ -23,10 +23,11 @@ class WriterService:
         with open(prompt_path, "r", encoding="utf-8") as f:
             self.base_system_prompt = f.read()
 
-    async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general"):
+    async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general", research_run_id: int | None = None):
         """
         Takes a blueprint JSON and streams a formatted Markdown article using Anthropic.
         Enforces Information Gain, E-E-A-T, and Entity Density rules with an iterative SEO loop.
+        Includes citation map from verified sources if research_run_id provided.
         """
         import json # Explicitly import to prevent shadowing by local assignments later in the function
         entities = blueprint.get("entities", [])
@@ -100,6 +101,35 @@ class WriterService:
             prompt_instructions += f"(Playbook version {playbook_data['version']}, based on {playbook_data['runs_distilled']} successful articles)\n"
             prompt_instructions += "----------------------------------------------------------------\n"
 
+        # Inject Citation Map from Verified Sources
+        if research_run_id:
+            from ..models import FactCitation
+
+            citations = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+
+            if citations:
+                citation_map = {}
+                for cite in citations:
+                    citation_map[cite.fact_text] = {
+                        "url": cite.source_url,
+                        "title": cite.source_title,
+                        "anchor": cite.citation_anchor,
+                        "confidence": cite.confidence_score,
+                    }
+
+                prompt_instructions += "\n--- CITATION REQUIREMENTS (MANDATORY) ---\n"
+                prompt_instructions += f"You have access to {len(citation_map)} verified factual claims with sources.\n\n"
+                prompt_instructions += "When you mention any statistic, benchmark, or data point, you MUST cite the source using inline markdown links:\n\n"
+                prompt_instructions += "Example: \"According to [Verizon's 2024 Data Breach Report](https://verizon.com/dbir), 67% of SMBs experienced a cyberattack.\"\n\n"
+                prompt_instructions += f"CITATION MAP (use these facts ONLY):\n{json.dumps(citation_map, indent=2)}\n\n"
+                prompt_instructions += "CITATION RULES:\n"
+                prompt_instructions += "1. Use inline markdown links: [Source Title](URL)\n"
+                prompt_instructions += "2. Cite at least 3-4 sources throughout the article\n"
+                prompt_instructions += "3. ONLY use facts from the citation map above - do NOT fabricate stats\n"
+                prompt_instructions += "4. Weave citations naturally into sentences (not as separate footnotes)\n"
+                prompt_instructions += "5. Keep citation anchors short (e.g., 'Verizon 2024', 'IBM Report')\n"
+                prompt_instructions += "------------------------------------------------\n"
+
         # Pre-flight simplicity primer
         prompt_instructions += """
 
@@ -164,6 +194,24 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
 
                 if score["passed"]:
                     yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed SEO validation."}
+
+                    # --- Gate 3: Citation Validation ---
+                    if research_run_id:
+                        citation_result = self.verify_citation_requirements(full_content, min_citations=3)
+                        if not citation_result["passed"]:
+                            v_feedback = f"Citation Validation Failed (Iteration {attempt}).\n{citation_result['feedback']}"
+                            yield {"type": "debug", "message": v_feedback}
+
+                            if attempt == max_attempts:
+                                yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
+                                yield {"status": "success", "text": full_content}
+                                return
+
+                            # Clear editor for next attempt
+                            yield {"type": "content", "data": "RETRY_CLEAR"}
+                            continue
+
+                        yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed citation validation ({citation_result['citation_count']} citations found)."}
 
                     # --- Gate 2: Readability Validation ---
                     # Build broad keyword list for readability masking
@@ -378,4 +426,34 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
             "banned_words_used": banned_words_used,
             "banned_words_found": found_banned_words,
             "passed": passed,
+        }
+
+    @staticmethod
+    def verify_citation_requirements(text: str, min_citations: int = 3) -> dict:
+        """
+        Validates that article includes minimum required inline citations.
+        Uses markdown link pattern: [text](url)
+        Returns: {passed: bool, citation_count: int, feedback: str}
+        """
+        # Regex for markdown links: [text](url)
+        markdown_link_pattern = r'\[([^\]]+)\]\(https?://[^\)]+\)'
+        citations = re.findall(markdown_link_pattern, text)
+
+        # Count unique citations (by link text to avoid double-counting)
+        citation_count = len(citations)
+
+        passed = citation_count >= min_citations
+
+        feedback = ""
+        if not passed:
+            feedback = (
+                f"Only {citation_count} citations found, need {min_citations} minimum. "
+                f"Add more inline citations using [Source Title](URL) format. "
+                f"Use the citation map provided in the prompt."
+            )
+
+        return {
+            "passed": passed,
+            "citation_count": citation_count,
+            "feedback": feedback,
         }

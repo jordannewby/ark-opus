@@ -369,6 +369,19 @@ async function executeGeneration(userContext) {
                                     updateAgentUI('research');
                                     terminalLog("ENGINE", payload.message, "#d946ef");
                                     break;
+                                case 'phase1_5_start':
+                                    terminalLog("VERIFY", payload.message, "#a855f7");
+                                    break;
+                                case 'source_verification':
+                                    const score = payload.credibility_score || 0;
+                                    const scoreColor = score >= 80 ? "#10b981" : score >= 60 ? "#fbbf24" : "#ef4444";
+                                    terminalLog("VERIFY", `${payload.source_title} (${payload.domain}) → ${score}/100 [${payload.progress}]`, scoreColor);
+                                    break;
+                                case 'phase1_5_complete':
+                                    const avgCred = payload.avg_credibility || 0;
+                                    const avgColor = avgCred >= 80 ? "#10b981" : avgCred >= 60 ? "#22d3ee" : "#fbbf24";
+                                    terminalLog("VERIFY", `✓ Sources verified: ${payload.verified_count} passed, ${payload.rejected_count} rejected (Avg: ${avgCred}/100)`, avgColor);
+                                    break;
                                 case 'phase2_start':
                                     updateAgentUI('psychology');
                                     terminalLog("PSYCHOLOGY", payload.message, "#d946ef");

@@ -124,6 +124,82 @@ def migrate_writer_learning():
             """))
             print("[OK] Created writer_playbooks table")
 
+def migrate_source_verification():
+    """One-time migration: Add source verification tables (verified_sources, fact_citations, domain_credibility_cache)."""
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
+
+    # Check if already migrated
+    if 'verified_sources' in existing_tables and 'fact_citations' in existing_tables and 'domain_credibility_cache' in existing_tables:
+        return
+
+    with engine.begin() as conn:
+        if 'verified_sources' not in existing_tables:
+            conn.execute(text("""
+                CREATE TABLE verified_sources (
+                    id SERIAL PRIMARY KEY,
+                    research_run_id INTEGER NOT NULL,
+                    profile_name VARCHAR(50) NOT NULL DEFAULT 'default',
+                    url VARCHAR(500) NOT NULL,
+                    title VARCHAR(500) NOT NULL,
+                    domain VARCHAR(200) NOT NULL,
+                    credibility_score FLOAT NOT NULL,
+                    domain_authority INTEGER,
+                    publish_date TIMESTAMP,
+                    freshness_score FLOAT,
+                    internal_citations_count INTEGER DEFAULT 0,
+                    has_credible_citations BOOLEAN DEFAULT FALSE,
+                    citation_urls_json TEXT,
+                    is_academic BOOLEAN DEFAULT FALSE,
+                    is_authoritative_domain BOOLEAN DEFAULT FALSE,
+                    content_snippet TEXT,
+                    verification_passed BOOLEAN DEFAULT TRUE,
+                    rejection_reason VARCHAR(200),
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    CONSTRAINT uix_source_run UNIQUE (research_run_id, url)
+                )
+            """))
+            conn.execute(text("CREATE INDEX idx_verified_sources_research_run_id ON verified_sources(research_run_id)"))
+            conn.execute(text("CREATE INDEX idx_verified_sources_domain ON verified_sources(domain)"))
+            print("[OK] Created verified_sources table")
+
+        if 'fact_citations' not in existing_tables:
+            conn.execute(text("""
+                CREATE TABLE fact_citations (
+                    id SERIAL PRIMARY KEY,
+                    verified_source_id INTEGER NOT NULL,
+                    research_run_id INTEGER NOT NULL,
+                    fact_text TEXT NOT NULL,
+                    fact_type VARCHAR(50) NOT NULL,
+                    source_url VARCHAR(500) NOT NULL,
+                    source_title VARCHAR(500) NOT NULL,
+                    citation_anchor VARCHAR(200) NOT NULL,
+                    confidence_score FLOAT NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """))
+            conn.execute(text("CREATE INDEX idx_fact_citations_verified_source_id ON fact_citations(verified_source_id)"))
+            conn.execute(text("CREATE INDEX idx_fact_citations_research_run_id ON fact_citations(research_run_id)"))
+            print("[OK] Created fact_citations table")
+
+        if 'domain_credibility_cache' not in existing_tables:
+            conn.execute(text("""
+                CREATE TABLE domain_credibility_cache (
+                    id SERIAL PRIMARY KEY,
+                    domain VARCHAR(200) UNIQUE NOT NULL,
+                    domain_authority INTEGER,
+                    referring_domains INTEGER,
+                    is_authoritative BOOLEAN DEFAULT FALSE,
+                    is_academic BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP
+                )
+            """))
+            conn.execute(text("CREATE INDEX idx_domain_credibility_cache_domain ON domain_credibility_cache(domain)"))
+            print("[OK] Created domain_credibility_cache table")
+
 def get_db():
     db = SessionLocal()
     try:

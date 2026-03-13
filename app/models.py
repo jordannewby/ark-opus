@@ -144,3 +144,80 @@ class Workspace(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(50), unique=True)
     slug: Mapped[str] = mapped_column(String(50), unique=True)
+
+
+class VerifiedSource(Base):
+    __tablename__ = "verified_sources"
+    __table_args__ = (UniqueConstraint("research_run_id", "url", name="uix_source_run"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    research_run_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    profile_name: Mapped[str] = mapped_column(String(50), default="default", server_default="default")
+
+    # Source metadata
+    url: Mapped[str] = mapped_column(String(500), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    domain: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+
+    # Credibility scoring
+    credibility_score: Mapped[float] = mapped_column(nullable=False)  # 0.0-100.0
+    domain_authority: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    publish_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    freshness_score: Mapped[float | None] = mapped_column(nullable=True)  # 0.0-1.0
+
+    # Backlink verification
+    internal_citations_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    has_credible_citations: Mapped[bool] = mapped_column(default=False, server_default="false")
+    citation_urls_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # List of URLs cited
+
+    # Content quality signals
+    is_academic: Mapped[bool] = mapped_column(default=False, server_default="false")
+    is_authoritative_domain: Mapped[bool] = mapped_column(default=False, server_default="false")  # .gov, .edu, research journals
+    content_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)  # 500 chars for reference
+
+    # Verification status
+    verification_passed: Mapped[bool] = mapped_column(default=True, server_default="true")
+    rejection_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class FactCitation(Base):
+    __tablename__ = "fact_citations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    verified_source_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    research_run_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+
+    # Extracted fact
+    fact_text: Mapped[str] = mapped_column(Text, nullable=False)  # "67% of SMBs report..."
+    fact_type: Mapped[str] = mapped_column(String(50), nullable=False)  # stat, benchmark, case_study, expert_quote
+
+    # Attribution
+    source_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_title: Mapped[str] = mapped_column(String(500), nullable=False)
+    citation_anchor: Mapped[str] = mapped_column(String(200), nullable=False)  # "According to Gartner 2024"
+
+    # Validation
+    confidence_score: Mapped[float] = mapped_column(nullable=False)  # 0.0-1.0 (Gemini's confidence)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class DomainCredibilityCache(Base):
+    __tablename__ = "domain_credibility_cache"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    domain: Mapped[str] = mapped_column(String(200), unique=True, nullable=False, index=True)
+
+    # Cached metrics
+    domain_authority: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    referring_domains: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Categorization
+    is_authoritative: Mapped[bool] = mapped_column(default=False, server_default="false")  # .gov, .edu, major journals
+    is_academic: Mapped[bool] = mapped_column(default=False, server_default="false")
+
+    # Cache TTL
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())

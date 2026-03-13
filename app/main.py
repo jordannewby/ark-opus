@@ -15,7 +15,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from sqlalchemy.exc import OperationalError
-from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, SessionLocal
+from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, SessionLocal
 from .models import Post, ResearchRun, UserStyleRule, Workspace, WriterRun
 from .schemas import (
     BlueprintResponse,
@@ -39,6 +39,7 @@ from .services.cartographer_service import CartographerService
 migrate_research_cache()
 migrate_posts_readability()
 migrate_writer_learning()
+migrate_source_verification()
 Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager
@@ -283,7 +284,62 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             if DEBUG_MODE and tools_used:
                 tools_str = ", ".join(tools_used)
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'MCP Tools Executed: {tools_str}'})}\n\n"
-            
+
+            # Phase 1.5 - Source Verification
+            elite_competitors = research_data_dict.get("elite_competitors", [])
+
+            if elite_competitors:
+                yield f"data: {json.dumps({'event': 'phase1_5_start', 'message': 'Verifying source credibility...'})}\n\n"
+                p1_5_start = time.time()
+
+                from .services.source_verification_service import verify_sources, link_facts_to_sources
+
+                verification_result = await verify_sources(
+                    elite_competitors=elite_competitors,
+                    mcp_session=request.app.state.mcp_session,
+                    db=db,
+                    profile_name=payload.profile_name
+                )
+
+                verified_sources = verification_result["verified_sources"]
+                rejected_sources = verification_result["rejected_sources"]
+
+                if DEBUG_MODE:
+                    for i, source in enumerate(verified_sources):
+                        yield f"data: {json.dumps({'event': 'source_verification', 'source_title': source.title, 'domain': source.domain, 'credibility_score': round(source.credibility_score, 1), 'progress': f'{i+1}/{len(elite_competitors)}'})}\n\n"
+
+                # Fail if < 3 verified sources (USER REQUIREMENT)
+                if len(verified_sources) < 3:
+                    error_msg = f"Insufficient credible sources: only {len(verified_sources)} found (need 3 minimum). Rejected: {len(rejected_sources)} sources with low credibility scores."
+                    yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
+                    return
+
+                # Link research_run_id to verified sources
+                run_id = research_data_dict.get("research_run_id")
+                if run_id:
+                    for source in verified_sources:
+                        source.research_run_id = run_id
+                    db.commit()
+
+                # Extract facts and link to sources
+                await link_facts_to_sources(verified_sources, run_id, db)
+
+                avg_credibility = sum(s.credibility_score for s in verified_sources) / len(verified_sources) if verified_sources else 0
+
+                yield f"data: {json.dumps({'event': 'phase1_5_complete', 'verified_count': len(verified_sources), 'rejected_count': len(rejected_sources), 'avg_credibility': round(avg_credibility, 1)})}\n\n"
+
+                if DEBUG_MODE:
+                    yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1.5 (Source Verification) completed in {round(time.time() - p1_5_start, 2)}s. Avg credibility: {round(avg_credibility, 1)}/100'})}\n\n"
+
+                # Enrich research_result for downstream phases
+                research_data_dict["verified_sources"] = [
+                    {"title": s.title, "url": s.url, "credibility_score": s.credibility_score}
+                    for s in verified_sources
+                ]
+            else:
+                if DEBUG_MODE:
+                    yield f"data: {json.dumps({'event': 'debug', 'message': 'Phase 1.5 skipped: No elite competitors found in research'})}\n\n"
+
             # Phase 2
             yield f"data: {json.dumps({'event': 'phase2_start', 'message': 'Mapping psychological blueprint...'})}\n\n"
             p2_start = time.time()
@@ -298,7 +354,8 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             p3_start = time.time()
             writer_service = WriterService(db=db)
             article_content = ""
-            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, payload.niche):
+            run_id = research_data_dict.get("research_run_id")
+            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, payload.niche, research_run_id=run_id):
                 if result.get("type") == "content":
                     yield f"data: {json.dumps({'event': 'content', 'data': result['data']})}\n\n"
                 elif result.get("type") == "debug":
