@@ -156,27 +156,22 @@ class WriterService:
                     reverse=True
                 )
 
-                citation_map = {}
-                for cite in citations_sorted:
-                    citation_map[cite.fact_text] = {
-                        "url": cite.source_url,
-                        "title": cite.source_title,
-                        "anchor": cite.citation_anchor,
-                        "confidence": cite.confidence_score,
-                        "source_credibility": cite.source_credibility,
-                        "composite": cite.composite_score,
-                    }
-
                 prompt_instructions += "\n╔════════════════════════════════════════════════════════════════╗\n"
                 prompt_instructions += "║   CRITICAL CITATION REQUIREMENTS (NON-NEGOTIABLE)             ║\n"
                 prompt_instructions += "╚════════════════════════════════════════════════════════════════╝\n\n"
 
-                prompt_instructions += f"⚠️  You have access to {len(citation_map)} VERIFIED factual claims below.\n"
+                prompt_instructions += f"⚠️  You have access to {len(citations_sorted)} VERIFIED factual claims below.\n"
                 prompt_instructions += "⚠️  You MUST cite sources when making ANY factual claim.\n\n"
 
-                prompt_instructions += "═══ CITATION MAP (USE ONLY THESE VERIFIED FACTS) ═══\n"
-                prompt_instructions += f"{json.dumps(citation_map, indent=2)}\n"
-                prompt_instructions += "═══════════════════════════════════════════════════\n\n"
+                prompt_instructions += "═══ AVAILABLE CITATIONS (use exact markdown format) ═══\n\n"
+
+                for cite in citations_sorted:
+                    markdown_link = f"[{cite.citation_anchor}]({cite.source_url})"
+                    # Truncate fact to 100 chars for readability
+                    fact_preview = cite.fact_text[:100] + "..." if len(cite.fact_text) > 100 else cite.fact_text
+                    prompt_instructions += f"  • {markdown_link} — {fact_preview}\n"
+
+                prompt_instructions += "\n═══════════════════════════════════════════════════\n\n"
 
                 prompt_instructions += "📋 MANDATORY FORMAT:\n"
                 prompt_instructions += "   When you write a fact from the map, cite it IMMEDIATELY like this:\n"
@@ -540,8 +535,9 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
         all_citations.extend(markdown_citations)
 
         # Format 2: Parenthetical citations (Author/Source YYYY)
-        # Matches: (Source 2024), (Verizon 2024), (Gartner 2025)
-        parenthetical_pattern = r'\([A-Z][a-zA-Z\s&]+\s+20\d{2}\)'
+        # Matches: (Source 2024), (Verizon 2024), (IBM Report 2024), (Cloud-Native 2025)
+        # Enhanced to support numbers, hyphens, and periods in source names
+        parenthetical_pattern = r'\([A-Z][a-zA-Z0-9\s&\-\.]+\s+20\d{2}\)'
         parenthetical_citations = re.findall(parenthetical_pattern, text)
         all_citations.extend(parenthetical_citations)
 
@@ -555,6 +551,16 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
 
         # Count total unique citations across all formats
         citation_count = len(all_citations)
+
+        # DEBUG: Log what was found
+        from ..settings import DEBUG_MODE
+        if DEBUG_MODE:
+            print(f"[DEBUG] Citation validation: Found {citation_count} citations")
+            print(f"  - Markdown: {len(markdown_citations)}")
+            print(f"  - Parenthetical: {len(parenthetical_citations)}")
+            print(f"  - Footnotes: {len(unique_footnotes)}")
+            if citation_count > 0:
+                print(f"  - Sample: {all_citations[:3]}")
 
         passed = citation_count >= min_citations
 
