@@ -10,7 +10,6 @@ click==8.3.1
 colorama==0.4.6
 cryptography==46.0.5
 distro==1.9.0
-docstring_parser==0.17.0
 fastapi==0.135.1
 google-ai-generativelanguage==0.6.15
 google-api-core==2.25.2
@@ -18,7 +17,6 @@ google-api-python-client==2.190.0
 google-auth==2.48.0
 google-auth-httplib2==0.3.0
 google-genai==1.65.0
-google-generativeai==0.8.6
 googleapis-common-protos==1.72.0
 greenlet==3.3.2
 grpcio==1.78.0
@@ -45,8 +43,6 @@ pycparser==3.0
 pydantic==2.12.5
 pydantic-settings==2.13.1
 pydantic_core==2.41.5
-Pygments==2.19.2
-PyJWT==2.11.0
 pyparsing==3.3.2
 pytest==9.0.2
 python-dotenv==1.2.2
