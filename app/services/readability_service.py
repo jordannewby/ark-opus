@@ -105,13 +105,8 @@ def mask_keywords(text: str, keywords: list[str]) -> str:
 # Counting Primitives
 # ---------------------------------------------------------------------------
 
-def count_sentences(text: str) -> int:
-    """Count sentences using punctuation boundaries.
-    
-    Handles abbreviations (Mr., Dr., U.S.) and decimal numbers
-    to avoid false splits.
-    """
-    # Protect common abbreviations
+def _protect_abbreviations(text: str) -> str:
+    """Protect common abbreviations from sentence-ending detection."""
     protected = text
     abbreviations = [
         'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Prof.', 'Sr.', 'Jr.',
@@ -119,10 +114,23 @@ def count_sentences(text: str) -> int:
     ]
     for abbr in abbreviations:
         protected = protected.replace(abbr, abbr.replace('.', '<<DOT>>'))
-    
     # Protect decimal numbers (3.14, 99.9%)
     protected = re.sub(r'(\d)\.(\d)', r'\1<<DOT>>\2', protected)
-    
+    return protected
+
+
+def _restore_abbreviations(text: str) -> str:
+    """Restore protected abbreviations."""
+    return text.replace('<<DOT>>', '.')
+
+
+def count_sentences(text: str) -> int:
+    """Count sentences using punctuation boundaries.
+
+    Handles abbreviations (Mr., Dr., U.S.) and decimal numbers
+    to avoid false splits.
+    """
+    protected = _protect_abbreviations(text)
     # Split on sentence-ending punctuation
     sentences = re.split(r'[.!?]+', protected)
     # Filter out empty strings
@@ -132,21 +140,12 @@ def count_sentences(text: str) -> int:
 
 def split_sentences(text: str) -> list[str]:
     """Split text into individual sentences for per-sentence analysis."""
-    protected = text
-    abbreviations = [
-        'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Prof.', 'Sr.', 'Jr.',
-        'vs.', 'etc.', 'i.e.', 'e.g.', 'U.S.', 'U.K.', 'a.m.', 'p.m.'
-    ]
-    for abbr in abbreviations:
-        protected = protected.replace(abbr, abbr.replace('.', '<<DOT>>'))
-    protected = re.sub(r'(\d)\.(\d)', r'\1<<DOT>>\2', protected)
-    
+    protected = _protect_abbreviations(text)
     # Split but keep the delimiter for reconstruction
     raw = re.split(r'(?<=[.!?])\s+', protected)
     sentences = []
     for s in raw:
-        restored = s.replace('<<DOT>>', '.')
-        restored = restored.strip()
+        restored = _restore_abbreviations(s.strip())
         if restored and len(restored.split()) >= 2:
             sentences.append(restored)
     return sentences
