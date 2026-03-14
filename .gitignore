@@ -17,3 +17,7 @@ __pycache__/
 .env
 .vscode/
 *.log
+
+# Node modules
+node_modules/
+mcp-dataforseo-server/node_modules/

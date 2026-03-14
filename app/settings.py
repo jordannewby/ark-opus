@@ -10,6 +10,7 @@ def get_bool_env(key: str, default: bool = False) -> bool:
     return val.lower() in ("true", "1", "yes") if val else default
 
 DEBUG_MODE = get_bool_env("ARES_DEBUG", True) # Defaulting to True for testing
+DATAFORSEO_CONTENT_ANALYSIS_ENABLED = get_bool_env("DATAFORSEO_CONTENT_ANALYSIS_ENABLED", False) # Additive feature flag
 
 def get_clean_env(key: str) -> str | None:
     val = os.getenv(key)
@@ -29,8 +30,8 @@ if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY is missing.")
 if not DEEPSEEK_API_KEY:
     raise ValueError("DEEPSEEK_API_KEY is missing.")
-if not DATAFORSEO_LOGIN or not DATAFORSEO_PASSWORD:
-    raise ValueError("DATAFORSEO credentials missing.")
+# Note: DATAFORSEO credentials still loaded for ResearchAgent (SERP tools)
+# Validation removed - source verification no longer requires DataForSEO
 if not EXA_API_KEY:
     raise ValueError("EXA_API_KEY is missing.")
 if not ANTHROPIC_API_KEY:

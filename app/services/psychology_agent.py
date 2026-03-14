@@ -89,5 +89,6 @@ class PsychologyAgent:
         # Enrich blueprint with SEO data from research for the writer
         blueprint["entities"] = research_data.get("semantic_entities", [])
         blueprint["semantic_keywords"] = research_data.get("people_also_ask", [])
+        blueprint["content_patterns"] = research_data.get("content_patterns")  # Optional: SERP structure insights
 
         return blueprint

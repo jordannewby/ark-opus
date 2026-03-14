@@ -1,0 +1,17 @@
+{
+  "name": "dataforseo-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for DataForSEO API integration",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": ["mcp", "dataforseo", "seo", "api"],
+  "author": "Ares Engine",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "node-fetch": "^3.3.2"
+  }
+}

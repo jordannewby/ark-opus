@@ -85,6 +85,17 @@ The backend operates entirely inside FastAPI (`app/main.py`), utilizing the `/ge
 5.  **Phase 6: Self-Correction Loop (`app/services/feedback_service.py`)**
     *   When a human edits the generated Markdown in the UI, `gemini-2.5-flash` semantically diffs the original against the edit to extract permanent `UserStyleRule` entities to Neon PostgreSQL (scoped by `profile_name`), ensuring the AI converges on the user's exact writing style over time.
 
+## 🧹 Codebase Maintenance (March 2026)
+
+The project underwent a comprehensive cleanup to remove technical debt:
+- **Removed**: 11 obsolete one-time patch scripts (~95KB)
+- **Cleaned**: Python cache files and unused imports across service layer
+- **Refactored**: Duplicate abbreviation logic in readability service
+- **Optimized**: Removed 4 unused dependencies from requirements.txt
+- **Result**: Leaner codebase with 100% test coverage maintained
+
+See commit history on `cleanup/complete-audit` branch for detailed changes.
+
 ## 💾 Notes on Portability
 
 *   **Database:** The project uses a serverless Neon PostgreSQL cluster. Connection details are stored in `.env` (which is gitignored). Each new device needs its own `.env` file with the correct `DATABASE_URL` and API keys.

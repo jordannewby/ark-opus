@@ -200,6 +200,49 @@ def migrate_source_verification():
             conn.execute(text("CREATE INDEX idx_domain_credibility_cache_domain ON domain_credibility_cache(domain)"))
             print("[OK] Created domain_credibility_cache table")
 
+def migrate_composite_scoring():
+    """One-time migration: Add composite scoring columns to fact_citations."""
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+
+    # Check if fact_citations table exists
+    if 'fact_citations' not in inspector.get_table_names():
+        return  # Table doesn't exist yet
+
+    # Check if columns already exist
+    columns = [col['name'] for col in inspector.get_columns('fact_citations')]
+    if 'source_credibility' in columns and 'composite_score' in columns:
+        return  # Already migrated
+
+    with engine.begin() as conn:
+        # Add source_credibility column if missing
+        if 'source_credibility' not in columns:
+            conn.execute(text("""
+                ALTER TABLE fact_citations
+                ADD COLUMN source_credibility FLOAT DEFAULT NULL
+            """))
+            print("[OK] Added source_credibility column to fact_citations")
+
+        # Add composite_score column if missing
+        if 'composite_score' not in columns:
+            conn.execute(text("""
+                ALTER TABLE fact_citations
+                ADD COLUMN composite_score FLOAT DEFAULT NULL
+            """))
+            print("[OK] Added composite_score column to fact_citations")
+
+        # Backfill existing citations with composite scores
+        conn.execute(text("""
+            UPDATE fact_citations fc
+            SET source_credibility = vs.credibility_score,
+                composite_score = (fc.confidence_score * 100 + vs.credibility_score) / 2
+            FROM verified_sources vs
+            WHERE fc.verified_source_id = vs.id
+            AND fc.composite_score IS NULL
+        """))
+        print("[OK] Backfilled composite scores for existing fact_citations")
+
 def get_db():
     db = SessionLocal()
     try:

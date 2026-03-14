@@ -21,36 +21,13 @@ from sqlalchemy.orm import Session
 
 from ..models import DomainCredibilityCache, FactCitation, VerifiedSource
 from ..settings import GEMINI_API_KEY
+from ..domain_tiers import get_domain_tier_score
 
 logger = logging.getLogger(__name__)
 
 # Constants for domain categorization
-AUTHORITATIVE_DOMAINS = {
-    # Government
-    ".gov", ".mil",
-    # Education
-    ".edu", ".ac.uk", ".edu.au",
-    # International organizations
-    "who.int", "un.org", "oecd.org", "worldbank.org",
-}
-
-ACADEMIC_DOMAINS = {
-    # Research journals
-    "nature.com", "science.org", "sciencedirect.com", "springer.com",
-    "ieee.org", "acm.org", "arxiv.org", "pubmed.gov", "nih.gov",
-    # Academic publishers
-    "wiley.com", "elsevier.com", "oxford.ac.uk", "cambridge.org",
-}
-
-MAJOR_PUBLISHERS = {
-    # News
-    "nytimes.com", "wsj.com", "ft.com", "economist.com", "reuters.com", "bloomberg.com",
-    # Business/Tech
-    "hbr.org", "mckinsey.com", "bcg.com", "gartner.com", "forrester.com",
-    "techcrunch.com", "wired.com", "arstechnica.com",
-    # Research orgs
-    "pewresearch.org", "gallup.com", "statista.com",
-}
+# Note: AUTHORITATIVE_DOMAINS, ACADEMIC_DOMAINS, and MAJOR_PUBLISHERS removed
+# Replaced with tiered domain system in domain_tiers.py
 
 SOCIAL_MEDIA_DOMAINS = {
     "facebook.com", "twitter.com", "x.com", "linkedin.com", "instagram.com",
@@ -75,55 +52,85 @@ def extract_domain(url: str) -> str:
 
 
 def is_authoritative_domain(domain: str) -> bool:
-    """Check if domain is authoritative (.gov, .edu, UN/WHO, etc.)."""
-    for auth_domain in AUTHORITATIVE_DOMAINS:
-        if domain.endswith(auth_domain) or domain == auth_domain:
-            return True
-    return False
+    """Check if domain is Tier 1 (authoritative)."""
+    tier_level, _ = get_domain_tier_score(domain)
+    return tier_level == 1
 
 
 def is_academic_domain(domain: str) -> bool:
-    """Check if domain is academic (research journals, publishers)."""
-    for acad_domain in ACADEMIC_DOMAINS:
-        if acad_domain in domain:
-            return True
-    return False
+    """Check if domain is Tier 1 or has academic TLD."""
+    if domain.endswith(".edu") or ".ac." in domain:
+        return True
+    tier_level, _ = get_domain_tier_score(domain)
+    return tier_level == 1
 
 
 def is_major_publisher(domain: str) -> bool:
-    """Check if domain is a major publisher (NYT, WSJ, HBR, etc.)."""
-    for pub_domain in MAJOR_PUBLISHERS:
-        if pub_domain in domain:
-            return True
-    return False
+    """Check if domain is Tier 3+ (quality publications)."""
+    tier_level, _ = get_domain_tier_score(domain)
+    return tier_level >= 3
 
 
-def extract_publish_date(content: str) -> datetime | None:
+def extract_publish_date(content: str, source_url: str = "") -> datetime | None:
     """
-    Extract publish date from article content using regex patterns.
-    Looks for common date formats in first 2000 chars.
+    Extract publish date from article content using enhanced regex patterns.
+    Looks for common date formats in first 5000 chars (increased from 2000).
+    Falls back to URL pattern matching if content extraction fails.
     Returns None if not found.
+
+    Hybrid Approach (March 2026): Improved to capture more date formats.
     """
-    # Common date patterns in article metadata/content
+    # Enhanced date patterns covering more metadata formats
     patterns = [
+        # Metadata patterns (high confidence)
         r"published[:\s]+(\d{4})-(\d{2})-(\d{2})",  # published: 2024-03-15
-        r"(\d{4})-(\d{2})-(\d{2})",  # ISO format 2024-03-15
+        r"date[:\s]+(\d{4})-(\d{2})-(\d{2})",  # date: 2024-03-15
+        r"updated[:\s]+(\d{4})-(\d{2})-(\d{2})",  # updated: 2024-03-15
+        r"last[\s-]modified[:\s]+(\d{4})-(\d{2})-(\d{2})",  # last-modified: 2024-03-15
+
+        # ISO 8601 formats
+        r"(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}",  # 2024-03-15T14:30
+        r"(\d{4})-(\d{2})-(\d{2})",  # 2024-03-15
+
+        # Natural language formats
         r"(\w+ \d{1,2}, \d{4})",  # March 15, 2024
         r"(\d{1,2} \w+ \d{4})",  # 15 March 2024
+
+        # Alternative formats
+        r"(\d{1,2}/\d{1,2}/\d{4})",  # 03/15/2024 or 15/03/2024
+        r"(\d{4}\.\d{2}\.\d{2})",  # 2024.03.15
     ]
 
-    search_text = content[:2000].lower()
+    # Search in first 5000 chars (increased from 2000 to catch more metadata)
+    search_text = content[:5000].lower()
 
     for pattern in patterns:
         match = re.search(pattern, search_text)
         if match:
             try:
                 date_str = match.group(0)
-                # Try parsing with dateutil
+                # Try parsing with dateutil (handles multiple formats)
                 from dateutil import parser
-                return parser.parse(date_str, fuzzy=True)
+                parsed_date = parser.parse(date_str, fuzzy=True)
+
+                # Sanity check: reject dates in the future or before 2000
+                if datetime(2000, 1, 1) <= parsed_date <= datetime.now():
+                    return parsed_date
             except Exception:
                 continue
+
+    # Fallback: Extract date from URL path (e.g., /2024/03/15/article-title)
+    if source_url:
+        url_date_pattern = r"/(\d{4})/(\d{2})/(\d{2})/"
+        url_match = re.search(url_date_pattern, source_url)
+        if url_match:
+            try:
+                year, month, day = map(int, url_match.groups())
+                url_date = datetime(year, month, day)
+                if datetime(2000, 1, 1) <= url_date <= datetime.now():
+                    return url_date
+            except Exception:
+                pass
 
     return None
 
@@ -155,90 +162,27 @@ def extract_urls_from_content(content: str) -> list[str]:
     return [url.strip().rstrip(".,;:)") for url in unique_urls]
 
 
-# --- Domain Authority Fetching ---
+# --- Domain Tier Scoring (Replaces DataForSEO) ---
 
-def get_cached_domain_authority(domain: str, db: Session) -> int | None:
+def get_domain_tier_score_wrapper(domain: str) -> dict:
     """
-    Get cached domain authority score for domain.
-    Returns None if not cached or cache expired (>7 days).
-    """
-    cache_ttl_days = 7
+    Get tier-based credibility score for domain.
+    Returns dict compatible with old domain_authority format.
+    Cost: $0.00 (no API calls)
 
-    cached = db.query(DomainCredibilityCache).filter_by(domain=domain).first()
-    if not cached:
-        return None
-
-    # Check if cache expired
-    if cached.created_at < datetime.now() - timedelta(days=cache_ttl_days):
-        return None
-
-    return cached.domain_authority
-
-
-async def get_domain_authority(domain: str, mcp_session, db: Session) -> dict:
-    """
-    Fetch domain authority metrics from DataForSEO backlinks API.
-    Returns: {domain_authority: int, referring_domains: int}
-    Cost: ~$0.002 per domain (cached for 7 days)
-    """
-    # Check cache first
-    cached_da = get_cached_domain_authority(domain, db)
-    if cached_da is not None:
-        logger.info(f"[CACHE HIT] Domain authority for {domain}: {cached_da}")
-        cached_entry = db.query(DomainCredibilityCache).filter_by(domain=domain).first()
-        return {
-            "domain_authority": cached_entry.domain_authority,
-            "referring_domains": cached_entry.referring_domains,
+    Returns:
+        dict: {
+            "tier_level": int (1-4, or 0 for unknown),
+            "domain_authority": int (40/30/20/10/0 points)
         }
+    """
+    tier_level, score = get_domain_tier_score(domain)
+    logger.info(f"[TIER] {domain} → Tier {tier_level} (Score: {score})")
 
-    # Fetch from DataForSEO
-    try:
-        logger.info(f"[DATAFORSEO] Fetching domain authority for {domain}...")
-
-        # Call backlinks_domain_summary tool via MCP
-        result = await mcp_session.call_tool(
-            "backlinks_domain_summary",
-            arguments={"target": domain}
-        )
-
-        # Parse result
-        # Expected structure: {"rank": int, "backlinks": int, "referring_domains": int}
-        result_data = result.content[0].text if hasattr(result, 'content') else result
-        if isinstance(result_data, str):
-            result_data = json.loads(result_data)
-
-        # Extract metrics (DataForSEO rank is 0-100, we map to domain authority)
-        rank = result_data.get("rank", 0)
-        referring_domains = result_data.get("referring_domains", 0)
-
-        # Map rank to domain authority (0-100 scale)
-        domain_authority = min(100, int(rank))
-
-        # Cache the result
-        cache_entry = DomainCredibilityCache(
-            domain=domain,
-            domain_authority=domain_authority,
-            referring_domains=referring_domains,
-            is_authoritative=is_authoritative_domain(domain),
-            is_academic=is_academic_domain(domain),
-        )
-        db.merge(cache_entry)
-        db.commit()
-
-        logger.info(f"[DATAFORSEO] {domain} → DA: {domain_authority}, Referring Domains: {referring_domains}")
-
-        return {
-            "domain_authority": domain_authority,
-            "referring_domains": referring_domains,
-        }
-
-    except Exception as e:
-        logger.warning(f"[DATAFORSEO] Failed to fetch domain authority for {domain}: {e}")
-        # Return default values on error
-        return {
-            "domain_authority": None,
-            "referring_domains": 0,
-        }
+    return {
+        "tier_level": tier_level,
+        "domain_authority": score,  # Keep same field name for compatibility
+    }
 
 
 # --- Backlink Verification ---
@@ -262,13 +206,13 @@ async def extract_internal_citations(content: str, source_url: str, db: Session)
         if domain in SOCIAL_MEDIA_DOMAINS:
             continue
 
-        # Quick credibility check (uses cached domain authority)
+        # Quick credibility check (uses tier scoring)
         is_credible = False
         if is_authoritative_domain(domain):
             is_credible = True
         else:
-            cached_da = get_cached_domain_authority(domain, db)
-            if cached_da and cached_da > 50:
+            tier_info = get_domain_tier_score_wrapper(domain)
+            if tier_info["domain_authority"] >= 20:  # Tier 3+ considered credible
                 is_credible = True
 
         citations.append({
@@ -289,10 +233,10 @@ async def assess_content_quality(content: str) -> dict:
     Cost: ~$0.0001 per assessment
     """
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
 
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.0-flash-exp")
+        client = genai.Client(api_key=GEMINI_API_KEY)
 
         prompt = f"""
 You are a content quality assessment specialist. Evaluate the following article content.
@@ -315,8 +259,24 @@ Return JSON:
 Only return the JSON, no other text.
 """
 
-        response = model.generate_content(prompt)
-        result = json.loads(response.text)
+        # Use new async SDK with JSON response mode
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",  # Current stable model (matches briefing_agent, feedback_service)
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                response_mime_type="application/json"  # Force JSON response
+            )
+        )
+
+        # Parse JSON with error handling
+        try:
+            result = json.loads(response.text)
+        except json.JSONDecodeError as e:
+            logger.error(f"[GEMINI] Invalid JSON response: {response.text[:200]}")
+            return {"score": 0.5, "reasoning": "JSON parse error"}
+
+        logger.info(f"[GEMINI] Content quality score: {result.get('score', 0.5)}")
 
         return {
             "score": result.get("score", 0.5),
@@ -338,67 +298,81 @@ async def calculate_credibility_score(
     content_quality: dict
 ) -> float:
     """
-    Multi-factor credibility scoring algorithm.
+    Multi-factor credibility scoring algorithm (Tier-Based, Rebalanced for Content Quality).
     Returns score 0.0-100.0. Minimum threshold: 60.0 to pass verification.
 
-    Factors:
-    - Domain Authority (40 pts max)
-    - Domain Type (20 pts max)
-    - Content Freshness (15 pts max)
-    - Internal Citations (15 pts max)
-    - Content Quality (10 pts max)
+    REBALANCED FACTORS (Hybrid Approach - March 2026):
+    - Content Quality (40 pts max) - PRIMARY SIGNAL - Gemini Flash assessment
+    - Domain Tier (30 pts max) - Curated domain lists (195 domains)
+    - Content Freshness (20 pts max) - Publish date recency
+    - Internal Citations (10 pts max) - Backlink credibility
+
+    Rationale: Domain authority is binary (195 domains = <0.001% coverage),
+    so content quality becomes the most reliable credibility signal.
     """
     score = 0.0
+    breakdown = {}  # For debugging
 
-    # Factor 1: Domain Authority (40 points max)
-    if domain_metrics.get("domain_authority"):
-        da = domain_metrics["domain_authority"]
-        score += min(40.0, da * 0.4)  # DA of 100 = 40 points
+    # Factor 1: Domain Tier Score (30 points max, was 40)
+    # Tier wrapper returns 0/10/20/30/40, normalize to 0-30 range
+    raw_domain_score = domain_metrics.get("domain_authority", 0)
+    domain_points = (raw_domain_score / 40.0) * 30.0  # Scale 0-40 to 0-30
+    score += domain_points
+    breakdown["domain"] = round(domain_points, 1)
 
-    # Factor 2: Domain Type (20 points max)
-    domain = extract_domain(source["url"])
-    if is_authoritative_domain(domain):
-        score += 20.0
-    elif is_academic_domain(domain):
-        score += 15.0
-    elif is_major_publisher(domain):
-        score += 10.0
-
-    # Factor 3: Content Freshness (15 points max)
-    publish_date = extract_publish_date(source.get("content", ""))
+    # Factor 2: Content Freshness (20 points max, unchanged)
+    publish_date = extract_publish_date(source.get("content", ""), source.get("url", ""))
+    freshness_points = 0.0
     if publish_date:
         days_old = (datetime.now() - publish_date).days
         if days_old <= 365:
-            score += 15.0
+            freshness_points = 20.0
         elif days_old <= 730:
-            score += 10.0
+            freshness_points = 13.0
         elif days_old <= 1095:
-            score += 5.0
+            freshness_points = 7.0
+    score += freshness_points
+    breakdown["freshness"] = round(freshness_points, 1)
 
-    # Factor 4: Internal Citation Quality (15 points max)
+    # Factor 3: Internal Citation Quality (10 points max, was 20)
+    citation_points = 0.0
     if citations:
         credible_citation_count = sum(1 for c in citations if c.get("is_credible"))
-        score += min(15.0, credible_citation_count * 5.0)  # 3+ credible citations = max
+        citation_points = min(10.0, credible_citation_count * 3.33)  # 3+ credible citations = max
+    score += citation_points
+    breakdown["citations"] = round(citation_points, 1)
 
-    # Factor 5: Content Quality Signals (10 points max)
-    score += content_quality.get("score", 0.5) * 10.0  # Returns 0.0-1.0
+    # Factor 4: Content Quality Signals (40 points max, was 20) - PRIMARY
+    quality_score = content_quality.get("score", 0.5)
+    quality_points = quality_score * 40.0  # Doubled weight
+    score += quality_points
+    breakdown["quality"] = round(quality_points, 1)
 
-    return min(100.0, score)
+    final_score = min(100.0, score)
+
+    # Log breakdown for debugging
+    logger.debug(
+        f"[SCORE BREAKDOWN] Total: {final_score:.1f}/100 "
+        f"(Domain: {breakdown['domain']}, Quality: {breakdown['quality']}, "
+        f"Freshness: {breakdown['freshness']}, Citations: {breakdown['citations']})"
+    )
+
+    return final_score
 
 
 # --- Fact Extraction ---
 
 async def extract_facts_from_source(source: dict) -> list[dict]:
     """
-    Uses Gemini 2.5 Flash to extract verifiable factual claims.
+    Uses Gemini 2.0 Flash to extract verifiable factual claims.
     Returns: [{fact_text, fact_type, citation_anchor, confidence}]
     Cost: ~$0.0001 per source
     """
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
 
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.0-flash-exp")
+        client = genai.Client(api_key=GEMINI_API_KEY)
 
         prompt = f"""
 You are a fact extraction specialist. Extract ONLY verifiable factual claims from the following article.
@@ -410,33 +384,73 @@ CONTENT:
 {source.get('content', '')[:8000]}
 
 Extract facts in the following categories:
-1. STATISTICS: Specific numbers, percentages, dollar amounts (e.g., "67% of SMBs report...")
-2. BENCHMARKS: Industry standards, thresholds, measurements (e.g., "Average churn rate of 5-7%")
-3. CASE_STUDIES: Real-world outcomes, company examples (e.g., "Shopify reduced load time by 40%")
-4. EXPERT_QUOTES: Direct quotes from named experts (e.g., "According to Gartner analyst Jane Doe...")
+1. STATISTICS: Specific numbers, percentages, dollar amounts
+   Examples:
+   - "67% of SMBs experienced a cyberattack in 2023"
+   - "The average cost of a data breach is $4.35 million"
+   - "Healthcare organizations face 3x more attacks than other sectors"
+
+2. BENCHMARKS: Industry standards, thresholds, measurements
+   Examples:
+   - "Average churn rate of 5-7% for SaaS companies"
+   - "Industry standard is 99.9% uptime"
+   - "Typical response time under 200ms"
+
+3. CASE_STUDIES: Real-world outcomes, company examples with specific results
+   Examples:
+   - "Shopify reduced page load time by 40% using edge caching"
+   - "Acme Corp saved $500K annually after implementing automation"
+   - "Netflix achieved 10x scale using microservices architecture"
+
+4. EXPERT_QUOTES: Direct quotes from named experts, organizations, or studies
+   Examples:
+   - "According to Gartner analyst Jane Doe: 'Cloud adoption will reach 85% by 2025'"
+   - "Security expert Bruce Schneier states: 'MFA reduces account takeovers by 99%'"
+   - "Research from MIT found that..."
 
 Return JSON array:
 [
   {{
-    "fact_text": "Exact claim extracted verbatim",
+    "fact_text": "Exact claim extracted verbatim (include numbers, percentages, names, years)",
     "fact_type": "statistic|benchmark|case_study|expert_quote",
-    "citation_anchor": "How to reference this (e.g., 'According to Harvard Business Review 2024')",
+    "citation_anchor": "How to reference this (e.g., 'Source Name 2024', 'Gartner 2024', 'Company Blog')",
     "confidence": 0.9
   }}
 ]
 
-RULES:
-- Extract ONLY claims that are specific and verifiable
-- Do NOT extract opinions, generalizations, or vague statements
-- Include the year if mentioned
-- confidence: 0.0-1.0 based on how clearly the source states this fact
-- Return empty array [] if no factual claims found
+CRITICAL RULES:
+- Extract facts that include SPECIFIC NUMBERS, PERCENTAGES, DOLLAR AMOUNTS, or DIRECT QUOTES
+- Do NOT extract vague claims like "many companies" or "recent studies show"
+- Do NOT extract opinions, predictions, or subjective statements
+- Include the YEAR if mentioned in the claim
+- confidence: 0.6-1.0 based on how clearly stated and verifiable (be generous if fact is clear)
+- Return empty array [] ONLY if absolutely no specific factual claims exist
+
+WHAT TO EXTRACT: Any claim with a specific number, percentage, dollar amount, or attributable quote.
+WHAT TO SKIP: Vague generalizations, opinions, predictions without data, author's personal views.
 
 Only return the JSON array, no other text.
 """
 
-        response = model.generate_content(prompt)
-        facts = json.loads(response.text)
+        # Use new async SDK with JSON response mode
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",  # Current stable model (matches briefing_agent, feedback_service)
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                response_mime_type="application/json"  # Force JSON array response
+            )
+        )
+
+        # Parse JSON with error handling
+        try:
+            facts = json.loads(response.text)
+            if not isinstance(facts, list):
+                logger.warning(f"[GEMINI] Expected list, got {type(facts)}")
+                facts = []
+        except json.JSONDecodeError as e:
+            logger.error(f"[GEMINI] Invalid JSON response for {source['url']}: {response.text[:200]}")
+            return []
 
         logger.info(f"[GEMINI] Extracted {len(facts)} facts from {source['url']}")
 
@@ -467,8 +481,14 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
         facts = await extract_facts_from_source(source_dict)
 
         for fact in facts:
-            if fact.get("confidence", 0) < 0.7:
-                continue  # Only store high-confidence facts
+            # Lowered threshold from 0.7 to 0.6 (March 2026) to capture more facts
+            if fact.get("confidence", 0) < 0.6:
+                continue  # Only store moderate-to-high confidence facts
+
+            # Calculate composite score: combines fact confidence with source credibility
+            source_cred = source_row.credibility_score
+            fact_conf = fact["confidence"]
+            composite = (fact_conf * 100 + source_cred) / 2
 
             citation = FactCitation(
                 verified_source_id=source_row.id,
@@ -478,7 +498,9 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
                 source_url=source_row.url,
                 source_title=source_row.title,
                 citation_anchor=fact["citation_anchor"],
-                confidence_score=fact["confidence"],
+                confidence_score=fact_conf,
+                source_credibility=source_cred,
+                composite_score=composite,
             )
             db.add(citation)
 
@@ -491,33 +513,55 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
 
 async def verify_sources(
     elite_competitors: list[dict],
-    mcp_session,
     db: Session,
-    profile_name: str = "default"
+    profile_name: str = "default",
+    research_run_id: int = 0
 ) -> dict:
     """
-    Main source verification pipeline.
+    Main source verification pipeline (Tier-Based, $0 cost).
 
     Input: elite_competitors from ResearchAgent [{title, url, content}]
     Output: {verified_sources: list[VerifiedSource], rejected_sources: list[dict]}
 
     Process:
-    1. For each source, fetch domain authority (cached if available)
+    1. For each source, get domain tier score (no API calls)
     2. Extract internal citations and verify credibility
     3. Assess content quality via Gemini Flash
     4. Calculate multi-factor credibility score
     5. Save to VerifiedSource table if score >= 60.0
+
+    Args:
+        elite_competitors: List of sources from research phase
+        db: Database session
+        profile_name: Workspace identifier
+        research_run_id: ID of the research run (defaults to 0 for standalone use)
     """
     verified_sources = []
     rejected_sources = []
+
+    # Deduplicate by URL to prevent constraint violations
+    seen_urls = set()
+    unique_sources = []
+    duplicate_count = 0
+    for source in elite_competitors:
+        url = source.get("url", "")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            unique_sources.append(source)
+        else:
+            duplicate_count += 1
+            logger.info(f"[DEDUP] Skipping duplicate URL: {url}")
+
+    elite_competitors = unique_sources
+    logger.info(f"[DEDUP] Processing {len(elite_competitors)} unique URLs (removed {duplicate_count} duplicates)")
 
     for i, source in enumerate(elite_competitors):
         domain = extract_domain(source["url"])
 
         logger.info(f"[VERIFY {i+1}/{len(elite_competitors)}] Processing {domain}...")
 
-        # Step 1: Get domain authority
-        domain_metrics = await get_domain_authority(domain, mcp_session, db)
+        # Step 1: Get domain tier score (no API cost)
+        domain_metrics = get_domain_tier_score_wrapper(domain)
 
         # Step 2: Extract internal citations
         citations = await extract_internal_citations(source.get("content", ""), source["url"], db)
@@ -535,14 +579,14 @@ async def verify_sources(
         rejection_reason = None if verification_passed else f"Score {credibility_score:.1f} < 60.0 threshold"
 
         # Step 6: Save to database
-        publish_date = extract_publish_date(source.get("content", ""))
+        publish_date = extract_publish_date(source.get("content", ""), source.get("url", ""))
         freshness_score = None
         if publish_date:
             days_old = (datetime.now() - publish_date).days
             freshness_score = max(0.0, 1.0 - (days_old / 1095.0))  # Decays over 3 years
 
         verified_source = VerifiedSource(
-            research_run_id=0,  # Will be set when integrated into main.py
+            research_run_id=research_run_id,  # Passed from caller (main.py)
             profile_name=profile_name,
             url=source["url"],
             title=source["title"],

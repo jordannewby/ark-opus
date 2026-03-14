@@ -200,6 +200,8 @@ class FactCitation(Base):
 
     # Validation
     confidence_score: Mapped[float] = mapped_column(nullable=False)  # 0.0-1.0 (Gemini's confidence)
+    source_credibility: Mapped[float | None] = mapped_column(nullable=True)  # Parent source score (60-100 scale)
+    composite_score: Mapped[float | None] = mapped_column(nullable=True)  # Combined: (confidence*100 + source_cred)/2
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
