@@ -38,8 +38,13 @@ TIER_1_DOMAINS = {
     "coso.org",
     "isaca.org",
     "iia.org.uk",
-    "coso.org",
     "nist.gov/cyberframework",
+
+    # Data Protection Authorities
+    "gdpr.eu",
+    "ico.org.uk",
+    "edps.europa.eu",
+    "cnil.fr",
 
     # Networking Standards
     "ietf.org",
@@ -139,6 +144,22 @@ TIER_2_DOMAINS = {
     "forrester.com",
     "idc.com",
 
+    # Privacy & Compliance Organizations
+    "iapp.org",
+    "privacyinternational.org",
+    "eff.org",
+
+    # Bug Bounty Platforms
+    "hackerone.com",
+    "bugcrowd.com",
+
+    # Purple Team / Simulation
+    "scythe.io",
+    "redcanary.com",
+
+    # Open Source Security Tools
+    "wazuh.com",
+
     # Networking Vendors
     "juniper.net",
     "arista.com",
@@ -190,6 +211,18 @@ TIER_3_DOMAINS = {
     "technologyreview.com",
     "aiweirdness.com",
     "machinelearningmastery.com",
+
+    # Compliance & Privacy Publications
+    "complianceweek.com",
+    "lawfaremedia.org",
+
+    # Open Source Security Tools
+    "zeek.org",
+    "suricata.io",
+    "osquery.io",
+
+    # Networking
+    "opennetworking.org",
 
     # Quality Tech Media
     "arstechnica.com",

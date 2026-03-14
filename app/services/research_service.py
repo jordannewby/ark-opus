@@ -42,7 +42,7 @@ EXA_EXCLUDE_DOMAINS = [
     "forbes.com/sites",    # Contributor network (not editorial staff)
 ]
 
-# High-authority domains to prioritize (organized by category)
+# High-authority domains to prioritize (organized by category and niche)
 EXA_INCLUDE_DOMAINS = {
     # General authority
     "general": [
@@ -51,70 +51,146 @@ EXA_INCLUDE_DOMAINS = {
         "nature.com", "science.org",  # Scientific journals
     ],
 
-    # Cybersecurity-specific
+    # Cybersecurity — comprehensive (Tier 1-3 from domain_tiers.py)
     "cybersecurity": [
-        # Government & Standards
-        "nist.gov",              # National Institute of Standards and Technology
-        "cisa.gov",              # Cybersecurity Infrastructure Security Agency
-        "us-cert.gov",           # US Computer Emergency Readiness Team
-        "nvd.nist.gov",          # National Vulnerability Database
-
-        # Research & Organizations
-        "owasp.org",             # Open Web Application Security Project
-        "sans.org",              # Security training and research
-        "mitre.org",             # CVE database and frameworks
-        "cert.org",              # CERT Coordination Center
-
-        # Authoritative Blogs & News
-        "krebsonsecurity.com",   # Brian Krebs - investigative security journalism
-        "schneier.com",          # Bruce Schneier - cryptography expert
-        "darkreading.com",       # Dark Reading security news
-        "securityweek.com",      # SecurityWeek
-        "bleepingcomputer.com",  # Technical security news
-        "arstechnica.com",       # Ars Technica (security section)
-        "thehackernews.com",     # The Hacker News
-
-        # Vendor Research (high quality)
-        "googleprojectzero.blogspot.com",  # Google Project Zero (exception to blogspot rule)
-        "research.checkpoint.com",         # Check Point Research
-        "unit42.paloaltonetworks.com",     # Palo Alto Unit 42
+        # Government & Standards (Tier 1)
+        "nist.gov", "cisa.gov", "us-cert.gov", "nvd.nist.gov",
+        "owasp.org", "mitre.org", "cert.org", "sans.org", "first.org",
+        "cve.mitre.org", "ics-cert.us-cert.gov",
+        # Vendors (Tier 2)
+        "crowdstrike.com", "sentinelone.com", "paloaltonetworks.com",
+        "checkpoint.com", "fortinet.com", "cisco.com", "splunk.com",
+        "elastic.co", "rapid7.com", "tenable.com", "qualys.com",
+        "cyberark.com", "okta.com", "mandiant.com", "fireeye.com",
+        "trendmicro.com", "sophos.com", "mcafee.com", "symantec.com",
+        "carbonblack.com",
+        # Expert Blogs & Publications (Tier 3)
+        "krebsonsecurity.com", "schneier.com", "troyhunt.com",
+        "danielmiessler.com", "grahamcluley.com",
+        "darkreading.com", "securityweek.com", "bleepingcomputer.com",
+        "thehackernews.com", "threatpost.com", "cyberscoop.com",
+        "scmagazine.com", "infosecurity-magazine.com",
+        "securityintelligence.com", "csoonline.com",
+        # Vendor Research
+        "googleprojectzero.blogspot.com", "research.checkpoint.com",
+        "unit42.paloaltonetworks.com", "arstechnica.com",
     ],
 
-    # AI/ML-specific
+    # AI/ML — comprehensive (Tier 1-3 from domain_tiers.py)
     "ai": [
         # Research Repositories
-        "arxiv.org",             # Preprint repository
-        "paperswithcode.com",    # Papers with Code
-        "openreview.net",        # Peer review platform
-
-        # Major AI Labs
-        "openai.com",            # OpenAI
-        "anthropic.com",         # Anthropic
-        "deepmind.com",          # Google DeepMind
-        "ai.google",             # Google AI
-        "research.google",       # Google Research
-        "ai.meta.com",           # Meta AI
-        "huggingface.co",        # Hugging Face
-
+        "arxiv.org", "paperswithcode.com", "openreview.net",
+        # Major AI Labs (Tier 2)
+        "openai.com", "anthropic.com", "deepmind.com", "ai.google",
+        "research.google", "ai.meta.com", "huggingface.co",
+        "stability.ai",
         # Academic Institutions
-        "hai.stanford.edu",      # Stanford HAI
-        "ainowinstitute.org",    # AI Now Institute
-        "ml.cmu.edu",            # CMU Machine Learning
+        "hai.stanford.edu", "ainowinstitute.org", "ml.cmu.edu",
+        # Publications & Conferences
+        "acm.org", "ieee.org", "technologyreview.com", "distill.pub",
+        "neurips.cc", "papers.nips.cc", "kaggle.com", "jmlr.org",
+    ],
 
+    # Blue Team — detection, defense, SIEM/EDR
+    "blueteam": [
+        # Standards & Frameworks
+        "nist.gov", "cisa.gov", "mitre.org", "sans.org", "first.org", "cert.org",
+        # Detection Engineering
+        "detection.fyi", "sigma-hq.io", "car.mitre.org",
+        # EDR/SIEM/XDR Vendors (Tier 2)
+        "crowdstrike.com", "sentinelone.com", "paloaltonetworks.com",
+        "splunk.com", "elastic.co", "rapid7.com", "tenable.com",
+        "qualys.com", "cyberark.com", "okta.com", "mandiant.com",
+        "trendmicro.com", "sophos.com", "carbonblack.com",
+        # Open Source Blue Team Tools
+        "wazuh.com", "zeek.org", "suricata.io", "osquery.io",
         # Publications
-        "acm.org",               # Association for Computing Machinery
-        "ieee.org",              # IEEE
-        "technologyreview.com",  # MIT Technology Review
-        "distill.pub",           # Distill (ML research journal)
-    ]
-}
+        "darkreading.com", "securityweek.com", "securityintelligence.com",
+        "csoonline.com",
+    ],
 
-# Combined list for cybersecurity + AI blog
-EXA_CYBERSEC_AI_DOMAINS = (
-    EXA_INCLUDE_DOMAINS["general"] +
-    EXA_INCLUDE_DOMAINS["cybersecurity"] +
-    EXA_INCLUDE_DOMAINS["ai"]
-)
+    # Red Team — offensive security, pentesting, bug bounty
+    "redteam": [
+        # Standards & Vulnerability DBs
+        "owasp.org", "mitre.org", "exploit-db.com", "cve.org",
+        # Offensive Security Firms & Labs (Tier 3)
+        "pentestpartners.com", "bishopfox.com", "portswigger.net",
+        "offensive-security.com", "pentesterlab.com", "hackthebox.eu",
+        # Bug Bounty & Disclosure
+        "hackerone.com", "bugcrowd.com",
+        # Vendor Research
+        "googleprojectzero.blogspot.com", "research.checkpoint.com",
+        "unit42.paloaltonetworks.com",
+        # Expert Blogs
+        "krebsonsecurity.com", "schneier.com", "troyhunt.com",
+        "danielmiessler.com",
+        # Publications
+        "bleepingcomputer.com", "thehackernews.com", "threatpost.com",
+    ],
+
+    # Purple Team — adversary simulation, detection engineering
+    "purple-team": [
+        # Simulation & Emulation Platforms (Tier 2)
+        "attackiq.com", "safebreach.com", "scythe.io",
+        # ATT&CK Framework
+        "mitre.org", "car.mitre.org",
+        # Detection Engineering
+        "detection.fyi", "sigma-hq.io", "redcanary.com",
+        # Standards
+        "nist.gov", "cisa.gov", "sans.org", "owasp.org",
+        # Vendors spanning Blue + Red
+        "crowdstrike.com", "mandiant.com", "paloaltonetworks.com",
+        "elastic.co", "splunk.com",
+        # Publications
+        "darkreading.com", "securityweek.com",
+    ],
+
+    # GRC — governance, risk, compliance
+    "grc": [
+        # Standards Bodies (Tier 1)
+        "iso.org", "isaca.org", "coso.org", "nist.gov",
+        # Regulatory Bodies
+        "sec.gov", "treasury.gov", "fatf-gafi.org",
+        # Consulting Firms (Tier 2)
+        "deloitte.com", "pwc.com", "ey.com", "kpmg.com",
+        "gartner.com", "forrester.com", "idc.com",
+        # Privacy & Compliance Orgs
+        "iapp.org", "gdpr.eu", "ico.org.uk", "edps.europa.eu",
+        # Publications
+        "complianceweek.com", "csoonline.com",
+    ],
+
+    # Networking — infrastructure, protocols, SDN
+    "networking": [
+        # Standards Bodies (Tier 1)
+        "ietf.org", "rfc-editor.org", "w3.org", "ieee.org",
+        # Vendors (Tier 2)
+        "cisco.com", "juniper.net", "arista.com", "aruba.com", "extreme.com",
+        # Cloud Providers
+        "aws.amazon.com", "cloud.google.com", "azure.microsoft.com",
+        # Open Source & Infrastructure
+        "opennetworking.org", "kubernetes.io", "linux.com",
+        # Publications
+        "arstechnica.com", "theregister.com",
+    ],
+
+    # Compliance/Privacy — data protection, GDPR, regulatory
+    "compliance": [
+        # Standards Bodies (Tier 1)
+        "nist.gov", "iso.org", "isaca.org", "coso.org",
+        # Data Protection Authorities
+        "gdpr.eu", "ico.org.uk", "edps.europa.eu", "cnil.fr",
+        # Privacy Organizations (Tier 2)
+        "iapp.org", "privacyinternational.org", "eff.org",
+        # Consulting Firms
+        "deloitte.com", "pwc.com", "ey.com", "kpmg.com",
+        "gartner.com", "forrester.com",
+        # Cybersecurity Overlap
+        "cisa.gov", "owasp.org",
+        # Publications
+        "complianceweek.com", "csoonline.com", "darkreading.com",
+    ],
+}
 
 # Native Exa tools injected alongside MCP tools into DeepSeek-R1's tool array
 EXA_NATIVE_TOOLS = [
@@ -311,7 +387,13 @@ class ResearchAgent:
                                 try:
                                     if t_name == "exa_scout_search":
                                         exa_queries_log.append(t_args.get("query", keyword))
-                                        native_result = await self.exa_scout_search(t_args.get("query", keyword))
+                                        native_result = await self.exa_scout_search(
+                                            query=t_args.get("query", keyword),
+                                            num_results=t_args.get("num_results", 10),
+                                            include_domains=t_args.get("include_domains"),
+                                            exclude_domains=t_args.get("exclude_domains", EXA_EXCLUDE_DOMAINS),
+                                            start_published_date=t_args.get("start_published_date"),
+                                        )
                                         tool_results_text.append(
                                             f"TOOL RESULT [{t_name}]:\n{json.dumps(native_result, indent=2)}"
                                         )
@@ -586,15 +668,43 @@ class ResearchAgent:
         # Build niche-specific domain filters (same logic as _build_agentic_prompt)
         niche_normalized = niche.lower().strip().replace(" ", "-")
         niche_filters = {
+            # Core security niches
             "cybersecurity": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            "cyber-security": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            "infosec": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            "information-security": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            "blueteam": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["blueteam"],
+            "blue-team": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["blueteam"],
+            "redteam": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["redteam"],
+            "red-team": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["redteam"],
+            "purple-team": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["purple-team"],
+            "purpleteam": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["purple-team"],
+            # AI niches
             "ai": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
-            "cybersecurity-ai": EXA_CYBERSEC_AI_DOMAINS,
-            "health": ["nih.gov", "cdc.gov", "who.int", "mayoclinic.org", "webmd.com"],
+            "ai-ml": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
+            "artificial-intelligence": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
+            "machine-learning": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
+            # Combined
+            "cybersecurity-ai": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"] + EXA_INCLUDE_DOMAINS["ai"],
+            # GRC & Compliance niches
+            "grc": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["grc"],
+            "governance": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["grc"],
+            "compliance": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
+            "data-compliance": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
+            "privacy": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
+            "gdpr": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
+            "legal": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
+            # Infrastructure niches
+            "networking": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["networking"],
+            "network-security": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["networking"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            # Broader niches
+            "health": ["nih.gov", "cdc.gov", "who.int", "mayoclinic.org", "webmd.com", "ncbi.nlm.nih.gov"],
             "finance": ["sec.gov", "federalreserve.gov", "wsj.com", "bloomberg.com", "investopedia.com"],
-            "tech": ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com"],
+            "tech": EXA_INCLUDE_DOMAINS["general"] + ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com", "theregister.com", "zdnet.com", "docker.com", "kubernetes.io"],
+            "technology": EXA_INCLUDE_DOMAINS["general"] + ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com", "theregister.com", "zdnet.com", "docker.com", "kubernetes.io"],
             "business": ["hbr.org", "wsj.com", "economist.com", "mckinsey.com", "inc.com"],
         }
-        include_domains = niche_filters.get(niche_normalized, EXA_INCLUDE_DOMAINS["general"])
+        include_domains = niche_filters.get(niche_normalized, None)
 
         # Calculate 2 years ago for recency filter
         two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
@@ -606,10 +716,11 @@ class ResearchAgent:
                     "query": prompt,
                     "type": "auto",
                     "num_results": 10,  # Increased from 5 to match agentic prompt
-                    "include_domains": include_domains,  # NEW: Quality filter
-                    "exclude_domains": EXA_EXCLUDE_DOMAINS,  # NEW: Block low-quality
-                    "start_published_date": two_years_ago,  # NEW: Recency filter
+                    "exclude_domains": EXA_EXCLUDE_DOMAINS,  # Block low-quality
+                    "start_published_date": two_years_ago,  # Recency filter
                 }
+                if include_domains:
+                    search_payload["include_domains"] = include_domains  # Quality filter for recognized niches
                 
                 if DEBUG_MODE:
                     print(f"[DEBUG] Exa Step 1: Neural Search for '{keyword}'")
@@ -1216,29 +1327,64 @@ class ResearchAgent:
         # Build niche-specific Exa.ai domain filters
         niche_normalized = niche.lower().strip().replace(" ", "-")
         niche_filters = {
+            # Core security niches
             "cybersecurity": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            "cyber-security": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            "infosec": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            "information-security": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            "blueteam": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["blueteam"],
+            "blue-team": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["blueteam"],
+            "redteam": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["redteam"],
+            "red-team": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["redteam"],
+            "purple-team": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["purple-team"],
+            "purpleteam": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["purple-team"],
+            # AI niches
             "ai": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
-            "cybersecurity-ai": EXA_CYBERSEC_AI_DOMAINS,
-            "health": ["nih.gov", "cdc.gov", "who.int", "mayoclinic.org", "webmd.com"],
+            "ai-ml": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
+            "artificial-intelligence": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
+            "machine-learning": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
+            # Combined
+            "cybersecurity-ai": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"] + EXA_INCLUDE_DOMAINS["ai"],
+            # GRC & Compliance niches
+            "grc": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["grc"],
+            "governance": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["grc"],
+            "compliance": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
+            "data-compliance": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
+            "privacy": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
+            "gdpr": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
+            "legal": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
+            # Infrastructure niches
+            "networking": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["networking"],
+            "network-security": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["networking"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            # Broader niches
+            "health": ["nih.gov", "cdc.gov", "who.int", "mayoclinic.org", "webmd.com", "ncbi.nlm.nih.gov"],
             "finance": ["sec.gov", "federalreserve.gov", "wsj.com", "bloomberg.com", "investopedia.com"],
-            "tech": ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com"],
+            "tech": EXA_INCLUDE_DOMAINS["general"] + ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com", "theregister.com", "zdnet.com", "docker.com", "kubernetes.io"],
+            "technology": EXA_INCLUDE_DOMAINS["general"] + ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com", "theregister.com", "zdnet.com", "docker.com", "kubernetes.io"],
             "business": ["hbr.org", "wsj.com", "economist.com", "mckinsey.com", "inc.com"],
         }
 
-        # Use combined list for cybersecurity/AI blogs, fallback to niche-specific, then general
-        include_domains = niche_filters.get(niche_normalized, EXA_INCLUDE_DOMAINS["general"])
+        # Use niche-specific list if recognized, otherwise None (search broadly)
+        include_domains = niche_filters.get(niche_normalized, None)
 
         # Calculate date 2 years ago for recency filter
         two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
 
         # Build filter instructions for STEP 2
+        if include_domains:
+            domain_filter_line = f"  * include_domains: {include_domains}\n"
+            domain_example = f', "include_domains": {include_domains[:5]}'
+        else:
+            domain_filter_line = "  * include_domains: DO NOT set — search broadly across all domains\n"
+            domain_example = ""
+
         exa_filter_instruction = (
             f"When using 'exa_scout_search', ALWAYS include these quality filters:\n"
-            f"  * include_domains: {include_domains}\n"
+            f"{domain_filter_line}"
             f"  * exclude_domains: {EXA_EXCLUDE_DOMAINS}\n"
             f"  * start_published_date: '{two_years_ago}' (last 2 years for recency)\n"
             f"  * num_results: 10 (increased from 5 to get more authoritative options)\n"
-            f"  Example: {{\"tool_name\": \"exa_scout_search\", \"arguments\": {{\"query\": \"...\", \"include_domains\": {include_domains[:5]}, \"exclude_domains\": {EXA_EXCLUDE_DOMAINS[:3]}, \"start_published_date\": \"{two_years_ago}\", \"num_results\": 10}}}}\n"
+            f'  Example: {{"tool_name": "exa_scout_search", "arguments": {{"query": "..."{domain_example}, "exclude_domains": {EXA_EXCLUDE_DOMAINS[:3]}, "start_published_date": "{two_years_ago}", "num_results": 10}}}}\n'
         )
 
         prompt = (
