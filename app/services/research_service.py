@@ -424,7 +424,7 @@ class ResearchAgent:
             try:
                 exa_results = await self._exa_elite_discovery(
                     keyword=keyword,
-                    niche=niche_context
+                    niche=niche
                 )
 
                 if DEBUG_MODE:
