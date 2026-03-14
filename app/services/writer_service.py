@@ -1,6 +1,5 @@
 import json
 import re
-import asyncio
 from pathlib import Path
 from anthropic import AsyncAnthropic
 from ..settings import ANTHROPIC_API_KEY
@@ -101,6 +100,48 @@ class WriterService:
             prompt_instructions += f"(Playbook version {playbook_data['version']}, based on {playbook_data['runs_distilled']} successful articles)\n"
             prompt_instructions += "----------------------------------------------------------------\n"
 
+        # Inject Content Patterns from DataForSEO (Optional)
+        content_patterns = blueprint.get("content_patterns")
+        if content_patterns:
+            prompt_instructions += "\n--- SERP CONTENT PATTERNS (TOP 10 RESULTS ANALYSIS) ---\n"
+            prompt_instructions += f"The top-ranking articles for this keyword typically have:\n"
+
+            if content_patterns.get("avg_word_count"):
+                word_count = content_patterns["avg_word_count"]
+                prompt_instructions += f"- Average word count: {word_count:,} words (aim for similar depth)\n"
+
+            if content_patterns.get("avg_heading_count"):
+                h_counts = content_patterns["avg_heading_count"]
+                if isinstance(h_counts, dict):
+                    h2_count = h_counts.get("h2", 0)
+                    h3_count = h_counts.get("h3", 0)
+                    if h2_count > 0:
+                        prompt_instructions += f"- Average H2 headings: {h2_count} (structure your article similarly)\n"
+                    if h3_count > 0:
+                        prompt_instructions += f"- Average H3 headings: {h3_count} (add sub-sections as needed)\n"
+
+            if content_patterns.get("avg_list_count") and content_patterns["avg_list_count"] > 0:
+                list_count = content_patterns["avg_list_count"]
+                prompt_instructions += f"- Average lists: {list_count} (readers expect bulleted/numbered lists)\n"
+
+            if content_patterns.get("avg_table_count") and content_patterns["avg_table_count"] > 0:
+                table_count = content_patterns["avg_table_count"]
+                prompt_instructions += f"- Average tables: {table_count} (consider comparison tables if relevant)\n"
+
+            if content_patterns.get("content_types"):
+                types = content_patterns["content_types"]
+                if types:
+                    prompt_instructions += f"- Common content types: {', '.join(types[:3])} (match reader expectations)\n"
+
+            if content_patterns.get("top_topics"):
+                topics = content_patterns["top_topics"]
+                if topics:
+                    prompt_instructions += f"- Top related topics: {', '.join(topics[:5])}\n"
+
+            prompt_instructions += "\nUse these patterns as a guide for structure, not as strict requirements.\n"
+            prompt_instructions += "Your article should match the depth and format readers expect from top results.\n"
+            prompt_instructions += "------------------------------------------------------------\n"
+
         # Inject Citation Map from Verified Sources
         if research_run_id:
             from ..models import FactCitation
@@ -108,27 +149,63 @@ class WriterService:
             citations = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
 
             if citations:
+                # Sort citations by composite_score (descending) to prioritize high-quality sources
+                citations_sorted = sorted(
+                    citations,
+                    key=lambda c: c.composite_score if c.composite_score else 0,
+                    reverse=True
+                )
+
                 citation_map = {}
-                for cite in citations:
+                for cite in citations_sorted:
                     citation_map[cite.fact_text] = {
                         "url": cite.source_url,
                         "title": cite.source_title,
                         "anchor": cite.citation_anchor,
                         "confidence": cite.confidence_score,
+                        "source_credibility": cite.source_credibility,
+                        "composite": cite.composite_score,
                     }
 
-                prompt_instructions += "\n--- CITATION REQUIREMENTS (MANDATORY) ---\n"
-                prompt_instructions += f"You have access to {len(citation_map)} verified factual claims with sources.\n\n"
-                prompt_instructions += "When you mention any statistic, benchmark, or data point, you MUST cite the source using inline markdown links:\n\n"
-                prompt_instructions += "Example: \"According to [Verizon's 2024 Data Breach Report](https://verizon.com/dbir), 67% of SMBs experienced a cyberattack.\"\n\n"
-                prompt_instructions += f"CITATION MAP (use these facts ONLY):\n{json.dumps(citation_map, indent=2)}\n\n"
-                prompt_instructions += "CITATION RULES:\n"
-                prompt_instructions += "1. Use inline markdown links: [Source Title](URL)\n"
-                prompt_instructions += "2. Cite at least 3-4 sources throughout the article\n"
-                prompt_instructions += "3. ONLY use facts from the citation map above - do NOT fabricate stats\n"
-                prompt_instructions += "4. Weave citations naturally into sentences (not as separate footnotes)\n"
-                prompt_instructions += "5. Keep citation anchors short (e.g., 'Verizon 2024', 'IBM Report')\n"
-                prompt_instructions += "------------------------------------------------\n"
+                prompt_instructions += "\n╔════════════════════════════════════════════════════════════════╗\n"
+                prompt_instructions += "║   CRITICAL CITATION REQUIREMENTS (NON-NEGOTIABLE)             ║\n"
+                prompt_instructions += "╚════════════════════════════════════════════════════════════════╝\n\n"
+
+                prompt_instructions += f"⚠️  You have access to {len(citation_map)} VERIFIED factual claims below.\n"
+                prompt_instructions += "⚠️  You MUST cite sources when making ANY factual claim.\n\n"
+
+                prompt_instructions += "═══ CITATION MAP (USE ONLY THESE VERIFIED FACTS) ═══\n"
+                prompt_instructions += f"{json.dumps(citation_map, indent=2)}\n"
+                prompt_instructions += "═══════════════════════════════════════════════════\n\n"
+
+                prompt_instructions += "📋 MANDATORY FORMAT:\n"
+                prompt_instructions += "   When you write a fact from the map, cite it IMMEDIATELY like this:\n"
+                prompt_instructions += '   "67% of SMBs experienced a cyberattack in 2023 [Verizon 2024](https://verizon.com/dbir)."\n\n'
+
+                prompt_instructions += "📊 MINIMUM CITATION REQUIREMENTS:\n"
+                prompt_instructions += "   • If your article has 0-2 quantitative claims: Cite at least 3 sources\n"
+                prompt_instructions += "   • If your article has 3+ quantitative claims: Cite 1 source per claim\n"
+                prompt_instructions += "   • Distribute citations throughout the article (not all in one section)\n\n"
+
+                prompt_instructions += "🚫 STRICT PROHIBITIONS:\n"
+                prompt_instructions += "   • DO NOT invent statistics, percentages, or dollar amounts\n"
+                prompt_instructions += "   • DO NOT use vague claims like 'many companies' or 'recent studies'\n"
+                prompt_instructions += "   • DO NOT cite sources not in the citation map above\n"
+                prompt_instructions += "   • DO NOT write facts without immediate inline citations\n\n"
+
+                prompt_instructions += "✅ ACCEPTED CITATION FORMATS:\n"
+                prompt_instructions += "   1. Markdown links: [Source Name 2024](URL)  ← PREFERRED\n"
+                prompt_instructions += "   2. Parenthetical: (Source 2024)\n"
+                prompt_instructions += "   3. Footnotes: [1], [2], etc.\n\n"
+
+                prompt_instructions += "💡 EXAMPLES OF PROPER CITATION:\n"
+                prompt_instructions += "   ✓ 'According to [Gartner 2024](url), cloud adoption will reach 85% by 2026.'\n"
+                prompt_instructions += "   ✓ 'The average cost of a data breach is $4.35 million [IBM Report](url).'\n"
+                prompt_instructions += "   ✓ 'Healthcare faces 3x more attacks than other sectors (Verizon 2024).'\n"
+                prompt_instructions += "   ✗ '67% of SMBs report security concerns.' ← NO CITATION!\n"
+                prompt_instructions += "   ✗ 'Many companies are adopting AI.' ← VAGUE, NO DATA!\n\n"
+
+                prompt_instructions += "================================================\n"
 
         # Pre-flight simplicity primer
         prompt_instructions += """
@@ -195,23 +272,38 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                 if score["passed"]:
                     yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed SEO validation."}
 
-                    # --- Gate 3: Citation Validation ---
+                    # --- Gate 3: Intelligent Citation Validation ---
                     if research_run_id:
-                        citation_result = self.verify_citation_requirements(full_content, min_citations=3)
-                        if not citation_result["passed"]:
-                            v_feedback = f"Citation Validation Failed (Iteration {attempt}).\n{citation_result['feedback']}"
-                            yield {"type": "debug", "message": v_feedback}
+                        # Detect quantitative claims that require citations
+                        claim_detection = self.detect_quantitative_claims(full_content)
 
-                            if attempt == max_attempts:
-                                yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                                yield {"status": "success", "text": full_content}
-                                return
+                        if claim_detection['has_claims']:
+                            # Article has stats/numbers → require citations
+                            min_required = claim_detection['required_citations']
+                            citation_result = self.verify_citation_requirements(full_content, min_citations=min_required)
 
-                            # Clear editor for next attempt
-                            yield {"type": "content", "data": "RETRY_CLEAR"}
-                            continue
+                            if not citation_result["passed"]:
+                                v_feedback = (
+                                    f"Citation Validation Failed (Iteration {attempt}).\n"
+                                    f"Detected {claim_detection['claim_count']} quantitative claims requiring {min_required} citations.\n"
+                                    f"{citation_result['feedback']}\n\n"
+                                    f"Example claims found:\n" + "\n".join(f"- {c[:100]}..." for c in claim_detection['claim_samples'])
+                                )
+                                yield {"type": "debug", "message": v_feedback}
 
-                        yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed citation validation ({citation_result['citation_count']} citations found)."}
+                                if attempt == max_attempts:
+                                    yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
+                                    yield {"status": "success", "text": full_content}
+                                    return
+
+                                # Clear editor for next attempt
+                                yield {"type": "content", "data": "RETRY_CLEAR"}
+                                continue
+
+                            yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed citation validation ({citation_result['citation_count']} citations for {claim_detection['claim_count']} claims)."}
+                        else:
+                            # No quantitative claims → skip citation requirement
+                            yield {"type": "debug", "message": f"Writer Iteration {attempt}: No quantitative claims detected. Skipping citation validation (general advice article)."}
 
                     # --- Gate 2: Readability Validation ---
                     # Build broad keyword list for readability masking
@@ -432,15 +524,37 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
     def verify_citation_requirements(text: str, min_citations: int = 3) -> dict:
         """
         Validates that article includes minimum required inline citations.
-        Uses markdown link pattern: [text](url)
+
+        Enhanced validation (March 2026): Accepts multiple citation formats:
+        - Markdown links: [text](url)
+        - Parenthetical citations: (Source 2024)
+        - Footnote markers: [1], [2], etc.
+
         Returns: {passed: bool, citation_count: int, feedback: str}
         """
-        # Regex for markdown links: [text](url)
-        markdown_link_pattern = r'\[([^\]]+)\]\(https?://[^\)]+\)'
-        citations = re.findall(markdown_link_pattern, text)
+        all_citations = []
 
-        # Count unique citations (by link text to avoid double-counting)
-        citation_count = len(citations)
+        # Format 1: Markdown links [text](url) - PREFERRED
+        markdown_pattern = r'\[([^\]]+)\]\(https?://[^\)]+\)'
+        markdown_citations = re.findall(markdown_pattern, text)
+        all_citations.extend(markdown_citations)
+
+        # Format 2: Parenthetical citations (Author/Source YYYY)
+        # Matches: (Source 2024), (Verizon 2024), (Gartner 2025)
+        parenthetical_pattern = r'\([A-Z][a-zA-Z\s&]+\s+20\d{2}\)'
+        parenthetical_citations = re.findall(parenthetical_pattern, text)
+        all_citations.extend(parenthetical_citations)
+
+        # Format 3: Footnote markers [1], [2], etc.
+        # Only count if there are actual numbered footnotes (not just markdown links)
+        footnote_pattern = r'\[(\d+)\]'
+        footnote_citations = re.findall(footnote_pattern, text)
+        # Only count unique footnote numbers
+        unique_footnotes = list(set(footnote_citations))
+        all_citations.extend(unique_footnotes)
+
+        # Count total unique citations across all formats
+        citation_count = len(all_citations)
 
         passed = citation_count >= min_citations
 
@@ -448,7 +562,10 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
         if not passed:
             feedback = (
                 f"Only {citation_count} citations found, need {min_citations} minimum. "
-                f"Add more inline citations using [Source Title](URL) format. "
+                f"Add more inline citations using one of these formats:\n"
+                f"  - Markdown links: [Source Title](URL)\n"
+                f"  - Parenthetical: (Source 2024)\n"
+                f"  - Footnotes: [1], [2], etc.\n"
                 f"Use the citation map provided in the prompt."
             )
 
@@ -456,4 +573,93 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
             "passed": passed,
             "citation_count": citation_count,
             "feedback": feedback,
+        }
+
+    @staticmethod
+    def detect_quantitative_claims(text: str) -> dict:
+        """
+        Detect quantitative claims that require citations.
+
+        Enhanced patterns (March 2026) to catch more claim types:
+        - Percentages (67%, 85%)
+        - Dollar amounts ($200K, $4.5M)
+        - Numeric statistics (3 out of 4)
+        - Benchmarks (average of 12, median 45 days)
+        - Spelled-out fractions (half of companies, most enterprises)
+        - Narrative claims (studies show, research indicates)
+        - Comparative stats (twice as likely, 50% more effective)
+        - Year-based statistics (In 2024, 500 organizations...)
+
+        Returns:
+            {
+                'has_claims': bool,
+                'claim_count': int,
+                'claim_samples': list[str],
+                'required_citations': int
+            }
+        """
+        claims = []
+
+        # Pattern 1: Percentages
+        percentage_pattern = r'\b\d+\.?\d*\s*%'
+
+        # Pattern 2: Dollar amounts
+        dollar_pattern = r'\$\d+(?:,\d{3})*(?:\.\d+)?(?:\s*(?:million|billion|M|B|K|thousand))?'
+
+        # Pattern 3: "X out of Y" statistics
+        stat_pattern = r'\b\d+\.?\d*\s*(?:out of|in|times|x)\s*\d+'
+
+        # Pattern 4: Benchmarks
+        benchmark_pattern = r'\b(?:average|median|mean|typical(?:ly)?)\s+(?:of\s+)?\d+\.?\d*'
+
+        # Pattern 5: Spelled-out fractional quantities (NEW)
+        spelled_numbers_pattern = r'\b(?:half|quarter|third|two-thirds|majority|most|minority|few|several|many)\s+(?:of\s+)?(?:businesses|companies|organizations|enterprises|firms|users|customers|respondents|participants)'
+
+        # Pattern 6: Narrative claims with research backing (NEW)
+        narrative_claims_pattern = r'\b(?:studies?|research|reports?|surveys?|data|findings?|analysis|analyses)\s+(?:show|indicate|reveal|suggest|demonstrate|found|concluded)'
+
+        # Pattern 7: Comparative statistics (NEW)
+        comparative_pattern = r'\b(?:twice|double|triple|[\d]+x)\s+(?:as\s+)?(?:likely|effective|common|frequent|expensive|cheaper|faster|slower)'
+
+        # Pattern 8: Year-based statistics (NEW)
+        year_stats_pattern = r'\b(?:in|during|by)\s+(?:20\d{2}|recent years?),?\s+(?:[\d]+\.?[\d]*\s*%|[\d]+(?:,\d{3})*\s+(?:companies|businesses|organizations|users|customers))'
+
+        # All patterns (original + new)
+        all_patterns = [
+            percentage_pattern,
+            dollar_pattern,
+            stat_pattern,
+            benchmark_pattern,
+            spelled_numbers_pattern,  # NEW
+            narrative_claims_pattern,  # NEW
+            comparative_pattern,       # NEW
+            year_stats_pattern         # NEW
+        ]
+
+        # Extract all matching patterns with context
+        for pattern in all_patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                # Get 50 chars of context around match
+                start = max(0, match.start() - 50)
+                end = min(len(text), match.end() + 50)
+                context = text[start:end].strip()
+                claims.append(context)
+
+        # Deduplicate overlapping matches
+        unique_claims = list(set(claims))
+        claim_count = len(unique_claims)
+
+        # Calculate required citations
+        if claim_count == 0:
+            required = 0  # No claims = no citations needed
+        elif claim_count <= 2:
+            required = 3  # Few claims = maintain credibility floor
+        else:
+            required = claim_count  # Many claims = 1 citation each
+
+        return {
+            'has_claims': claim_count > 0,
+            'claim_count': claim_count,
+            'claim_samples': unique_claims[:3],
+            'required_citations': required
         }

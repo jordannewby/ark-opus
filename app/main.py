@@ -7,7 +7,7 @@ env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager, AsyncExitStack
@@ -15,7 +15,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from sqlalchemy.exc import OperationalError
-from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, SessionLocal
+from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, SessionLocal
 from .models import Post, ResearchRun, UserStyleRule, Workspace, WriterRun
 from .schemas import (
     BlueprintResponse,
@@ -40,30 +40,40 @@ migrate_research_cache()
 migrate_posts_readability()
 migrate_writer_learning()
 migrate_source_verification()
+migrate_composite_scoring()
 Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # MCP session initialization for DataForSEO (used by ResearchAgent)
+    # Note: Source verification uses tiered domain lists (no MCP needed there)
     from .settings import DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD
-    import os
-    env = os.environ.copy()
-    if "PATH" not in env:
-        env["PATH"] = os.defpath
-    env["DATAFORSEO_USERNAME"] = DATAFORSEO_LOGIN
-    env["DATAFORSEO_PASSWORD"] = DATAFORSEO_PASSWORD
-    
+
     server_params = StdioServerParameters(
-        command="npx",
-        args=["-y", "dataforseo-mcp-server"],
-        env=env
+        command="node",
+        args=[
+            "mcp-dataforseo-server/index.js",
+            DATAFORSEO_LOGIN,
+            DATAFORSEO_PASSWORD
+        ],
+        env=None
     )
-    
-    async with AsyncExitStack() as stack:
-        read, write = await stack.enter_async_context(stdio_client(server_params))
-        session = await stack.enter_async_context(ClientSession(read, write))
+
+    exit_stack = AsyncExitStack()
+
+    try:
+        # Initialize persistent MCP session for the application lifetime
+        stdio_transport = await exit_stack.enter_async_context(stdio_client(server_params))
+        stdio, write = stdio_transport
+        session = await exit_stack.enter_async_context(ClientSession(stdio, write))
         await session.initialize()
+
+        # Store session in app state for access in endpoints
         app.state.mcp_session = session
+
         yield
+    finally:
+        await exit_stack.aclose()
 
 app = FastAPI(title="Ares Engine Console", lifespan=lifespan)
 
@@ -237,7 +247,6 @@ async def generate_blueprint(research_data: ResearchResponse, db: Session = Depe
     return blueprint
 
 import json
-from fastapi.responses import FileResponse, StreamingResponse
 from .schemas import GeneratePayload
 
 @app.get("/clarify")
@@ -287,6 +296,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
 
             # Phase 1.5 - Source Verification
             elite_competitors = research_data_dict.get("elite_competitors", [])
+            research_run_id = research_data_dict.get("research_run_id", 0)
 
             if elite_competitors:
                 yield f"data: {json.dumps({'event': 'phase1_5_start', 'message': 'Verifying source credibility...'})}\n\n"
@@ -296,9 +306,9 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
 
                 verification_result = await verify_sources(
                     elite_competitors=elite_competitors,
-                    mcp_session=request.app.state.mcp_session,
                     db=db,
-                    profile_name=payload.profile_name
+                    profile_name=payload.profile_name,
+                    research_run_id=research_run_id
                 )
 
                 verified_sources = verification_result["verified_sources"]
@@ -314,15 +324,8 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
                     return
 
-                # Link research_run_id to verified sources
-                run_id = research_data_dict.get("research_run_id")
-                if run_id:
-                    for source in verified_sources:
-                        source.research_run_id = run_id
-                    db.commit()
-
                 # Extract facts and link to sources
-                await link_facts_to_sources(verified_sources, run_id, db)
+                await link_facts_to_sources(verified_sources, research_run_id, db)
 
                 avg_credibility = sum(s.credibility_score for s in verified_sources) / len(verified_sources) if verified_sources else 0
 

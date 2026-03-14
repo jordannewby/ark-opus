@@ -13,16 +13,13 @@ Returns structured JSON with:
 from __future__ import annotations
 
 import json
-import base64
 import os
 import re
 from datetime import datetime, timedelta, timezone
-import asyncio
 
 import httpx
 from sqlalchemy.orm import Session
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession
 
 from ..models import ResearchCache, NichePlaybook, ResearchRun
 from ..settings import DEEPSEEK_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD
@@ -33,15 +30,122 @@ CACHE_TTL_HOURS = 24
 
 ALLOWED_TOOL_CATEGORIES = ["serp", "keyword", "backlink", "on_page"]
 
+# Exa.ai Domain Quality Filters (for source credibility)
+EXA_EXCLUDE_DOMAINS = [
+    "medium.com",          # User-generated content, variable quality
+    "blogspot.com",        # Free blogging platform
+    "wordpress.com",       # Free blogging platform
+    "tumblr.com",          # Social blogging
+    "wix.com",             # Website builder sites
+    "weebly.com",          # Website builder sites
+    "hubspot.com/blog",    # Marketing content
+    "forbes.com/sites",    # Contributor network (not editorial staff)
+]
+
+# High-authority domains to prioritize (organized by category)
+EXA_INCLUDE_DOMAINS = {
+    # General authority
+    "general": [
+        "edu", "ac.uk", "edu.au",  # Academic
+        "gov", "gov.uk", "gc.ca",   # Government
+        "nature.com", "science.org",  # Scientific journals
+    ],
+
+    # Cybersecurity-specific
+    "cybersecurity": [
+        # Government & Standards
+        "nist.gov",              # National Institute of Standards and Technology
+        "cisa.gov",              # Cybersecurity Infrastructure Security Agency
+        "us-cert.gov",           # US Computer Emergency Readiness Team
+        "nvd.nist.gov",          # National Vulnerability Database
+
+        # Research & Organizations
+        "owasp.org",             # Open Web Application Security Project
+        "sans.org",              # Security training and research
+        "mitre.org",             # CVE database and frameworks
+        "cert.org",              # CERT Coordination Center
+
+        # Authoritative Blogs & News
+        "krebsonsecurity.com",   # Brian Krebs - investigative security journalism
+        "schneier.com",          # Bruce Schneier - cryptography expert
+        "darkreading.com",       # Dark Reading security news
+        "securityweek.com",      # SecurityWeek
+        "bleepingcomputer.com",  # Technical security news
+        "arstechnica.com",       # Ars Technica (security section)
+        "thehackernews.com",     # The Hacker News
+
+        # Vendor Research (high quality)
+        "googleprojectzero.blogspot.com",  # Google Project Zero (exception to blogspot rule)
+        "research.checkpoint.com",         # Check Point Research
+        "unit42.paloaltonetworks.com",     # Palo Alto Unit 42
+    ],
+
+    # AI/ML-specific
+    "ai": [
+        # Research Repositories
+        "arxiv.org",             # Preprint repository
+        "paperswithcode.com",    # Papers with Code
+        "openreview.net",        # Peer review platform
+
+        # Major AI Labs
+        "openai.com",            # OpenAI
+        "anthropic.com",         # Anthropic
+        "deepmind.com",          # Google DeepMind
+        "ai.google",             # Google AI
+        "research.google",       # Google Research
+        "ai.meta.com",           # Meta AI
+        "huggingface.co",        # Hugging Face
+
+        # Academic Institutions
+        "hai.stanford.edu",      # Stanford HAI
+        "ainowinstitute.org",    # AI Now Institute
+        "ml.cmu.edu",            # CMU Machine Learning
+
+        # Publications
+        "acm.org",               # Association for Computing Machinery
+        "ieee.org",              # IEEE
+        "technologyreview.com",  # MIT Technology Review
+        "distill.pub",           # Distill (ML research journal)
+    ]
+}
+
+# Combined list for cybersecurity + AI blog
+EXA_CYBERSEC_AI_DOMAINS = (
+    EXA_INCLUDE_DOMAINS["general"] +
+    EXA_INCLUDE_DOMAINS["cybersecurity"] +
+    EXA_INCLUDE_DOMAINS["ai"]
+)
+
 # Native Exa tools injected alongside MCP tools into DeepSeek-R1's tool array
 EXA_NATIVE_TOOLS = [
     {
         "name": "exa_scout_search",
-        "description": "Search the web for high-authority articles using Exa.ai Neural Search. Returns lightweight results (id, title, url, snippet). Use this iteratively with different queries if initial results are poor quality.",
+        "description": "Search the web for high-authority articles using Exa.ai Neural Search. Returns lightweight results (id, title, url, snippet). Use quality filters to prioritize authoritative sources (.gov, .edu, research sites). Use this iteratively with different queries if initial results are poor quality.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "A natural language search query describing the type of article you want to find."}
+                "query": {
+                    "type": "string",
+                    "description": "A natural language search query describing the type of article you want to find."
+                },
+                "num_results": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 10, increased from 5 for more options)"
+                },
+                "include_domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Only search these domains (e.g., ['nist.gov', 'owasp.org', 'arxiv.org']). Use for high-authority sources."
+                },
+                "exclude_domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Exclude low-quality domains (e.g., ['medium.com', 'blogspot.com']). Automatically applied."
+                },
+                "start_published_date": {
+                    "type": "string",
+                    "description": "ISO date (YYYY-MM-DD) - only articles published after this date. Use for recent content (e.g., '2024-01-01' for last 2 years)."
+                }
             },
             "required": ["query"]
         }
@@ -307,9 +411,28 @@ class ResearchAgent:
                         arguments={"keyword": keyword, "location_code": 2840, "language_code": "en", "depth": 10}
                     )
                     executed_tools.append("serp_organic_live_advanced (fallback)")
-                    
+
         if DEBUG_MODE:
             print(f"[DEBUG] Ephemeral MCP Subprocess terminated cleanly.\n")
+
+        # Step C.5: Exa Elite Discovery Fallback (ensures Phase 1.5 always has sources)
+        # If R1 didn't call exa_extract_full_text, invoke the fallback to populate elite_competitors
+        if not exa_results:
+            if DEBUG_MODE:
+                print(f"[DEBUG] R1 didn't extract sources, invoking _exa_elite_discovery() fallback...")
+
+            try:
+                exa_results = await self._exa_elite_discovery(
+                    keyword=keyword,
+                    niche=niche_context
+                )
+
+                if DEBUG_MODE:
+                    print(f"[DEBUG] Exa fallback returned {len(exa_results)} sources for Phase 1.5 verification")
+            except Exception as e:
+                if DEBUG_MODE:
+                    print(f"[DEBUG] Exa fallback failed (non-critical): {e}")
+                exa_results = []  # Graceful degradation if Exa fails
 
         # Step D: Data Formatting
         kw_data = mcp_results.get("keywords")
@@ -390,6 +513,12 @@ class ResearchAgent:
             practitioner_insights = info_gap.get("practitioner_insights", [])
             info_gap = info_gap.get("information_gap", str(info_gap))
 
+        # Step F: Optional Content Analysis (Additive Enhancement)
+        # Get aggregate content patterns from DataForSEO if feature flag enabled
+        content_patterns = None
+        if mcp_session:
+            content_patterns = await self.get_content_patterns_from_dataforseo(keyword, mcp_session)
+
         result = {
             "keyword": keyword,
             "information_gap": info_gap,
@@ -404,6 +533,7 @@ class ResearchAgent:
             "backlink_authority": real_backlinks if real_backlinks else {"note": "backlink tool not used this run"},
             "elite_competitors": exa_results,
             "executed_tools": executed_tools if 'executed_tools' in locals() else [],
+            "content_patterns": content_patterns,  # Optional: None if disabled/failed, dict if enabled
         }
 
         self._save_cache(keyword, profile_name, niche, result)
@@ -452,14 +582,33 @@ class ResearchAgent:
         prompt = f"High-quality, expert-level blog post or article about {keyword}"
         if niche != "default":
             prompt = f"High-quality, advanced {niche} blog post or article about {keyword}"
-        
+
+        # Build niche-specific domain filters (same logic as _build_agentic_prompt)
+        niche_normalized = niche.lower().strip().replace(" ", "-")
+        niche_filters = {
+            "cybersecurity": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            "ai": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
+            "cybersecurity-ai": EXA_CYBERSEC_AI_DOMAINS,
+            "health": ["nih.gov", "cdc.gov", "who.int", "mayoclinic.org", "webmd.com"],
+            "finance": ["sec.gov", "federalreserve.gov", "wsj.com", "bloomberg.com", "investopedia.com"],
+            "tech": ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com"],
+            "business": ["hbr.org", "wsj.com", "economist.com", "mckinsey.com", "inc.com"],
+        }
+        include_domains = niche_filters.get(niche_normalized, EXA_INCLUDE_DOMAINS["general"])
+
+        # Calculate 2 years ago for recency filter
+        two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+
         async with httpx.AsyncClient(timeout=30) as client:
             try:
                 # --- Step 1: Neural Search (discovery only, no inline content) ---
                 search_payload = {
                     "query": prompt,
                     "type": "auto",
-                    "num_results": 5,
+                    "num_results": 10,  # Increased from 5 to match agentic prompt
+                    "include_domains": include_domains,  # NEW: Quality filter
+                    "exclude_domains": EXA_EXCLUDE_DOMAINS,  # NEW: Block low-quality
+                    "start_published_date": two_years_ago,  # NEW: Recency filter
                 }
                 
                 if DEBUG_MODE:
@@ -527,29 +676,51 @@ class ResearchAgent:
     # Native Exa Tool Functions (Scout & Extract)
     # ------------------------------------------------------------------
 
-    async def exa_scout_search(self, query: str) -> list[dict]:
+    async def exa_scout_search(
+        self,
+        query: str,
+        num_results: int = 10,
+        include_domains: list[str] | None = None,
+        exclude_domains: list[str] | None = None,
+        start_published_date: str | None = None
+    ) -> list[dict]:
         """
-        Native tool: Lightweight Exa.ai neural search.
+        Native tool: Lightweight Exa.ai neural search with quality filters.
         Returns only id/title/url/snippet to keep R1 token usage low.
+
+        Args:
+            query: Natural language search query
+            num_results: Number of results (default 10, increased from 5)
+            include_domains: Only search these domains (e.g., ['nist.gov', 'arxiv.org'])
+            exclude_domains: Exclude these domains (e.g., ['medium.com', 'blogspot.com'])
+            start_published_date: ISO date (YYYY-MM-DD) for recency filter
         """
         from ..settings import EXA_API_KEY, DEBUG_MODE
         if not EXA_API_KEY:
             return [{"error": "EXA_API_KEY not configured"}]
-        
+
         headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
         payload = {
             "query": query,
             "type": "auto",
-            "num_results": 5,
+            "num_results": num_results,
             "use_autoprompt": True
         }
-        
+
+        # Add quality filters if provided
+        if include_domains:
+            payload["include_domains"] = include_domains
+        if exclude_domains:
+            payload["exclude_domains"] = exclude_domains
+        if start_published_date:
+            payload["start_published_date"] = start_published_date
+
         async with httpx.AsyncClient(timeout=30) as client:
             try:
                 resp = await client.post("https://api.exa.ai/search", headers=headers, json=payload)
                 resp.raise_for_status()
                 data = resp.json()
-                
+
                 results = []
                 for r in data.get("results", []):
                     results.append({
@@ -558,9 +729,10 @@ class ResearchAgent:
                         "url": r.get("url", ""),
                         "snippet": (r.get("text", "") or "")[:300]  # Brief snippet only
                     })
-                
+
                 if DEBUG_MODE:
-                    print(f"[DEBUG] exa_scout_search: Found {len(results)} results for '{query}'")
+                    filter_info = f" with filters: include={include_domains}, exclude={exclude_domains}, after={start_published_date}" if any([include_domains, exclude_domains, start_published_date]) else ""
+                    print(f"[DEBUG] exa_scout_search: Found {len(results)} results for '{query}'{filter_info}")
                 return results
             except Exception as e:
                 print(f"Exa Scout Error: {e}")
@@ -605,6 +777,114 @@ class ResearchAgent:
             except Exception as e:
                 print(f"Exa Extract Error: {e}")
                 return [{"error": str(e)}]
+
+    # ------------------------------------------------------------------
+    # DataForSEO Content Analysis (Optional Enhancement)
+    # ------------------------------------------------------------------
+
+    async def get_content_patterns_from_dataforseo(
+        self,
+        keyword: str,
+        mcp_session: ClientSession
+    ) -> dict | None:
+        """
+        Optional: Get aggregate content patterns from DataForSEO Content Analysis API.
+
+        Provides keyword-level SERP insights:
+        - Average word count across top 10 results
+        - Common heading structure (H2/H3 patterns)
+        - Content types (how-to, listicle, guide, etc.)
+
+        Returns None if:
+        - Feature flag disabled (DATAFORSEO_CONTENT_ANALYSIS_ENABLED=False)
+        - API call fails (graceful degradation)
+        - Invalid response format
+
+        Cost: ~$0.003 per keyword (cached for 24h)
+        """
+        from ..settings import DATAFORSEO_CONTENT_ANALYSIS_ENABLED, DEBUG_MODE
+
+        # Feature flag gate - 100% additive
+        if not DATAFORSEO_CONTENT_ANALYSIS_ENABLED:
+            if DEBUG_MODE:
+                print("[DEBUG] Content Analysis disabled (feature flag off)")
+            return None
+
+        try:
+            if DEBUG_MODE:
+                print(f"[DEBUG] Fetching Content Analysis patterns for '{keyword}'...")
+
+            # Call DataForSEO Content Analysis API via MCP session
+            # Tool name: content_analysis_summary or similar (check MCP server docs)
+            tool_name = "dataforseo_labs_content_analysis_summary_live"
+
+            tool_args = {
+                "keyword": keyword,
+                "location_name": "United States",
+                "language_code": "en",
+                "depth": 10,  # Analyze top 10 SERP results
+            }
+
+            # Execute via MCP session
+            result = await mcp_session.call_tool(tool_name, tool_args)
+
+            # Parse MCP response (defensive - supports multiple formats)
+            result_text = None
+            if hasattr(result, 'content') and result.content:
+                if isinstance(result.content, list) and len(result.content) > 0:
+                    result_text = result.content[0].text
+                elif hasattr(result.content, 'text'):
+                    result_text = result.content.text
+            elif hasattr(result, 'text'):
+                result_text = result.text
+
+            if not result_text:
+                if DEBUG_MODE:
+                    print("[DEBUG] Content Analysis: Empty response from MCP")
+                return None
+
+            # Parse JSON response
+            try:
+                data = json.loads(result_text)
+            except json.JSONDecodeError:
+                if DEBUG_MODE:
+                    print(f"[DEBUG] Content Analysis: Failed to parse JSON: {result_text[:200]}")
+                return None
+
+            # Extract patterns from DataForSEO response
+            # Expected structure: {tasks: [{result: [{content_analysis: {...}}]}]}
+            tasks = data.get("tasks", [])
+            if not tasks or not tasks[0].get("result"):
+                if DEBUG_MODE:
+                    print("[DEBUG] Content Analysis: No tasks/result in response")
+                return None
+
+            analysis = tasks[0]["result"][0].get("content_analysis", {})
+
+            # Extract useful patterns
+            patterns = {
+                "avg_word_count": analysis.get("avg_word_count", 0),
+                "avg_heading_count": analysis.get("avg_heading_count", {
+                    "h2": 0,
+                    "h3": 0,
+                }),
+                "content_types": analysis.get("content_types", []),
+                "avg_paragraph_count": analysis.get("avg_paragraph_count", 0),
+                "avg_list_count": analysis.get("avg_list_count", 0),
+                "avg_table_count": analysis.get("avg_table_count", 0),
+                "top_topics": analysis.get("top_topics", [])[:5],  # Limit to top 5
+            }
+
+            if DEBUG_MODE:
+                print(f"[DEBUG] Content Analysis patterns extracted: {patterns}")
+
+            return patterns
+
+        except Exception as e:
+            # Graceful degradation - log but don't fail the entire research pipeline
+            if DEBUG_MODE:
+                print(f"[DEBUG] Content Analysis failed (non-critical): {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Extraction Helpers
@@ -932,6 +1212,35 @@ class ResearchAgent:
     def _build_agentic_prompt(self, keyword: str, available_tools: list[dict], user_context: str = "", niche: str = "default", niche_intel: str | None = None) -> str:
         """Build the initial system prompt for the iterative R1 agentic loop."""
         niche_hint = f" in the {niche} niche" if niche != "default" else ""
+
+        # Build niche-specific Exa.ai domain filters
+        niche_normalized = niche.lower().strip().replace(" ", "-")
+        niche_filters = {
+            "cybersecurity": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
+            "ai": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
+            "cybersecurity-ai": EXA_CYBERSEC_AI_DOMAINS,
+            "health": ["nih.gov", "cdc.gov", "who.int", "mayoclinic.org", "webmd.com"],
+            "finance": ["sec.gov", "federalreserve.gov", "wsj.com", "bloomberg.com", "investopedia.com"],
+            "tech": ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com"],
+            "business": ["hbr.org", "wsj.com", "economist.com", "mckinsey.com", "inc.com"],
+        }
+
+        # Use combined list for cybersecurity/AI blogs, fallback to niche-specific, then general
+        include_domains = niche_filters.get(niche_normalized, EXA_INCLUDE_DOMAINS["general"])
+
+        # Calculate date 2 years ago for recency filter
+        two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+
+        # Build filter instructions for STEP 2
+        exa_filter_instruction = (
+            f"When using 'exa_scout_search', ALWAYS include these quality filters:\n"
+            f"  * include_domains: {include_domains}\n"
+            f"  * exclude_domains: {EXA_EXCLUDE_DOMAINS}\n"
+            f"  * start_published_date: '{two_years_ago}' (last 2 years for recency)\n"
+            f"  * num_results: 10 (increased from 5 to get more authoritative options)\n"
+            f"  Example: {{\"tool_name\": \"exa_scout_search\", \"arguments\": {{\"query\": \"...\", \"include_domains\": {include_domains[:5]}, \"exclude_domains\": {EXA_EXCLUDE_DOMAINS[:3]}, \"start_published_date\": \"{two_years_ago}\", \"num_results\": 10}}}}\n"
+        )
+
         prompt = (
             f"You are an expert SEO Autonomous Agent. We are researching the keyword '{keyword}'{niche_hint}.\n"
             f"USER DIRECTIVE / INTENT CONTEXT:\n{user_context if user_context else 'None provided. Assume general intent.'}\n\n"
@@ -941,8 +1250,8 @@ class ResearchAgent:
             "STEP 1 — CALL THESE TOOLS FIRST (mandatory, do these on your first iteration):\n"
             "Return JSON: {\"tool_calls\": [{\"tool_name\": \"dataforseo_labs_google_keyword_ideas\", \"arguments\": {\"keywords\": [\"" + keyword + "\"], \"location_code\": 2840, \"language_code\": \"en\"}}, {\"tool_name\": \"serp_organic_live_advanced\", \"arguments\": {\"keyword\": \"" + keyword + "\", \"location_code\": 2840, \"language_code\": \"en\", \"depth\": 10}}]}\n\n"
             "STEP 2 — AFTER receiving Step 1 results, call at least 2 of these strategic tools:\n"
-            "- 'exa_scout_search' with different queries (exact topic, contrarian angle, case studies)\n"
-            "- 'exa_extract_full_text' to read the best articles found\n"
+            f"{exa_filter_instruction}\n"
+            "- 'exa_extract_full_text' to read the best articles found by exa_scout_search\n"
             "- Any tool with 'backlink' in the name for authority analysis\n"
             "- Any tool with 'on_page' in the name for competitor structure\n"
             "- Any tool with 'related' or 'long_tail' in the name for underserved angles\n"
