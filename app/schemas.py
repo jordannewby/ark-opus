@@ -20,6 +20,9 @@ class PostResponse(BaseModel):
     original_ai_content: str | None = None
     human_edited_content: str | None = None
     readability_score: dict | None = None
+    profile_name: str = "default"
+    niche: str | None = None
+    research_run_id: int | None = None
     created_at: datetime
     updated_at: datetime | None = None
 
@@ -80,7 +83,8 @@ class StyleRuleCreate(BaseModel):
 class StyleRuleResponse(BaseModel):
     id: int
     rule_description: str
-    
+    profile_name: str = "default"
+
     model_config = {"from_attributes": True}
 
 class ResearchRunCapture(BaseModel):

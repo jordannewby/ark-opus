@@ -165,7 +165,7 @@ class ResearchIntelService:
         try:
             from google import genai
             client = genai.Client(api_key=GEMINI_API_KEY)
-            response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+            response = await client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
             text = response.text.strip()
             text = re.sub(r'^```(?:json)?\s*', '', text)
             text = re.sub(r'\s*```$', '', text)

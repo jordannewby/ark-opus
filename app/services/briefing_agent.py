@@ -11,7 +11,7 @@ class BriefingAgent:
             raise ValueError("GEMINI_API_KEY environment variable is not set.")
 
         self.client = genai.Client(api_key=GEMINI_API_KEY)
-        self.model_name = "gemini-2.5-flash"
+        self.model_name = "gemini-2.5-pro"
 
     async def get_clarifying_questions(self, keyword: str) -> list[str]:
         """Generates exactly 3 short, targeted questions based on the keyword."""
@@ -23,7 +23,7 @@ class BriefingAgent:
         )
 
         try:
-            response = self.client.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model=self.model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(

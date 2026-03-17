@@ -341,7 +341,48 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                         "capability", "capabilities",
                         "operational",
                         "strategic",
-                        "scalable", "scalability"
+                        "scalable", "scalability",
+
+                        # Cybersecurity / Bug Bounty terms
+                        "vulnerability", "vulnerabilities", "vulnerable",
+                        "exploitation", "exploiting", "exploited",
+                        "authentication", "authorization", "authenticated",
+                        "configuration", "misconfiguration", "configured",
+                        "credential", "credentials",
+                        "remediation", "mitigation", "mitigations",
+                        "reconnaissance", "enumeration",
+                        "penetration", "injection", "introspection",
+                        "containerized", "containerization",
+                        "encryption", "decryption", "encrypted",
+                        "exfiltration", "exfiltrate",
+                        "obfuscation", "obfuscated",
+                        "adversarial", "adversary", "adversaries",
+                        "endpoint", "endpoints",
+                        "certificate", "certificates",
+                        "permission", "permissions", "authorization",
+                        "privilege", "privileges", "privileged", "escalation",
+                        "malicious", "payload", "payloads",
+                        "server-side", "client-side",
+                        "environment", "environments",
+                        "application", "applications",
+                        "architecture", "architectural",
+                        "verification", "validation",
+                        "processing", "processor",
+                        "parameter", "parameters",
+                        "registration", "registered",
+                        "transaction", "transactions",
+                        "mechanism", "mechanisms",
+                        "identifier", "identifiers",
+                        "specification", "specifications",
+                        "documentation", "documented",
+                        "deployment", "deployments", "deployed",
+                        "repository", "repositories",
+                        "component", "components",
+                        "integration", "integrations", "integrated",
+                        "response", "responses",
+                        "concurrent", "concurrency",
+                        "synchronization", "asynchronous",
+                        "directory", "directories",
                     ]
                     read_keywords.extend(NICHE_TERMS)
                     # Deduplicate while preserving order
@@ -414,11 +455,12 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                     if score['banned_words_used']:
                         issues.append(f"Banned words found: {', '.join(score['banned_words_found'])}")
                     if not score['word_count_ok']:
-                        issues.append(f"Word count too low ({score['word_count']} words, need 1500+)")
+                        shortfall = 1500 - score['word_count']
+                        issues.append(f"Word count too low ({score['word_count']} words, need 1500+). Add ~{shortfall} more words: expand analysis sections, add practical examples, deeper explanations, or additional subsections. Do NOT add filler — add substantive content.")
                     if not score['h1_ok']:
-                        issues.append(f"H1 heading issue (found {score['h1_count']}, need exactly 1)")
+                        issues.append(f"H1 heading issue (found {score['h1_count']}, need exactly 1). CRITICAL: Use '# ' (single hash) ONLY for the article title. Use '## ' (double hash) for ALL section headings. You have {score['h1_count']} lines starting with '# ' — convert all but the title to '## '")
                     if not score['h2_ok']:
-                        issues.append(f"Not enough H2 headings (found {score['h2_count']}, need 5+)")
+                        issues.append(f"Not enough H2 headings (found {score['h2_count']}, need 5+). Add more '## Section Title' headings to break the article into 5+ distinct sections.")
                     if not score['lists_tables_ok']:
                         issues.append(f"Not enough list/table blocks (found {score['list_table_blocks']}, need 3+)")
                     if not score['info_gain_ok']:
@@ -448,8 +490,11 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
         """
         Validates generated article against basic SEO structure requirements and Information Gain Density.
         """
-        lines = text.split("\n")
-        word_count = len(text.split())
+        # Strip fenced code blocks before counting headings/structure
+        # Code comments (# comment) were being falsely counted as H1 headings
+        text_no_code = re.sub(r'```[\s\S]*?```', '', text)
+        lines = text_no_code.split("\n")
+        word_count = len(text.split())  # Word count uses full text (code included)
 
         # H1 count: lines starting with exactly '# ' (not '##')
         h1_count = sum(1 for line in lines if re.match(r"^# (?!#)", line))

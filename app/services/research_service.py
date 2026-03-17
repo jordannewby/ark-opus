@@ -44,10 +44,10 @@ EXA_EXCLUDE_DOMAINS = [
 
 # High-authority domains to prioritize (organized by category and niche)
 EXA_INCLUDE_DOMAINS = {
-    # General authority
+    # General authority (full domains only — bare TLDs like "edu"/"gov" cause Exa 400 errors)
     "general": [
-        "edu", "ac.uk", "edu.au",  # Academic
-        "gov", "gov.uk", "gc.ca",   # Government
+        "nist.gov", "cisa.gov", "ftc.gov", "gao.gov",  # US Government
+        "ico.org.uk", "ncsc.gov.uk",  # UK Government
         "nature.com", "science.org",  # Scientific journals
     ],
 
@@ -236,6 +236,33 @@ EXA_NATIVE_TOOLS = [
             },
             "required": ["ids"]
         }
+    },
+    {
+        "name": "exa_find_similar",
+        "description": "Find articles semantically similar to a given URL. Use this after finding a high-quality source to discover more credible articles from related domains. Returns lightweight results (id, title, url, snippet).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL of a high-quality article to find similar content for."
+                },
+                "num_results": {
+                    "type": "integer",
+                    "description": "Number of similar results to return (default 5)"
+                },
+                "exclude_domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Exclude low-quality domains. Automatically applied."
+                },
+                "start_published_date": {
+                    "type": "string",
+                    "description": "ISO date (YYYY-MM-DD) - only articles published after this date."
+                }
+            },
+            "required": ["url"]
+        }
     }
 ]
 
@@ -265,6 +292,7 @@ class ResearchAgent:
         
         # Step B: Exa discovery is now handled by R1 via native tools (Scout & Extract)
         exa_results = []
+        exa_score_map = {}  # Map URL -> exa_score from scout searches for later merge
 
         # Step C: MCP Context Lifecycle & Agentic Loop
         from ..settings import DEBUG_MODE
@@ -394,13 +422,31 @@ class ResearchAgent:
                                             exclude_domains=t_args.get("exclude_domains", EXA_EXCLUDE_DOMAINS),
                                             start_published_date=t_args.get("start_published_date"),
                                         )
+                                        # Capture exa_score from scout for later merge into extract results
+                                        for sr in native_result:
+                                            if sr.get("url") and sr.get("exa_score") is not None:
+                                                exa_score_map[sr["url"]] = sr["exa_score"]
                                         tool_results_text.append(
                                             f"TOOL RESULT [{t_name}]:\n{json.dumps(native_result, indent=2)}"
                                         )
                                     elif t_name == "exa_extract_full_text":
                                         native_result = await self.exa_extract_full_text(t_args.get("ids", []))
+                                        # Merge exa_score from earlier scout searches
+                                        for article in native_result:
+                                            if article.get("url") and article["url"] in exa_score_map:
+                                                article["exa_score"] = exa_score_map[article["url"]]
                                         # Store extracted articles for the final result
                                         exa_results.extend(native_result)
+                                        tool_results_text.append(
+                                            f"TOOL RESULT [{t_name}]:\n{json.dumps(native_result, indent=2)}"
+                                        )
+                                    elif t_name == "exa_find_similar":
+                                        native_result = await self.exa_find_similar(
+                                            url=t_args.get("url", ""),
+                                            num_results=t_args.get("num_results", 5),
+                                            exclude_domains=t_args.get("exclude_domains", EXA_EXCLUDE_DOMAINS),
+                                            start_published_date=t_args.get("start_published_date"),
+                                        )
                                         tool_results_text.append(
                                             f"TOOL RESULT [{t_name}]:\n{json.dumps(native_result, indent=2)}"
                                         )
@@ -497,24 +543,28 @@ class ResearchAgent:
         if DEBUG_MODE:
             print(f"[DEBUG] Ephemeral MCP Subprocess terminated cleanly.\n")
 
-        # Step C.5: Exa Elite Discovery Fallback (ensures Phase 1.5 always has sources)
-        # If R1 didn't call exa_extract_full_text, invoke the fallback to populate elite_competitors
-        if not exa_results:
+        # Step C.5: Exa Elite Discovery Supplement (ensures Phase 1.5 always has enough sources)
+        # If R1 found fewer than 5 sources, supplement with niche-filtered elite discovery
+        if len(exa_results) < 5:
             if DEBUG_MODE:
-                print(f"[DEBUG] R1 didn't extract sources, invoking _exa_elite_discovery() fallback...")
+                print(f"[DEBUG] R1 found only {len(exa_results)} sources, supplementing with _exa_elite_discovery()...")
 
             try:
-                exa_results = await self._exa_elite_discovery(
+                existing_urls = {r.get("url", "") for r in exa_results}
+                elite_supplement = await self._exa_elite_discovery(
                     keyword=keyword,
                     niche=niche
                 )
+                new_sources = [s for s in elite_supplement if s.get("url", "") not in existing_urls]
+                exa_results.extend(new_sources)
 
                 if DEBUG_MODE:
-                    print(f"[DEBUG] Exa fallback returned {len(exa_results)} sources for Phase 1.5 verification")
+                    print(f"[DEBUG] Exa elite_discovery added {len(new_sources)} new sources (total: {len(exa_results)})")
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f"[DEBUG] Exa fallback failed (non-critical): {e}")
-                exa_results = []  # Graceful degradation if Exa fails
+                    print(f"[DEBUG] Exa elite_discovery supplement failed (non-critical): {e}")
+                if not exa_results:
+                    exa_results = []  # Graceful degradation only if we had nothing
 
         # Step D: Data Formatting
         kw_data = mcp_results.get("keywords")
@@ -644,28 +694,8 @@ class ResearchAgent:
     # Brave Goggles (Elite Discovery Layer)
     # ------------------------------------------------------------------
 
-    async def _exa_elite_discovery(self, keyword: str, niche: str = "default") -> list[dict]:
-        """
-        Two-step Full-Text Audit via Exa.ai Neural Search:
-        1. Search: Find top 5 elite articles via neural search
-        2. Extract: Fetch full article text via get_contents(ids)
-        Returns truncated full-text for DeepSeek-R1 Information Gap analysis.
-        """
-        from ..settings import EXA_API_KEY, DEBUG_MODE
-        if not EXA_API_KEY:
-            return []
-            
-        headers = {
-            "x-api-key": EXA_API_KEY,
-            "Content-Type": "application/json"
-        }
-        
-        # Exa Neural Prompting - asking for meaning, not just keywords
-        prompt = f"High-quality, expert-level blog post or article about {keyword}"
-        if niche != "default":
-            prompt = f"High-quality, advanced {niche} blog post or article about {keyword}"
-
-        # Build niche-specific domain filters (same logic as _build_agentic_prompt)
+    def _get_niche_include_domains(self, niche: str) -> list[str] | None:
+        """Get curated include_domains list for a niche. Returns None for unrecognized niches."""
         niche_normalized = niche.lower().strip().replace(" ", "-")
         niche_filters = {
             # Core security niches
@@ -704,7 +734,31 @@ class ResearchAgent:
             "technology": EXA_INCLUDE_DOMAINS["general"] + ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com", "theregister.com", "zdnet.com", "docker.com", "kubernetes.io"],
             "business": ["hbr.org", "wsj.com", "economist.com", "mckinsey.com", "inc.com"],
         }
-        include_domains = niche_filters.get(niche_normalized, None)
+        return niche_filters.get(niche_normalized, None)
+
+    async def _exa_elite_discovery(self, keyword: str, niche: str = "default") -> list[dict]:
+        """
+        Two-step Full-Text Audit via Exa.ai Neural Search:
+        1. Search: Find top 5 elite articles via neural search
+        2. Extract: Fetch full article text via get_contents(ids)
+        Returns truncated full-text for DeepSeek-R1 Information Gap analysis.
+        """
+        from ..settings import EXA_API_KEY, DEBUG_MODE
+        if not EXA_API_KEY:
+            return []
+            
+        headers = {
+            "x-api-key": EXA_API_KEY,
+            "Content-Type": "application/json"
+        }
+        
+        # Exa Neural Prompting - asking for meaning, not just keywords
+        prompt = f"High-quality, expert-level blog post or article about {keyword}"
+        if niche != "default":
+            prompt = f"High-quality, advanced {niche} blog post or article about {keyword}"
+
+        # Build niche-specific domain filters via shared helper
+        include_domains = self._get_niche_include_domains(niche)
 
         # Calculate 2 years ago for recency filter
         two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
@@ -737,13 +791,17 @@ class ResearchAgent:
                         print("[DEBUG] Exa: No search results found.")
                     return []
                 
-                # Extract IDs for full-text fetch
+                # Extract IDs and build score map from search results
                 result_ids = [r.get("id") for r in search_results if r.get("id")]
-                
+                # Preserve Exa relevance scores (keyed by URL) for credibility scoring
+                url_score_map = {r.get("url", ""): r.get("score") for r in search_results}
+
                 if not result_ids:
                     # Fallback: return title/url from search results if no IDs available
                     return [
-                        {"title": r.get("title", ""), "url": r.get("url", ""), "content": ""}
+                        {"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
+                         "published_date": r.get("publishedDate"), "author": r.get("author"),
+                         "exa_score": r.get("score")}
                         for r in search_results[:5]
                     ]
                 
@@ -768,10 +826,14 @@ class ResearchAgent:
                 elite_articles = []
                 for article in contents_data.get("results", []):
                     full_text = article.get("text", "")
+                    article_url = article.get("url", "")
                     elite_articles.append({
                         "title": article.get("title", ""),
-                        "url": article.get("url", ""),
-                        "content": full_text[:20000]  # Safety cap: ~3,500 words per article
+                        "url": article_url,
+                        "content": full_text[:20000],  # Safety cap: ~3,500 words per article
+                        "published_date": article.get("publishedDate"),
+                        "author": article.get("author"),
+                        "exa_score": url_score_map.get(article_url),  # From search step
                     })
                 
                 if DEBUG_MODE:
@@ -783,6 +845,173 @@ class ResearchAgent:
             except Exception as e:
                 print(f"Exa.ai API Error: {e}")
                 return []
+    async def backfill_search(self, keyword: str, niche: str, exclude_domains: list[str]) -> list[dict]:
+        """
+        Broader Exa search for source backfill when initial verification yields <3 credible sources.
+        Drops niche-specific include_domains and excludes already-rejected domains.
+        Returns [{title, url, content}, ...] — same format as _exa_elite_discovery().
+        """
+        from ..settings import EXA_API_KEY, DEBUG_MODE
+        if not EXA_API_KEY:
+            return []
+
+        headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
+
+        prompt = f"High-quality, expert-level blog post or article about {keyword}"
+        if niche != "default":
+            prompt = f"High-quality, advanced {niche} blog post or article about {keyword}"
+
+        two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+
+        # Combine standard exclusions with rejected domains
+        all_excluded = list(set(EXA_EXCLUDE_DOMAINS + exclude_domains))
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            try:
+                search_payload = {
+                    "query": prompt,
+                    "type": "auto",
+                    "num_results": 15,
+                    "exclude_domains": all_excluded,
+                    "start_published_date": two_years_ago,
+                }
+                # No include_domains — search broadly
+
+                if DEBUG_MODE:
+                    print(f"[BACKFILL] Exa broad search for '{keyword}' (excluding {len(all_excluded)} domains)")
+
+                search_resp = await client.post("https://api.exa.ai/search", headers=headers, json=search_payload)
+                search_resp.raise_for_status()
+                search_results = search_resp.json().get("results", [])
+
+                if not search_results:
+                    if DEBUG_MODE:
+                        print("[BACKFILL] No results found in broad search")
+                    return []
+
+                result_ids = [r.get("id") for r in search_results if r.get("id")]
+                url_score_map = {r.get("url", ""): r.get("score") for r in search_results}
+                if not result_ids:
+                    return [{"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
+                             "published_date": r.get("publishedDate"), "author": r.get("author"),
+                             "exa_score": r.get("score")} for r in search_results[:5]]
+
+                if DEBUG_MODE:
+                    print(f"[BACKFILL] Fetching full text for {len(result_ids)} articles")
+
+                contents_resp = await client.post(
+                    "https://api.exa.ai/contents", headers=headers,
+                    json={"ids": result_ids, "text": {"max_characters": 25000}}
+                )
+                contents_resp.raise_for_status()
+
+                elite_articles = []
+                for article in contents_resp.json().get("results", []):
+                    article_url = article.get("url", "")
+                    elite_articles.append({
+                        "title": article.get("title", ""),
+                        "url": article_url,
+                        "content": article.get("text", "")[:20000],
+                        "published_date": article.get("publishedDate"),
+                        "author": article.get("author"),
+                        "exa_score": url_score_map.get(article_url),
+                    })
+
+                if DEBUG_MODE:
+                    print(f"[BACKFILL] Found {len(elite_articles)} backfill articles")
+
+                return elite_articles
+
+            except Exception as e:
+                print(f"[BACKFILL] Exa API Error: {e}")
+                return []
+
+    async def niche_filtered_backfill(self, keyword: str, niche: str, exclude_domains: list[str]) -> list[dict]:
+        """
+        Niche-filtered Exa search for source backfill.
+        Uses curated include_domains for the niche before falling back to broad search.
+        Returns [] for unrecognized niches (lets broad backfill handle them).
+        """
+        from ..settings import EXA_API_KEY, DEBUG_MODE
+
+        include_domains = self._get_niche_include_domains(niche)
+        if not include_domains:
+            if DEBUG_MODE:
+                print(f"[BACKFILL-NICHE] No domain list for niche '{niche}', skipping niche backfill")
+            return []
+
+        if not EXA_API_KEY:
+            return []
+
+        headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
+
+        prompt = f"High-quality, expert-level blog post or article about {keyword}"
+        if niche != "default":
+            prompt = f"High-quality, advanced {niche} blog post or article about {keyword}"
+
+        two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+        all_excluded = list(set(EXA_EXCLUDE_DOMAINS + exclude_domains))
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            try:
+                search_payload = {
+                    "query": prompt,
+                    "type": "auto",
+                    "num_results": 15,
+                    "exclude_domains": all_excluded,
+                    "include_domains": include_domains,
+                    "start_published_date": two_years_ago,
+                }
+
+                if DEBUG_MODE:
+                    print(f"[BACKFILL-NICHE] Exa niche-filtered search for '{keyword}' with {len(include_domains)} domains")
+
+                search_resp = await client.post("https://api.exa.ai/search", headers=headers, json=search_payload)
+                search_resp.raise_for_status()
+                search_results = search_resp.json().get("results", [])
+
+                if not search_results:
+                    if DEBUG_MODE:
+                        print("[BACKFILL-NICHE] No results found in niche-filtered search")
+                    return []
+
+                result_ids = [r.get("id") for r in search_results if r.get("id")]
+                url_score_map = {r.get("url", ""): r.get("score") for r in search_results}
+                if not result_ids:
+                    return [{"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
+                             "published_date": r.get("publishedDate"), "author": r.get("author"),
+                             "exa_score": r.get("score")} for r in search_results[:5]]
+
+                if DEBUG_MODE:
+                    print(f"[BACKFILL-NICHE] Fetching full text for {len(result_ids)} articles")
+
+                contents_resp = await client.post(
+                    "https://api.exa.ai/contents", headers=headers,
+                    json={"ids": result_ids, "text": {"max_characters": 25000}}
+                )
+                contents_resp.raise_for_status()
+
+                elite_articles = []
+                for article in contents_resp.json().get("results", []):
+                    article_url = article.get("url", "")
+                    elite_articles.append({
+                        "title": article.get("title", ""),
+                        "url": article_url,
+                        "content": article.get("text", "")[:20000],
+                        "published_date": article.get("publishedDate"),
+                        "author": article.get("author"),
+                        "exa_score": url_score_map.get(article_url),
+                    })
+
+                if DEBUG_MODE:
+                    print(f"[BACKFILL-NICHE] Found {len(elite_articles)} niche-filtered backfill articles")
+
+                return elite_articles
+
+            except Exception as e:
+                print(f"[BACKFILL-NICHE] Exa API Error: {e}")
+                return []
+
     # ------------------------------------------------------------------
     # Native Exa Tool Functions (Scout & Extract)
     # ------------------------------------------------------------------
@@ -838,7 +1067,10 @@ class ResearchAgent:
                         "id": r.get("id", ""),
                         "title": r.get("title", ""),
                         "url": r.get("url", ""),
-                        "snippet": (r.get("text", "") or "")[:300]  # Brief snippet only
+                        "snippet": (r.get("text", "") or "")[:300],  # Brief snippet only
+                        "published_date": r.get("publishedDate"),
+                        "author": r.get("author"),
+                        "exa_score": r.get("score"),
                     })
 
                 if DEBUG_MODE:
@@ -878,7 +1110,9 @@ class ResearchAgent:
                     articles.append({
                         "title": article.get("title", ""),
                         "url": article.get("url", ""),
-                        "content": full_text[:20000]  # Safety cap: ~3,500 words
+                        "content": full_text[:20000],  # Safety cap: ~3,500 words
+                        "published_date": article.get("publishedDate"),
+                        "author": article.get("author"),
                     })
                 
                 if DEBUG_MODE:
@@ -888,6 +1122,65 @@ class ResearchAgent:
             except Exception as e:
                 print(f"Exa Extract Error: {e}")
                 return [{"error": str(e)}]
+
+    # ------------------------------------------------------------------
+    # Native Exa Tool: Find Similar (Source Discovery)
+    # ------------------------------------------------------------------
+
+    async def exa_find_similar(
+        self,
+        url: str,
+        num_results: int = 5,
+        exclude_domains: list[str] | None = None,
+        start_published_date: str | None = None
+    ) -> list[dict]:
+        """
+        Native tool: Find articles semantically similar to a given URL via Exa.ai.
+        Used to discover more credible sources from a verified seed URL.
+        Cost: Same as regular search (~$0.007/search).
+        """
+        from ..settings import EXA_API_KEY, DEBUG_MODE
+        if not EXA_API_KEY:
+            return [{"error": "EXA_API_KEY not configured"}]
+
+        headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
+        payload: dict = {
+            "url": url,
+            "num_results": num_results,
+            "exclude_source_domain": True,
+        }
+
+        if exclude_domains:
+            payload["exclude_domains"] = exclude_domains
+        if start_published_date:
+            payload["start_published_date"] = start_published_date
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            try:
+                resp = await client.post("https://api.exa.ai/findSimilar", headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+
+                results = []
+                for r in data.get("results", []):
+                    results.append({
+                        "id": r.get("id", ""),
+                        "title": r.get("title", ""),
+                        "url": r.get("url", ""),
+                        "snippet": (r.get("text", "") or "")[:300],
+                        "published_date": r.get("publishedDate"),
+                        "author": r.get("author"),
+                        "exa_score": r.get("score"),
+                    })
+
+                if DEBUG_MODE:
+                    print(f"[DEBUG] exa_find_similar: Found {len(results)} similar articles for '{url}'")
+                return results
+            except Exception as e:
+                print(f"Exa FindSimilar Error: {e}")
+                return [{"error": str(e)}]
+
+        return []  # Unreachable but satisfies type checker
 
     # ------------------------------------------------------------------
     # DataForSEO Content Analysis (Optional Enhancement)
@@ -1084,19 +1377,25 @@ class ResearchAgent:
             
             # Sort by our custom Opportunity Score (Highest to Lowest)
             golden_keywords.sort(key=lambda x: x["score"], reverse=True)
-            
+
             # Extract just the string names of the top 15 highest-opportunity keywords
             extracted = [e["keyword"] for e in golden_keywords[:15]]
-            
+
             if extracted:
                 return extracted
-                
+
+            # Secondary fallback: use ALL returned keywords (any KD/SV) as topical entities
+            # Better than generic fallback — these are at least topically relevant
+            all_kws = [r.get("keyword", "") for r in items if r.get("keyword")]
+            if all_kws:
+                return all_kws[:15]
+
         except Exception as e:
             print(f"Entity Extraction Error: {e}")
             pass
-            
-        # Fallback if the MCP payload fails or is empty
-        return ["seo strategy", "content marketing", "keyword research", "search intent"]
+
+        # Final fallback: empty list (no entities better than wrong entities)
+        return []
 
     @staticmethod
     def _extract_entities_with_stats(kw_data: dict, serp_data: dict) -> tuple[list[str], list[dict]]:
@@ -1324,48 +1623,8 @@ class ResearchAgent:
         """Build the initial system prompt for the iterative R1 agentic loop."""
         niche_hint = f" in the {niche} niche" if niche != "default" else ""
 
-        # Build niche-specific Exa.ai domain filters
-        niche_normalized = niche.lower().strip().replace(" ", "-")
-        niche_filters = {
-            # Core security niches
-            "cybersecurity": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
-            "cyber-security": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
-            "infosec": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
-            "information-security": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
-            "blueteam": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["blueteam"],
-            "blue-team": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["blueteam"],
-            "redteam": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["redteam"],
-            "red-team": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["redteam"],
-            "purple-team": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["purple-team"],
-            "purpleteam": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["purple-team"],
-            # AI niches
-            "ai": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
-            "ai-ml": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
-            "artificial-intelligence": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
-            "machine-learning": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["ai"],
-            # Combined
-            "cybersecurity-ai": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["cybersecurity"] + EXA_INCLUDE_DOMAINS["ai"],
-            # GRC & Compliance niches
-            "grc": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["grc"],
-            "governance": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["grc"],
-            "compliance": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
-            "data-compliance": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
-            "privacy": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
-            "gdpr": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
-            "legal": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["compliance"],
-            # Infrastructure niches
-            "networking": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["networking"],
-            "network-security": EXA_INCLUDE_DOMAINS["general"] + EXA_INCLUDE_DOMAINS["networking"] + EXA_INCLUDE_DOMAINS["cybersecurity"],
-            # Broader niches
-            "health": ["nih.gov", "cdc.gov", "who.int", "mayoclinic.org", "webmd.com", "ncbi.nlm.nih.gov"],
-            "finance": ["sec.gov", "federalreserve.gov", "wsj.com", "bloomberg.com", "investopedia.com"],
-            "tech": EXA_INCLUDE_DOMAINS["general"] + ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com", "theregister.com", "zdnet.com", "docker.com", "kubernetes.io"],
-            "technology": EXA_INCLUDE_DOMAINS["general"] + ["ieee.org", "acm.org", "arxiv.org", "arstechnica.com", "wired.com", "theregister.com", "zdnet.com", "docker.com", "kubernetes.io"],
-            "business": ["hbr.org", "wsj.com", "economist.com", "mckinsey.com", "inc.com"],
-        }
-
-        # Use niche-specific list if recognized, otherwise None (search broadly)
-        include_domains = niche_filters.get(niche_normalized, None)
+        # Build niche-specific Exa.ai domain filters via shared helper
+        include_domains = self._get_niche_include_domains(niche)
 
         # Calculate date 2 years ago for recency filter
         two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')

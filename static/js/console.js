@@ -110,7 +110,8 @@ document.getElementById('approve-btn').addEventListener('click', async () => {
     terminalLog("SYSTEM", "Saving your edits and teaching the AI your writing style...", "#22d3ee");
 
     try {
-        const response = await fetch(`/posts/${currentPostId}/approve`, {
+        const profile = els.profileSelect ? els.profileSelect.value : "default";
+        const response = await fetch(`/posts/${currentPostId}/approve?profile_name=${encodeURIComponent(profile)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: updatedContent })
@@ -140,20 +141,31 @@ document.getElementById('approve-btn').addEventListener('click', async () => {
 function updateSEOAudit(content) {
     if (!content) return;
 
-    // 1. Calculate Metrics
+    // 1. Calculate Metrics (aligned with backend writer_service.verify_seo_score)
     const wordCount = content.split(/\s+/).length;
+    const h1Count = (content.match(/^# [^#]/gm) || []).length;
     const h2Count = (content.match(/^## /gm) || []).length;
 
-    // 2. Detect "Data Blocks" (Tables or Lists)
-    const hasTable = content.includes('|--') || content.includes('| :--');
-    const hasList = (content.match(/^[*-] /gm) || []).length > 3;
-    const hasDataBlocks = hasTable || hasList;
+    // 2. Detect "Data Blocks" (Tables or Lists) — backend requires >= 3
+    const tableCount = (content.match(/^\|.*\|/gm) || []).length > 1 ? 1 : 0;
+    const listCount = (content.match(/^[*-] /gm) || []).length;
+    const dataBlockCount = tableCount + Math.floor(listCount / 3);
 
-    // 3. Visual Scoring
+    // 3. Scoring aligned with backend validation gates
     let score = 0;
-    score += Math.min((wordCount / 2000) * 40, 40); // Word count weight
-    score += Math.min((h2Count / 5) * 30, 30);      // Heading weight
-    if (hasDataBlocks) score += 30;                 // Data block weight
+    const lengthOk = wordCount >= 1500;
+    const h2Ok = h2Count >= 5;
+    const dataOk = dataBlockCount >= 3;
+
+    // Weight: 40pts length, 30pts structure, 30pts data blocks
+    if (lengthOk) score += 40;
+    else score += Math.min((wordCount / 1500) * 40, 39);
+
+    if (h2Ok) score += 30;
+    else score += Math.min((h2Count / 5) * 30, 29);
+
+    if (dataOk) score += 30;
+    else score += Math.min((dataBlockCount / 3) * 30, 29);
 
     const finalScore = Math.round(score);
     const offset = 283 - (283 * Math.min(finalScore, 100)) / 100;
@@ -166,10 +178,9 @@ function updateSEOAudit(content) {
     const entityDot = document.querySelector('#audit-entities .audit-dot');
     const visualDot = document.querySelector('#audit-visuals .audit-dot');
 
-    if (lengthDot) lengthDot.style.background = wordCount > 1800 ? "#22d3ee" : "rgba(255,255,255,0.1)";
-    if (entityDot) entityDot.style.background = h2Count >= 4 ? "#22d3ee" : "rgba(255,255,255,0.1)";
-    if (visualDot) visualDot.style.background = hasDataBlocks ? "#22d3ee" : "rgba(255,255,255,0.1)";
-    if (visualDot) visualDot.style.background = hasDataBlocks ? "#22d3ee" : "rgba(255,255,255,0.1)";
+    if (lengthDot) lengthDot.style.background = lengthOk ? "#22d3ee" : "rgba(255,255,255,0.1)";
+    if (entityDot) entityDot.style.background = h2Ok ? "#22d3ee" : "rgba(255,255,255,0.1)";
+    if (visualDot) visualDot.style.background = dataOk ? "#22d3ee" : "rgba(255,255,255,0.1)";
 }
 
 // -------------------------------------------------------------------------
@@ -374,13 +385,20 @@ async function executeGeneration(userContext) {
                                     break;
                                 case 'source_verification':
                                     const score = payload.credibility_score || 0;
-                                    const scoreColor = score >= 80 ? "#10b981" : score >= 60 ? "#fbbf24" : "#ef4444";
+                                    const scoreColor = score >= 80 ? "#10b981" : score >= 45 ? "#fbbf24" : "#ef4444";
                                     terminalLog("VERIFY", `${payload.source_title} (${payload.domain}) → ${score}/100 [${payload.progress}]`, scoreColor);
                                     break;
                                 case 'phase1_5_complete':
                                     const avgCred = payload.avg_credibility || 0;
-                                    const avgColor = avgCred >= 80 ? "#10b981" : avgCred >= 60 ? "#22d3ee" : "#fbbf24";
-                                    terminalLog("VERIFY", `✓ Sources verified: ${payload.verified_count} passed, ${payload.rejected_count} rejected (Avg: ${avgCred}/100)`, avgColor);
+                                    const avgColor = avgCred >= 80 ? "#10b981" : avgCred >= 45 ? "#22d3ee" : "#fbbf24";
+                                    terminalLog("VERIFY", `Sources verified: ${payload.verified_count} passed, ${payload.rejected_count} rejected (Avg: ${avgCred}/100)`, avgColor);
+                                    break;
+                                case 'source_backfill_start':
+                                    terminalLog("BACKFILL", payload.message, "#f59e0b");
+                                    break;
+                                case 'source_backfill_complete':
+                                    const bfColor = (payload.verified_count || 0) >= 3 ? "#10b981" : "#ef4444";
+                                    terminalLog("BACKFILL", payload.message, bfColor);
                                     break;
                                 case 'phase2_start':
                                     updateAgentUI('psychology');
@@ -401,6 +419,7 @@ async function executeGeneration(userContext) {
                                     break;
                                 case 'content':
                                     const streamEditor = document.getElementById('article-editor');
+                                    if (!streamEditor) break;
                                     if (payload.data === "RETRY_CLEAR") {
                                         streamEditor.value = "";
                                     } else {
@@ -585,7 +604,8 @@ brainEls.addBtn.addEventListener('click', async () => {
 
 async function deleteRule(id) {
     try {
-        const res = await fetch(`/rules/${id}`, { method: 'DELETE' });
+        const profile = els.profileSelect ? els.profileSelect.value : "default";
+        const res = await fetch(`/rules/${id}?profile_name=${encodeURIComponent(profile)}`, { method: 'DELETE' });
         if (res.ok) loadRules();
     } catch (e) {
         console.error("Failed to delete rule", e);
@@ -713,7 +733,7 @@ async function createWorkspace() {
     if (!slug) return;
 
     // Prevent duplicates
-    const existing = Array.from(els.profileSelect.options).find(o => o.value === slug);
+    const existing = document.querySelector(`.workspace-option-item[data-slug="${slug}"]`);
     if (existing) {
         els.profileSelect.value = slug;
         els.profileSelect.dispatchEvent(new Event('change'));
@@ -945,11 +965,12 @@ function attachSpokeListeners() {
             const kw = e.currentTarget.getAttribute('data-keyword');
             if (!kw) return;
 
-            // Pop main main generation UI context
+            if (!confirm(`Generate article for "${kw}"? This will start a new generation.`)) return;
+
+            // Pop main generation UI context
             toggleCartographer(false);
 
             els.keywordInput.value = kw;
-            // Optionally, scroll to top of UI
 
             // Auto trigger the pipeline
             els.generateBtn.click();

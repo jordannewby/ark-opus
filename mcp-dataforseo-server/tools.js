@@ -1,10 +1,11 @@
 /**
  * MCP Tool Definitions and Handlers for DataForSEO API
  *
- * Registers 3 tools used by Ares Engine ResearchAgent:
+ * Registers 4 tools used by Ares Engine ResearchAgent:
  * 1. dataforseo_labs_google_keyword_ideas - Keyword research with search volume
  * 2. serp_organic_live_advanced - SERP organic results with PAA, headers
  * 3. dataforseo_labs_content_analysis_summary_live - Content patterns from top 10 results
+ * 4. backlinks_summary - Domain authority (rank 0-1000) and spam score for credibility
  */
 
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -34,6 +35,10 @@ export function registerTools(server, client) {
 
         case "dataforseo_labs_content_analysis_summary_live":
           result = await handleContentAnalysis(client, args);
+          break;
+
+        case "domain_rank_overview":
+          result = await handleDomainRankOverview(client, args);
           break;
 
         default:
@@ -153,6 +158,21 @@ export function registerTools(server, client) {
             },
             required: ["keyword"]
           }
+        },
+        {
+          name: "domain_rank_overview",
+          description: "Get domain authority metrics: keyword rankings (top 1/3/10 positions), estimated traffic value. Use for source credibility assessment.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              targets: {
+                type: "array",
+                items: { type: "string" },
+                description: "List of domains to check (e.g., ['nist.gov', 'example.com']). Max 10 per request."
+              }
+            },
+            required: ["targets"]
+          }
         }
       ]
     };
@@ -216,4 +236,83 @@ async function handleContentAnalysis(client, args) {
   });
 
   return result;
+}
+
+/**
+ * Tool 4: Get domain rank overview via DataForSEO Labs (authority metrics)
+ * Used by Phase 1.5 source verification for real domain authority signals.
+ * Returns: top keyword positions, estimated traffic value, total ranked keywords.
+ * Cost: ~$0.0001 per domain (DataForSEO Labs pricing)
+ */
+async function handleDomainRankOverview(client, args) {
+  const { targets } = args;
+
+  if (!targets || !Array.isArray(targets) || targets.length === 0) {
+    throw new Error("targets parameter must be a non-empty array of domain strings");
+  }
+
+  // Cap at 10 domains per request to control costs
+  const limitedTargets = targets.slice(0, 10);
+
+  // Query each domain individually (DataForSEO Labs accepts one target per task)
+  const tasks = limitedTargets.map(target => ({
+    target,
+    location_code: 2840,  // United States
+    language_code: "en",
+  }));
+
+  const result = await client.post("/dataforseo_labs/google/domain_rank_overview/live", tasks[0]);
+
+  // For batch: make parallel calls for remaining domains
+  const summaries = [];
+
+  // Process first domain from the initial call
+  const firstTask = (result.tasks || [])[0];
+  summaries.push(extractDomainMetrics(firstTask, limitedTargets[0]));
+
+  // Process remaining domains
+  for (let i = 1; i < limitedTargets.length; i++) {
+    try {
+      const r = await client.post("/dataforseo_labs/google/domain_rank_overview/live", tasks[i]);
+      const task = (r.tasks || [])[0];
+      summaries.push(extractDomainMetrics(task, limitedTargets[i]));
+    } catch (e) {
+      summaries.push({
+        target: limitedTargets[i],
+        top10_keywords: 0,
+        etv: 0,
+        total_keywords: 0,
+        error: e.message,
+      });
+    }
+  }
+
+  return { summaries };
+}
+
+/**
+ * Extract key authority metrics from DataForSEO Labs domain rank result
+ */
+function extractDomainMetrics(task, fallbackTarget) {
+  if (!task || task.status_code !== 20000 || !task.result || !task.result[0]?.items?.[0]) {
+    return {
+      target: task?.data?.target || fallbackTarget,
+      top10_keywords: 0,
+      etv: 0,
+      total_keywords: 0,
+    };
+  }
+
+  const metrics = task.result[0].items[0].metrics?.organic || {};
+  const pos1 = metrics.pos_1 || 0;
+  const pos2_3 = metrics.pos_2_3 || 0;
+  const pos4_10 = metrics.pos_4_10 || 0;
+
+  return {
+    target: task.data?.target || fallbackTarget,
+    top10_keywords: pos1 + pos2_3 + pos4_10,
+    top3_keywords: pos1 + pos2_3,
+    etv: Math.round(metrics.etv || 0),
+    total_keywords: metrics.count || 0,
+  };
 }

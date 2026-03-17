@@ -15,7 +15,7 @@ class FeedbackAgent:
             raise ValueError("GEMINI_API_KEY environment variable is not set.")
 
         self.client = genai.Client(api_key=GEMINI_API_KEY)
-        self.model_name = "gemini-2.5-flash"
+        self.model_name = "gemini-2.5-pro"
 
         self.system_prompt = (
             "You are a master linguistic analyst and editor. Your job is to compare an original AI-generated text "
@@ -37,7 +37,7 @@ class FeedbackAgent:
         """
         # If the texts are identical, don't waste API calls
         if original_text.strip() == edited_text.strip():
-            print("ℹ️ [FEEDBACK] Text matched original. No new style rules learned.")
+            print("[FEEDBACK] Text matched original. No new style rules learned.")
             return []
 
         prompt_instructions = (
@@ -49,7 +49,7 @@ class FeedbackAgent:
         )
 
         try:
-             response = self.client.models.generate_content(
+             response = await self.client.aio.models.generate_content(
                  model=self.model_name,
                  contents=prompt_instructions,
                  config=types.GenerateContentConfig(
@@ -80,7 +80,7 @@ class FeedbackAgent:
                  
              if rules:
                  self.db.commit()
-                 print(f"📈 [FEEDBACK] Learned {len(rules)} new writing style rules!")
+                 print(f"[FEEDBACK] Learned {len(rules)} new writing style rules!")
                  
                  # Automatically trigger distillation if needed
                  await self.prune_style_rules(profile_name)
@@ -88,7 +88,7 @@ class FeedbackAgent:
              return rules
              
         except Exception as e:
-             print(f"❌ Gemini Feedback Error: {e}")
+             print(f"[FEEDBACK ERROR] Gemini Feedback Error: {e}")
              self.db.rollback()
              return []
 
@@ -100,7 +100,7 @@ class FeedbackAgent:
         if len(rules) <= 20:
             return
 
-        print(f"🧹 [FEEDBACK] Starting Style Pruning for '{profile_name}' ({len(rules)} rules)...")
+        print(f"[FEEDBACK] Starting Style Pruning for '{profile_name}' ({len(rules)} rules)...")
         rule_texts = [r.rule_description for r in rules]
         blocks = "\n".join(f"{i+1}. {r}" for i, r in enumerate(rule_texts))
 
@@ -113,7 +113,7 @@ class FeedbackAgent:
         )
 
         try:
-             response = self.client.models.generate_content(
+             response = await self.client.aio.models.generate_content(
                  model=self.model_name,
                  contents=prompt,
                  config=types.GenerateContentConfig(
@@ -121,9 +121,9 @@ class FeedbackAgent:
                      temperature=0.1,
                  ),
              )
-             
+
              content = response.text.strip()
-             
+
              # Strip markdown if present
              if content.startswith("```json"):
                  content = content[7:]
@@ -131,22 +131,22 @@ class FeedbackAgent:
                  content = content[3:]
              if content.endswith("```"):
                  content = content[:-3]
-                 
+
              new_rules = json.loads(content.strip())
-             if not isinstance(new_rules, list):
+             if not isinstance(new_rules, list) or len(new_rules) == 0:
                  return
 
-             # Clear old rules and insert new ones
+             # Safe pruning: only delete old rules AFTER new ones are validated
              for r in rules:
                  self.db.delete(r)
-                 
+
              for rule_text in new_rules:
                  new_rule = UserStyleRule(rule_description=rule_text, profile_name=profile_name)
                  self.db.add(new_rule)
-                 
+
              self.db.commit()
-             print(f"✨ [FEEDBACK] Pruned {len(rules)} rules down to {len(new_rules)} optimized rules.")
+             print(f"[FEEDBACK] Pruned {len(rules)} rules down to {len(new_rules)} optimized rules.")
              
         except Exception as e:
-             print(f"❌ Feedback Pruning Error: {e}")
+             print(f"[FEEDBACK ERROR] Pruning Error: {e}")
              self.db.rollback()

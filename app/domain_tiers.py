@@ -38,7 +38,6 @@ TIER_1_DOMAINS = {
     "coso.org",
     "isaca.org",
     "iia.org.uk",
-    "nist.gov/cyberframework",
 
     # Data Protection Authorities
     "gdpr.eu",
@@ -134,6 +133,15 @@ TIER_2_DOMAINS = {
     "kaggle.com",
     "papers.nips.cc",
     "neurips.cc",
+    "meta.com",
+    "ai.meta.com",
+    "engineering.fb.com",
+    "stability.ai",
+    "cohere.com",
+    "mistral.ai",
+    "pytorch.org",
+    "tensorflow.org",
+    "blog.google",
 
     # GRC Consulting Firms
     "deloitte.com",
@@ -152,6 +160,9 @@ TIER_2_DOMAINS = {
     # Bug Bounty Platforms
     "hackerone.com",
     "bugcrowd.com",
+    "yeswehack.com",
+    "intigriti.com",
+    "synack.com",
 
     # Purple Team / Simulation
     "scythe.io",
@@ -200,6 +211,11 @@ TIER_3_DOMAINS = {
     "hacking.land",
     "pentesterlab.com",
     "hackthebox.eu",
+    "hackthebox.com",
+    "tryhackme.com",
+    "infosecwriteups.com",
+    "book.hacktricks.xyz",
+    "swarm.ptsecurity.com",
 
     # Blue Team / Detection
     "detection.fyi",

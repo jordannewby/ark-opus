@@ -125,14 +125,14 @@ def migrate_writer_learning():
             print("[OK] Created writer_playbooks table")
 
 def migrate_source_verification():
-    """One-time migration: Add source verification tables (verified_sources, fact_citations, domain_credibility_cache)."""
+    """One-time migration: Add source verification tables (verified_sources, fact_citations)."""
     from sqlalchemy import text, inspect
 
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
 
     # Check if already migrated
-    if 'verified_sources' in existing_tables and 'fact_citations' in existing_tables and 'domain_credibility_cache' in existing_tables:
+    if 'verified_sources' in existing_tables and 'fact_citations' in existing_tables:
         return
 
     with engine.begin() as conn:
@@ -184,21 +184,6 @@ def migrate_source_verification():
             conn.execute(text("CREATE INDEX idx_fact_citations_research_run_id ON fact_citations(research_run_id)"))
             print("[OK] Created fact_citations table")
 
-        if 'domain_credibility_cache' not in existing_tables:
-            conn.execute(text("""
-                CREATE TABLE domain_credibility_cache (
-                    id SERIAL PRIMARY KEY,
-                    domain VARCHAR(200) UNIQUE NOT NULL,
-                    domain_authority INTEGER,
-                    referring_domains INTEGER,
-                    is_authoritative BOOLEAN DEFAULT FALSE,
-                    is_academic BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP
-                )
-            """))
-            conn.execute(text("CREATE INDEX idx_domain_credibility_cache_domain ON domain_credibility_cache(domain)"))
-            print("[OK] Created domain_credibility_cache table")
 
 def migrate_composite_scoring():
     """One-time migration: Add composite scoring columns to fact_citations."""
@@ -242,6 +227,26 @@ def migrate_composite_scoring():
             AND fc.composite_score IS NULL
         """))
         print("[OK] Backfilled composite scores for existing fact_citations")
+
+def migrate_fact_consensus():
+    """One-time migration: Add consensus_count column to fact_citations."""
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+
+    if 'fact_citations' not in inspector.get_table_names():
+        return  # Table doesn't exist yet
+
+    columns = [col['name'] for col in inspector.get_columns('fact_citations')]
+    if 'consensus_count' in columns:
+        return  # Already migrated
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            ALTER TABLE fact_citations
+            ADD COLUMN consensus_count INTEGER DEFAULT 1
+        """))
+        print("[OK] Added consensus_count column to fact_citations")
 
 def get_db():
     db = SessionLocal()

@@ -10,9 +10,9 @@ class Post(Base):
     __tablename__ = "posts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    profile_name: Mapped[str] = mapped_column(String(50), default="default", server_default="default")
-    niche: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    research_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    profile_name: Mapped[str] = mapped_column(String(50), index=True, default="default", server_default="default")
+    niche: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
+    research_run_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     title: Mapped[str] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(Text)
     original_ai_content: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -51,7 +51,7 @@ class ResearchRun(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     keyword: Mapped[str] = mapped_column(String(200), index=True)
     niche: Mapped[str] = mapped_column(String(100), index=True, default="default", server_default="default")
-    profile_name: Mapped[str] = mapped_column(String(50), default="default", server_default="default")
+    profile_name: Mapped[str] = mapped_column(String(50), index=True, default="default", server_default="default")
 
     tool_sequence_json: Mapped[str] = mapped_column(Text)
     iteration_count: Mapped[int] = mapped_column(Integer, default=1)
@@ -89,7 +89,7 @@ class WriterRun(Base):
     __table_args__ = (UniqueConstraint("profile_name", "niche", "post_id", name="uix_writer_run"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    profile_name: Mapped[str] = mapped_column(String(50), default="default", server_default="default")
+    profile_name: Mapped[str] = mapped_column(String(50), index=True, default="default", server_default="default")
     niche: Mapped[str] = mapped_column(String(100))
     post_id: Mapped[int] = mapped_column(Integer, nullable=False)
 
@@ -203,23 +203,7 @@ class FactCitation(Base):
     source_credibility: Mapped[float | None] = mapped_column(nullable=True)  # Parent source score (60-100 scale)
     composite_score: Mapped[float | None] = mapped_column(nullable=True)  # Combined: (confidence*100 + source_cred)/2
 
+    # Cross-source consensus (how many independent sources corroborate this fact)
+    consensus_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-
-
-class DomainCredibilityCache(Base):
-    __tablename__ = "domain_credibility_cache"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    domain: Mapped[str] = mapped_column(String(200), unique=True, nullable=False, index=True)
-
-    # Cached metrics
-    domain_authority: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    referring_domains: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    # Categorization
-    is_authoritative: Mapped[bool] = mapped_column(default=False, server_default="false")  # .gov, .edu, major journals
-    is_academic: Mapped[bool] = mapped_column(default=False, server_default="false")
-
-    # Cache TTL
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())

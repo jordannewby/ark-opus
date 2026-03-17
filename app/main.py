@@ -1,6 +1,10 @@
 import os
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Configure logging so INFO-level messages (scoring breakdowns, verified sources) are visible
+logging.basicConfig(level=logging.INFO)
 
 # Ensure environment is loaded BEFORE importing services
 env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -15,7 +19,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from sqlalchemy.exc import OperationalError
-from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, SessionLocal
+from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, SessionLocal
 from .models import Post, ResearchRun, UserStyleRule, Workspace, WriterRun
 from .schemas import (
     BlueprintResponse,
@@ -41,7 +45,14 @@ migrate_posts_readability()
 migrate_writer_learning()
 migrate_source_verification()
 migrate_composite_scoring()
+migrate_fact_consensus()
 Base.metadata.create_all(bind=engine)
+
+def normalize_niche(niche: str | None) -> str:
+    """Single source of truth for niche normalization."""
+    if not niche:
+        return "general"
+    return niche.strip().lower().replace(" ", "-")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -80,12 +91,12 @@ app = FastAPI(title="Ares Engine Console", lifespan=lifespan)
 # --- CRUD Endpoints ---
 
 @app.get("/posts", response_model=list[PostResponse])
-def list_posts(skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
-    return db.query(Post).offset(skip).limit(limit).all()
+def list_posts(skip: int = 0, limit: int = 20, profile_name: str = "default", db: Session = Depends(get_db)):
+    return db.query(Post).filter(Post.profile_name == profile_name).offset(skip).limit(limit).all()
 
 @app.get("/posts/{post_id}", response_model=PostResponse)
-def get_post(post_id: int, db: Session = Depends(get_db)):
-    post = db.get(Post, post_id)
+def get_post(post_id: int, profile_name: str = "default", db: Session = Depends(get_db)):
+    post = db.query(Post).filter(Post.id == post_id, Post.profile_name == profile_name).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
     return post
@@ -102,63 +113,66 @@ from fastapi import BackgroundTasks
 
 @app.post("/posts/{post_id}/approve", response_model=PostResponse)
 async def approve_and_train_post(
-    post_id: int, 
-    data: PostUpdate, 
+    post_id: int,
+    data: PostUpdate,
     background_tasks: BackgroundTasks,
+    profile_name: str = "default",
     db: Session = Depends(get_db)
 ):
     """
     Accepts the human-edited content, updates the database, and spins up the FeedbackAgent
     in the background so the user's browser doesn't have to wait for Gemini to extract style rules.
     """
-    post = db.get(Post, post_id)
+    post = db.query(Post).filter(Post.id == post_id, Post.profile_name == profile_name).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
-        
+
     # The frontend should send the completely human-edited markdown as `data.content`
     if not data.content:
-        return post
+        raise HTTPException(status_code=400, detail="Content is required for approval")
 
     # Only fire training if changes were actually made
     if post.original_ai_content and post.original_ai_content.strip() != data.content.strip():
         # Set human_edited_content strictly as the new baseline
         post.human_edited_content = data.content
 
-        # Fire the style-learning background task
-        from .services.feedback_service import FeedbackAgent
-        agent = FeedbackAgent(db=db)
-        background_tasks.add_task(
-            agent.analyze_and_store_feedback,
-            post.original_ai_content,
-            data.content,
-            post.profile_name
-        )
-
-        # Fire research quality scoring (edit-distance ratio → ResearchRun.quality_score)
-        from .services.research_intel_service import ResearchIntelService
-        intel_service = ResearchIntelService(db=db)
-        background_tasks.add_task(
-            intel_service.score_research_run,
-            post_id,
-            post.original_ai_content,
-            data.content,
-        )
-
-        # Fire writer readability scoring and distillation
-        from .services.writer_intel_service import WriterIntelService
-        background_tasks.add_task(
-            WriterIntelService.score_writer_run,
-            post_id,
-            db
-        )
-        # Extract niche from post for distillation
+        # Capture scalar values before response returns and session closes
+        original_content = post.original_ai_content
+        edited_content = data.content
+        profile = post.profile_name
         niche = post.niche if post.niche else "general"
-        background_tasks.add_task(
-            WriterIntelService.maybe_distill,
-            post.profile_name,
-            niche,
-            db
-        )
+
+        # Background task wrappers that create their own DB sessions
+        async def _bg_feedback():
+            from .services.feedback_service import FeedbackAgent
+            bg_db = SessionLocal()
+            try:
+                agent = FeedbackAgent(db=bg_db)
+                await agent.analyze_and_store_feedback(original_content, edited_content, profile)
+            finally:
+                bg_db.close()
+
+        def _bg_research_score():
+            from .services.research_intel_service import ResearchIntelService
+            bg_db = SessionLocal()
+            try:
+                svc = ResearchIntelService(db=bg_db)
+                svc.score_research_run(post_id, original_content, edited_content)
+            finally:
+                bg_db.close()
+
+        def _bg_writer_score_and_distill():
+            from .services.writer_intel_service import WriterIntelService
+            bg_db = SessionLocal()
+            try:
+                WriterIntelService.score_writer_run(post_id, bg_db)
+                WriterIntelService.maybe_distill(profile, niche, bg_db)
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_bg_feedback)
+        background_tasks.add_task(_bg_research_score)
+        background_tasks.add_task(_bg_writer_score_and_distill)
 
     # Update the primary content string
     post.content = data.content
@@ -188,10 +202,12 @@ def add_style_rule(rule: StyleRuleCreate, db: Session = Depends(get_db)):
     return new_rule
 
 @app.delete("/rules/{rule_id}")
-def delete_style_rule(rule_id: int, db: Session = Depends(get_db)):
+def delete_style_rule(rule_id: int, profile_name: str = "default", db: Session = Depends(get_db)):
     """Delete a specific style rule from memory."""
     rule = db.get(UserStyleRule, rule_id)
     if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    if rule.profile_name != profile_name:
         raise HTTPException(status_code=404, detail="Rule not found")
     db.delete(rule)
     db.commit()
@@ -234,9 +250,9 @@ async def plan_campaign(req: CampaignCreateRequest, db: Session = Depends(get_db
 # --- Orchestration Endpoints ---
 
 @app.get("/research/{keyword:path}", response_model=ResearchResponse)
-async def research_keyword(keyword: str, niche: str = "default", db: Session = Depends(get_db)):
+async def research_keyword(keyword: str, niche: str = "default", profile_name: str = "default", db: Session = Depends(get_db)):
     agent = ResearchAgent(db)
-    return await agent.research(keyword, niche=niche)
+    return await agent.research(keyword, niche=niche, profile_name=profile_name)
 
 @app.post("/blueprint", response_model=BlueprintResponse)
 async def generate_blueprint(research_data: ResearchResponse, db: Session = Depends(get_db)):
@@ -267,7 +283,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
     niche = payload.niche
     context = payload.context
 
-    print(f"🚀 [ARES] Starting unified generation for: {keyword} (niche: {niche})")
+    print(f"[ARES] Starting unified generation for: {keyword} (niche: {niche})")
 
     async def event_generator():
         nonlocal db
@@ -308,7 +324,9 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     elite_competitors=elite_competitors,
                     db=db,
                     profile_name=payload.profile_name,
-                    research_run_id=research_run_id
+                    research_run_id=research_run_id,
+                    mcp_session=request.app.state.mcp_session,
+                    keyword=keyword,
                 )
 
                 verified_sources = verification_result["verified_sources"]
@@ -318,14 +336,103 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     for i, source in enumerate(verified_sources):
                         yield f"data: {json.dumps({'event': 'source_verification', 'source_title': source.title, 'domain': source.domain, 'credibility_score': round(source.credibility_score, 1), 'progress': f'{i+1}/{len(elite_competitors)}'})}\n\n"
 
-                # Fail if < 3 verified sources (USER REQUIREMENT)
+                # Backfill if < 3 verified sources
                 if len(verified_sources) < 3:
-                    error_msg = f"Insufficient credible sources: only {len(verified_sources)} found (need 3 minimum). Rejected: {len(rejected_sources)} sources with low credibility scores."
-                    yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
-                    return
+                    yield f"data: {json.dumps({'event': 'source_backfill_start', 'message': f'Only {len(verified_sources)} credible sources found. Searching for alternatives...'})}\n\n"
 
-                # Extract facts and link to sources
-                await link_facts_to_sources(verified_sources, research_run_id, db)
+                    rejected_domains = list({s["domain"] for s in rejected_sources})
+                    seen_urls = {s.url for s in verified_sources} | {s["url"] for s in rejected_sources}
+
+                    # Step 1: Try Find Similar from highest-scoring verified source
+                    if verified_sources:
+                        from datetime import datetime as dt_now, timedelta as td
+                        from .services.research_service import EXA_EXCLUDE_DOMAINS
+
+                        best_source = max(verified_sources, key=lambda s: s.credibility_score)
+                        if DEBUG_MODE:
+                            seed_msg = f"FindSimilar: Using seed URL {best_source.url} (score: {round(best_source.credibility_score, 1)})"
+                            yield f"data: {json.dumps({'event': 'debug', 'message': seed_msg})}\n\n"
+
+                        two_years_ago = (dt_now.now() - td(days=730)).strftime('%Y-%m-%d')
+                        similar_results = await research_agent.exa_find_similar(
+                            url=best_source.url,
+                            num_results=5,
+                            exclude_domains=list(EXA_EXCLUDE_DOMAINS) + rejected_domains,
+                            start_published_date=two_years_ago,
+                        )
+                        # Find Similar returns search-like results; fetch full text for verification
+                        similar_ids = [r.get("id") for r in similar_results if r.get("id") and not r.get("error")]
+                        if similar_ids:
+                            similar_articles = await research_agent.exa_extract_full_text(similar_ids)
+                            similar_new = [s for s in similar_articles if s.get("url") not in seen_urls and not s.get("error")]
+                            if similar_new:
+                                similar_verification = await verify_sources(
+                                    elite_competitors=similar_new,
+                                    db=db,
+                                    profile_name=payload.profile_name,
+                                    research_run_id=research_run_id,
+                                    mcp_session=request.app.state.mcp_session,
+                                    keyword=keyword,
+                                )
+                                verified_sources.extend(similar_verification["verified_sources"])
+                                rejected_sources.extend(similar_verification["rejected_sources"])
+                                elite_competitors.extend(similar_new)
+                                seen_urls.update(s.get("url") for s in similar_new)
+                                if DEBUG_MODE:
+                                    fs_count = len(similar_verification["verified_sources"])
+                                    yield f"data: {json.dumps({'event': 'debug', 'message': f'FindSimilar added {fs_count} verified sources'})}\n\n"
+
+                    # Step 2: Niche-filtered backfill (authoritative domains only)
+                    if len(verified_sources) < 3:
+                        niche_backfill_results = await research_agent.niche_filtered_backfill(keyword, niche, rejected_domains)
+                        niche_new = [s for s in niche_backfill_results if s.get("url") not in seen_urls]
+
+                        if niche_new:
+                            niche_verification = await verify_sources(
+                                elite_competitors=niche_new,
+                                db=db,
+                                profile_name=payload.profile_name,
+                                research_run_id=research_run_id,
+                                mcp_session=request.app.state.mcp_session,
+                                keyword=keyword,
+                            )
+                            verified_sources.extend(niche_verification["verified_sources"])
+                            rejected_sources.extend(niche_verification["rejected_sources"])
+                            elite_competitors.extend(niche_new)
+                            seen_urls.update(s.get("url") for s in niche_new)
+                            if DEBUG_MODE:
+                                nb_count = len(niche_verification["verified_sources"])
+                                yield f"data: {json.dumps({'event': 'debug', 'message': f'Niche backfill added {nb_count} verified sources'})}\n\n"
+
+                    # Step 3: Broad search fallback if still < 3
+                    if len(verified_sources) < 3:
+                        backfill_results = await research_agent.backfill_search(keyword, niche, rejected_domains)
+                        new_sources = [s for s in backfill_results if s.get("url") not in seen_urls]
+
+                        if new_sources:
+                            backfill_verification = await verify_sources(
+                                elite_competitors=new_sources,
+                                db=db,
+                                profile_name=payload.profile_name,
+                                research_run_id=research_run_id,
+                                mcp_session=request.app.state.mcp_session,
+                                keyword=keyword,
+                            )
+                            verified_sources.extend(backfill_verification["verified_sources"])
+                            rejected_sources.extend(backfill_verification["rejected_sources"])
+                            elite_competitors.extend(new_sources)  # Merge for fact extraction
+
+                    backfill_found = len(verified_sources)
+                    yield f"data: {json.dumps({'event': 'source_backfill_complete', 'message': f'Backfill complete: {backfill_found} total verified sources', 'verified_count': backfill_found})}\n\n"
+
+                    # Final gate — still fail if <3 after backfill
+                    if len(verified_sources) < 3:
+                        error_msg = f"Insufficient credible sources after backfill: only {len(verified_sources)} found (need 3 minimum). Rejected: {len(rejected_sources)} sources."
+                        yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
+                        return
+
+                # Extract facts and link to sources (pass full content for better extraction)
+                await link_facts_to_sources(verified_sources, research_run_id, db, elite_competitors=elite_competitors)
 
                 avg_credibility = sum(s.credibility_score for s in verified_sources) / len(verified_sources) if verified_sources else 0
 
@@ -358,7 +465,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             writer_service = WriterService(db=db)
             article_content = ""
             run_id = research_data_dict.get("research_run_id")
-            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, payload.niche, research_run_id=run_id):
+            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, normalize_niche(payload.niche), research_run_id=run_id):
                 if result.get("type") == "content":
                     yield f"data: {json.dumps({'event': 'content', 'data': result['data']})}\n\n"
                 elif result.get("type") == "debug":
@@ -379,7 +486,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 content=article_content,
                 original_ai_content=article_content,
                 profile_name=payload.profile_name,
-                niche=payload.niche.strip().lower().replace(" ", "-") if payload.niche else None,
+                niche=normalize_niche(payload.niche),
                 readability_score=readability_scores,  # Save readability analytics
             )
             db.add(post)
@@ -397,7 +504,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             if readability_scores:
                 writer_run = WriterRun(
                     profile_name=payload.profile_name,
-                    niche=payload.niche.strip().lower().replace(" ", "-") if payload.niche else "general",
+                    niche=normalize_niche(payload.niche),
                     post_id=post.id,
                     ari_score=readability_scores["ari"],
                     flesch_kincaid_score=readability_scores["fk"],
@@ -428,7 +535,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     db.commit()
                 db.refresh(post)
 
-            print(f"✅ [ARES] Generation complete for: {keyword}")
+            print(f"[ARES] Generation complete for: {keyword}")
             
             # Use model_dump or dictionary access to serialize the SQLAlchemy object safely
             # Since standard Post output might not be directly JSON serializable without a Pydantic model conversion
@@ -453,8 +560,15 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 print(f"\n[CRITICAL ERROR TRACEBACK]\n{tb}\n")
                 error_msg = f"{str(e)} | Check backend terminal for full traceback."
             else:
-                print(f"❌ [ARES] Generation Error: {e}")
+                print(f"[ARES] Generation Error: {e}")
             yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
+        finally:
+            # If db was reassigned via SSL retry (nonlocal db = SessionLocal()),
+            # the original get_db() dependency won't close it. Close explicitly.
+            try:
+                db.close()
+            except Exception:
+                pass
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
