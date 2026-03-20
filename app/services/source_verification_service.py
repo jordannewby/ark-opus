@@ -1168,6 +1168,23 @@ async def verify_sources(
     elite_competitors = unique_sources
     logger.info(f"[DEDUP] Processing {len(elite_competitors)} unique URLs (removed {duplicate_count} duplicates)")
 
+    # Gap 27b: Language safety net — reject sources with >20% non-Latin characters
+    # This catches non-English content that slipped past research_service filters
+    non_english_count = 0
+    english_sources = []
+    for source in elite_competitors:
+        text_sample = (source.get("content", "") or "")[:2000]
+        if text_sample and len(text_sample) >= 50:
+            non_latin = sum(1 for c in text_sample if ord(c) > 0x024F and not c.isspace() and not c.isdigit())
+            if (non_latin / len(text_sample)) > 0.20:
+                non_english_count += 1
+                logger.info(f"[LANG-FILTER] Rejected non-English source: {source.get('url', '')}")
+                continue
+        english_sources.append(source)
+    if non_english_count > 0:
+        logger.info(f"[LANG-FILTER] Removed {non_english_count} non-English sources in verify_sources()")
+    elite_competitors = english_sources
+
     # --- Phase 1: Pre-compute local signals (free, instant) ---
     local_signals = []
     for source in elite_competitors:

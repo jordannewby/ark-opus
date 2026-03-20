@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager, AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, InvalidRequestError, PendingRollbackError
 from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, migrate_domain_credibility_cache, migrate_fact_verification, migrate_style_rule_archive, SessionLocal
 from .models import Post, ResearchRun, UserStyleRule, Workspace, WriterRun, FactCitation
 from .schemas import (
@@ -523,10 +523,15 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 niche=normalize_niche(payload.niche),
                 readability_score=readability_scores,  # Save readability analytics
             )
+            # Clear any dirty transaction state from prior queries (e.g. claim verification DB errors)
+            try:
+                db.rollback()
+            except Exception:
+                pass
             db.add(post)
             try:
                 db.commit()
-            except OperationalError:
+            except (OperationalError, InvalidRequestError, PendingRollbackError):
                 db.rollback()
                 db.close()
                 db = SessionLocal()

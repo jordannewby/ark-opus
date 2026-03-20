@@ -796,19 +796,31 @@ def extract_article_claims(article_text: str) -> list[dict]:
         url = match.group(2)
         link_start = match.start()
 
-        # Get surrounding context (200 chars before the citation)
+        # Get surrounding context (300 chars before the citation)
         context_start = max(0, link_start - 300)
         context = article_text[context_start:link_start].strip()
 
         # Find the most recent sentence containing the citation
         sentences = re.split(r'(?<=[.!?])\s+', context)
         claim_text = sentences[-1] if sentences else context[-200:]
+        claim_stripped = claim_text.strip()
+
+        # Skip bare resource/reference links that aren't factual claims:
+        # e.g. "## Resources\n- [Link text](url)" or "- [Title](url)"
+        # A real claim has substantive text before the link, not just headings/list markers
+        if len(claim_stripped) < 20:
+            continue
+        # Skip if context is only headings, list markers, or link anchors (no prose)
+        context_no_markup = re.sub(r'[#\-*>\[\]():|\n]', ' ', claim_stripped).strip()
+        context_words = [w for w in context_no_markup.split() if len(w) > 2]
+        if len(context_words) < 4:
+            continue
 
         # Check if claim contains quantitative data
-        has_quant = bool(_QUANT_CLAIM_PATTERN.search(claim_text))
+        has_quant = bool(_QUANT_CLAIM_PATTERN.search(claim_stripped))
 
         claims.append({
-            "claim_text": claim_text.strip(),
+            "claim_text": claim_stripped,
             "citation_url": url.strip(),
             "citation_anchor": anchor.strip(),
             "has_quantitative_claim": has_quant,
@@ -993,12 +1005,15 @@ def cross_reference_claims(
     # Handle ambiguous claims (will be resolved by caller with LLM if needed)
     for amb in ambiguous_claims:
         # Default to warning (not fabricated) since source exists in map
+        # Gap 32: Include candidate facts so feedback can show writer what's actually available
+        candidate_texts = [fc.fact_text[:150] for fc in amb["candidate_facts"][:3]]
         details.append({
             "claim_text": amb["claim"]["claim_text"][:200],
             "status": "ambiguous",
             "matched_fact": None,
             "source_url": amb["claim"]["citation_url"],
             "reason": "Source in map but no clear fact match (needs LLM verification)",
+            "candidate_facts": candidate_texts,
         })
 
     passed = fabricated_count == 0
@@ -1107,28 +1122,53 @@ def format_claim_verification_feedback(verification_result: dict) -> str:
     """
     Format claim-level feedback for writer retries.
     Replaces generic 'cite more sources' with specific fix instructions.
+
+    Gap 32: Shows candidate facts so writer knows what to use instead of just removing claims.
+    Gap 33: Separates FABRICATED (URL not in map) from UNGROUNDED (URL exists, claim doesn't match).
     """
     lines = []
 
     fabricated = [d for d in verification_result["details"] if d["status"] == "fabricated"]
+    ungrounded = [d for d in verification_result["details"] if d["status"] == "ungrounded"]
     ambiguous = [d for d in verification_result["details"] if d["status"] == "ambiguous"]
 
     if fabricated:
-        lines.append("FABRICATED CITATIONS (must fix):")
+        lines.append("FABRICATED CITATIONS (URL not in citation map - must fix):")
         for i, d in enumerate(fabricated, 1):
             lines.append(f"  {i}. \"{d['claim_text'][:120]}...\"")
             lines.append(f"     Cites: {d['source_url']}")
             lines.append(f"     Problem: {d['reason']}")
-            lines.append(f"     Fix: Remove this claim or replace with a fact from the citation map.")
+            lines.append(f"     Fix: Remove this claim entirely OR replace with a fact from the citation map.")
+        lines.append("")
+
+    if ungrounded:
+        lines.append("UNGROUNDED CITATIONS (URL exists but claim doesn't match source facts - must fix):")
+        for i, d in enumerate(ungrounded, 1):
+            lines.append(f"  {i}. \"{d['claim_text'][:120]}...\"")
+            lines.append(f"     Cites: {d['source_url']}")
+            lines.append(f"     Problem: Your paraphrase doesn't match any verified fact from this source.")
+            # Gap 32: Show candidate facts so writer can use the correct ones
+            candidates = d.get("candidate_facts", [])
+            if candidates:
+                lines.append(f"     Available facts from this source:")
+                for j, fact in enumerate(candidates[:3], 1):
+                    lines.append(f"       {j}. \"{fact}\"")
+            lines.append(f"     Fix: Rewrite using one of the available facts above, or remove the claim.")
         lines.append("")
 
     if ambiguous:
-        lines.append("AMBIGUOUS CITATIONS (should verify):")
+        lines.append("AMBIGUOUS CITATIONS (needs clarification):")
         for i, d in enumerate(ambiguous, 1):
             lines.append(f"  {i}. \"{d['claim_text'][:120]}...\"")
             lines.append(f"     Cites: {d['source_url']}")
             lines.append(f"     Problem: {d['reason']}")
-            lines.append(f"     Fix: Ensure the cited source actually states this specific claim.")
+            # Gap 32: Show candidate facts for ambiguous claims too
+            candidates = d.get("candidate_facts", [])
+            if candidates:
+                lines.append(f"     Available facts from this source:")
+                for j, fact in enumerate(candidates[:3], 1):
+                    lines.append(f"       {j}. \"{fact}\"")
+            lines.append(f"     Fix: Rewrite to closely match one of the available facts above.")
         lines.append("")
 
     # Summary
@@ -1136,11 +1176,12 @@ def format_claim_verification_feedback(verification_result: dict) -> str:
     verified = verification_result["verified"]
     fab = verification_result["fabricated"]
     amb = verification_result.get("ambiguous", 0)
+    ung = verification_result.get("ungrounded", 0)
 
-    lines.append(f"CLAIM VERIFICATION: {verified}/{total} verified, {fab} fabricated, {amb} ambiguous")
+    lines.append(f"CLAIM VERIFICATION: {verified}/{total} verified, {fab} fabricated, {ung} ungrounded, {amb} ambiguous")
 
-    if fab > 0:
-        lines.append("STATUS: FAILED - Remove or fix all fabricated citations before retry.")
+    if fab > 0 or ung > 0:
+        lines.append("STATUS: FAILED - Fix all fabricated and ungrounded citations before retry.")
     else:
         lines.append("STATUS: PASSED")
 

@@ -84,9 +84,9 @@ async def test_generation():
                     print(f"[{elapsed}s] PHASE 1.5 START: Verifying source credibility...")
                 elif evt == "phase1_5_complete":
                     phase_times["p15_end"] = elapsed
-                    verified = data.get("verified", 0)
-                    rejected = data.get("rejected", 0)
-                    avg = data.get("avg_score", 0)
+                    verified = data.get("verified_count", 0)
+                    rejected = data.get("rejected_count", 0)
+                    avg = data.get("avg_credibility", 0)
                     print(f"[{elapsed}s] PHASE 1.5 COMPLETE: verified={verified}, rejected={rejected}, avg={avg}")
                 elif evt == "fact_verification_start":
                     print(f"[{elapsed}s] FACT VERIFICATION START: Verifying extracted facts...")

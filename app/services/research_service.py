@@ -42,6 +42,80 @@ EXA_EXCLUDE_DOMAINS = [
     "forbes.com/sites",    # Contributor network (not editorial staff)
 ]
 
+# Gap 27: Non-English TLD exclusions + content filters
+# These country-code TLDs consistently return non-English content from Exa
+NON_ENGLISH_TLDS = {
+    ".kr", ".cn", ".jp", ".ru", ".tw", ".th", ".vn", ".id",
+    ".br", ".pl", ".cz", ".sk", ".hu", ".ro", ".bg", ".rs",
+    ".ua", ".by", ".kz", ".ir", ".sa", ".ae", ".eg", ".tr",
+}
+
+
+def _is_non_english_url(url: str) -> bool:
+    """Check if URL's TLD suggests non-English content."""
+    try:
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.lower()
+        return any(domain.endswith(tld) for tld in NON_ENGLISH_TLDS)
+    except Exception:
+        return False
+
+
+def _has_excessive_non_latin(text: str, threshold: float = 0.20) -> bool:
+    """Reject content with >20% non-Latin characters (Korean, Chinese, Japanese, Cyrillic, etc.)."""
+    if not text or len(text) < 50:
+        return False
+    sample = text[:2000]
+    non_latin = sum(1 for c in sample if ord(c) > 0x024F and not c.isspace() and not c.isdigit())
+    return (non_latin / len(sample)) > threshold
+
+
+def _filter_non_english_results(results: list[dict], label: str = "") -> list[dict]:
+    """Filter out non-English results by URL TLD and content character analysis."""
+    filtered = []
+    removed = 0
+    for r in results:
+        url = r.get("url", "")
+        if _is_non_english_url(url):
+            removed += 1
+            continue
+        # Check content/snippet/title for non-Latin chars
+        text_sample = r.get("content", "") or r.get("snippet", "") or r.get("title", "")
+        if _has_excessive_non_latin(text_sample):
+            removed += 1
+            continue
+        filtered.append(r)
+    if removed > 0:
+        from ..settings import DEBUG_MODE
+        if DEBUG_MODE:
+            print(f"[LANG-FILTER]{' ' + label if label else ''} Removed {removed} non-English results")
+    return filtered
+
+def _keyword_relevance_score(keyword: str, results: list[dict]) -> int:
+    """
+    Count how many results are topically relevant to the keyword.
+    Tokenizes slug-style keywords (e.g. "ai-observability-platforms" → {"ai", "observability", "platforms"})
+    and checks title + first 500 chars of content for token matches.
+    """
+    tokens = set(keyword.lower().replace("-", " ").split())
+    tokens = {t for t in tokens if len(t) >= 3}  # Drop short noise words
+    if not tokens:
+        return len(results)  # Can't assess, assume all relevant
+
+    # Require majority of tokens to match (stricter than single-token match)
+    # For 1 token: need 1; for 2 tokens: need 2 (both); for 3+: need 2
+    min_match = max(1, min(2, len(tokens)))
+    relevant_count = 0
+    for r in results:
+        searchable = (
+            r.get("title", "") + " " + (r.get("content", "") or r.get("snippet", ""))[:500]
+        ).lower()
+        matched = sum(1 for t in tokens if t in searchable)
+        if matched >= min_match:
+            relevant_count += 1
+    return relevant_count
+
+
 # High-authority domains to prioritize (organized by category and niche)
 EXA_INCLUDE_DOMAINS = {
     # General authority (full domains only — bare TLDs like "edu"/"gov" cause Exa 400 errors)
@@ -553,10 +627,13 @@ class ResearchAgent:
             print(f"[DEBUG] Ephemeral MCP Subprocess terminated cleanly.\n")
 
         # Step C.5: Exa Elite Discovery Supplement (ensures Phase 1.5 always has enough sources)
-        # If R1 found fewer than 5 sources, supplement with niche-filtered elite discovery
-        if len(exa_results) < 5:
+        # Layer 1C: Also trigger when we have enough sources but too few are keyword-relevant
+        relevant_count = _keyword_relevance_score(keyword, exa_results)
+        needs_supplement = len(exa_results) < 5 or relevant_count < 3
+
+        if needs_supplement:
             if DEBUG_MODE:
-                print(f"[DEBUG] R1 found only {len(exa_results)} sources, supplementing with _exa_elite_discovery()...")
+                print(f"[DEBUG] Supplement needed: {len(exa_results)} sources, {relevant_count} relevant. Running _exa_elite_discovery()...")
 
             try:
                 existing_urls = {r.get("url", "") for r in exa_results}
@@ -574,6 +651,26 @@ class ResearchAgent:
                     print(f"[DEBUG] Exa elite_discovery supplement failed (non-critical): {e}")
                 if not exa_results:
                     exa_results = []  # Graceful degradation only if we had nothing
+
+            # Layer 1C: If still too few relevant, try broad backfill (no niche filter)
+            relevant_after = _keyword_relevance_score(keyword, exa_results)
+            if relevant_after < 3:
+                if DEBUG_MODE:
+                    print(f"[DEBUG] Still only {relevant_after} relevant after elite_discovery, trying broad backfill...")
+                try:
+                    existing_urls = {r.get("url", "") for r in exa_results}
+                    backfill_results = await self.backfill_search(
+                        keyword=keyword, niche=niche,
+                        exclude_domains=list(existing_urls)
+                    )
+                    new_backfill = [s for s in backfill_results if s.get("url", "") not in existing_urls]
+                    exa_results.extend(new_backfill)
+                    if DEBUG_MODE:
+                        final_relevant = _keyword_relevance_score(keyword, exa_results)
+                        print(f"[DEBUG] Backfill added {len(new_backfill)} sources. Now {final_relevant} relevant out of {len(exa_results)} total.")
+                except Exception as e:
+                    if DEBUG_MODE:
+                        print(f"[DEBUG] Broad backfill failed (non-critical): {e}")
 
         # Step D: Data Formatting
         kw_data = mcp_results.get("keywords")
@@ -852,12 +949,61 @@ class ResearchAgent:
                         "exa_score": metadata.get("score"),  # From search step
                     })
                 
+                # Gap 27: Filter non-English results
+                elite_articles = _filter_non_english_results(elite_articles, "elite_discovery")
+
+                # Layer 1B: Keyword-relevance fallback
+                # If niche filter returned mostly off-topic results, retry WITHOUT include_domains
+                if include_domains:
+                    relevant_count = _keyword_relevance_score(keyword, elite_articles)
+                    if relevant_count < 3 and DEBUG_MODE:
+                        print(f"[RELEVANCE] Only {relevant_count}/{len(elite_articles)} results relevant to '{keyword}', trying unfiltered search...")
+                    if relevant_count < 3:
+                        try:
+                            unfilt_payload = {
+                                "query": prompt,
+                                "type": "auto",
+                                "num_results": 10,
+                                "exclude_domains": EXA_EXCLUDE_DOMAINS,
+                                "start_published_date": two_years_ago,
+                            }
+                            # No include_domains — search broadly
+                            unfilt_resp = await client.post("https://api.exa.ai/search", headers=headers, json=unfilt_payload)
+                            unfilt_resp.raise_for_status()
+                            unfilt_results = unfilt_resp.json().get("results", [])
+
+                            existing_urls = {a["url"] for a in elite_articles}
+                            new_ids = [r["id"] for r in unfilt_results if r.get("id") and r.get("url", "") not in existing_urls]
+
+                            if new_ids:
+                                unfilt_meta = {r.get("url", ""): {"score": r.get("score"), "published_date": r.get("publishedDate")} for r in unfilt_results}
+                                cont_resp = await client.post("https://api.exa.ai/contents", headers=headers, json={"ids": new_ids[:10], "text": {"max_characters": 25000}})
+                                cont_resp.raise_for_status()
+                                for article in cont_resp.json().get("results", []):
+                                    a_url = article.get("url", "")
+                                    meta = unfilt_meta.get(a_url, {})
+                                    elite_articles.append({
+                                        "title": article.get("title", ""),
+                                        "url": a_url,
+                                        "content": article.get("text", "")[:20000],
+                                        "published_date": meta.get("published_date"),
+                                        "author": article.get("author"),
+                                        "exa_score": meta.get("score"),
+                                    })
+                                elite_articles = _filter_non_english_results(elite_articles, "elite_unfiltered")
+                                if DEBUG_MODE:
+                                    new_relevant = _keyword_relevance_score(keyword, elite_articles)
+                                    print(f"[RELEVANCE] After unfiltered fallback: {new_relevant}/{len(elite_articles)} relevant")
+                        except Exception as e:
+                            if DEBUG_MODE:
+                                print(f"[RELEVANCE] Unfiltered fallback failed (non-critical): {e}")
+
                 if DEBUG_MODE:
                     total_chars = sum(len(a["content"]) for a in elite_articles)
                     print(f"[DEBUG] Exa Full-Text Audit complete: {len(elite_articles)} articles, {total_chars} total chars")
-                
+
                 return elite_articles
-                
+
             except Exception as e:
                 print(f"Exa.ai API Error: {e}")
                 return []
@@ -940,6 +1086,9 @@ class ResearchAgent:
                         "author": article.get("author"),
                         "exa_score": metadata.get("score"),  # From search step
                     })
+
+                # Gap 27: Filter non-English results
+                elite_articles = _filter_non_english_results(elite_articles, "backfill")
 
                 if DEBUG_MODE:
                     print(f"[BACKFILL] Found {len(elite_articles)} backfill articles")
@@ -1035,6 +1184,9 @@ class ResearchAgent:
                         "exa_score": metadata.get("score"),  # From search step
                     })
 
+                # Gap 27: Filter non-English results
+                elite_articles = _filter_non_english_results(elite_articles, "backfill_niche")
+
                 if DEBUG_MODE:
                     print(f"[BACKFILL-NICHE] Found {len(elite_articles)} niche-filtered backfill articles")
 
@@ -1104,6 +1256,9 @@ class ResearchAgent:
                         "author": r.get("author"),
                         "exa_score": r.get("score"),
                     })
+
+                # Gap 27: Filter non-English results
+                results = _filter_non_english_results(results, "scout")
 
                 if DEBUG_MODE:
                     filter_info = f" with filters: include={include_domains}, exclude={exclude_domains}, after={start_published_date}" if any([include_domains, exclude_domains, start_published_date]) else ""
@@ -1205,6 +1360,9 @@ class ResearchAgent:
                         "author": r.get("author"),
                         "exa_score": r.get("score"),
                     })
+
+                # Gap 27: Filter non-English results
+                results = _filter_non_english_results(results, "find_similar")
 
                 if DEBUG_MODE:
                     print(f"[DEBUG] exa_find_similar: Found {len(results)} similar articles for '{url}'")

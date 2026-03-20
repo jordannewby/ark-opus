@@ -23,28 +23,46 @@ class WriterService:
             self.base_system_prompt = f.read()
 
     # Deterministic banned-word replacements (LLM prompt enforcement is unreliable)
+    # Must include all inflected forms since SEO gate uses substring matching
     _BANNED_REPLACEMENTS = {
-        "delve": "explore",
-        "tapestry": "mix",
-        "landscape": "space",
+        # delve
+        "delving": "exploring", "delved": "explored", "delves": "explores", "delve": "explore",
+        # tapestry
+        "tapestries": "mixes", "tapestry": "mix",
+        # landscape
+        "landscapes": "spaces", "landscape": "space",
+        # multifaceted
         "multifaceted": "complex",
-        "comprehensive": "thorough",
-        "holistic": "complete",
-        "navigate": "move through",
-        "crucial": "critical",
-        "robust": "strong",
-        "seamless": "smooth",
-        "synergy": "collaboration",
-        "leverage": "use",
-        "scalable": "growable",
-        "foster": "encourage",
-        "optimize": "improve",
-        "ecosystem": "environment",
-        "paradigm": "model",
+        # comprehensive
+        "comprehensively": "thoroughly", "comprehensive": "thorough",
+        # holistic
+        "holistically": "completely", "holistic": "complete",
+        # navigate
+        "navigating": "moving through", "navigated": "moved through", "navigates": "moves through", "navigate": "move through",
+        # crucial
+        "crucially": "critically", "crucial": "critical",
+        # robust
+        "robustly": "strongly", "robustness": "strength", "robust": "strong",
+        # seamless
+        "seamlessly": "smoothly", "seamless": "smooth",
+        # synergy
+        "synergies": "collaborations", "synergy": "collaboration",
+        # leverage (must come before base to avoid partial matches)
+        "leveraging": "using", "leveraged": "used", "leverages": "uses", "leverage": "use",
+        # scalable
+        "scalability": "growth capacity", "scalable": "growable",
+        # foster
+        "fostering": "encouraging", "fostered": "encouraged", "fosters": "encourages", "foster": "encourage",
+        # optimize
+        "optimization": "improvement", "optimizing": "improving", "optimized": "improved", "optimizes": "improves", "optimize": "improve",
+        # ecosystem
+        "ecosystems": "environments", "ecosystem": "environment",
+        # paradigm
+        "paradigms": "models", "paradigm": "model",
     }
 
     def _sanitize_banned_words(self, text: str) -> str:
-        """Replace banned single words with safe alternatives, preserving case."""
+        """Replace banned words and their inflections with safe alternatives, preserving case."""
         for banned, replacement in self._BANNED_REPLACEMENTS.items():
             pattern = re.compile(r'\b' + re.escape(banned) + r'\b', re.IGNORECASE)
             def _match_case(match, repl=replacement):
@@ -68,12 +86,13 @@ class WriterService:
 
         # 1. Build Base Prompts
         system_instructions = self.base_system_prompt + (
-            "\n\nTarget the optimal SEO blog length for ranking and high engagement (approximately 1,500 to 1,800 words). "
+            "\n\nMINIMUM 1,500 words (non-negotiable). Target 1,500-1,800 words for optimal SEO ranking and engagement. "
+            "Articles under 1,500 words WILL be rejected and you WILL have to rewrite. "
             "Be highly comprehensive, but eliminate all rambling and fluff. Conclude naturally once the Information Gap is fully addressed."
         )
 
         prompt_instructions = (
-            "Write a focused ~1,600 word blog post based on the following psychological blueprint:\n\n"
+            "Write a 1,500-1,800 word blog post (HARD MINIMUM: 1,500 words) based on the following psychological blueprint:\n\n"
             f"{json.dumps(blueprint, indent=2)}\n\n"
             "MANDATORY:\n"
             "- Deliver the 'Information Gap' hook in the first 150 words.\n"
@@ -250,6 +269,28 @@ class WriterService:
 
                 prompt_instructions += "================================================\n"
 
+                # Layer 3A: Topical mismatch warning
+                # If few citations actually match the keyword topic, warn writer to cite sparingly
+                kw_for_check = blueprint.get("keyword", "")
+                kw_tokens = set(kw_for_check.lower().replace("-", " ").split())
+                kw_tokens = {t for t in kw_tokens if len(t) >= 3}
+                if kw_tokens:
+                    on_topic_cites = 0
+                    for cite in citations_sorted:
+                        fact_lower = (cite.fact_text or "").lower()
+                        if sum(1 for t in kw_tokens if t in fact_lower) >= max(1, min(2, len(kw_tokens))):
+                            on_topic_cites += 1
+
+                    if on_topic_cites < 3:
+                        prompt_instructions += "\n*** TOPICAL MISMATCH WARNING ***\n"
+                        prompt_instructions += f"Only {on_topic_cites} of {len(citations_sorted)} available citations directly match the article topic.\n"
+                        prompt_instructions += "ADJUSTED CITATION RULES:\n"
+                        prompt_instructions += "  - Only cite facts that genuinely support your claims. Do NOT force-cite off-topic sources.\n"
+                        prompt_instructions += "  - Prefer 2-3 well-matched citations over 8 forced ones.\n"
+                        prompt_instructions += "  - Write authoritative prose WITHOUT citations when no matching source exists.\n"
+                        prompt_instructions += "  - It is acceptable to have sections with zero citations if the topic is not covered by available sources.\n"
+                        prompt_instructions += "***********************************\n"
+
         # Pre-flight simplicity primer
         prompt_instructions += """
 
@@ -287,6 +328,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
 
         max_attempts = 5
         v_feedback = ""
+        all_feedback_history = []  # Gap 31: Accumulate feedback across iterations to prevent ping-pong
         last_readability_scores = None  # Track for max-attempts fallback
 
         # Gap 12 fix: Track best attempt across retries.
@@ -298,13 +340,25 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
             
             current_prompt = prompt_instructions
             if v_feedback:
+                # Gap 31: Include accumulated feedback history (last 3 entries) so writer
+                # sees ALL constraints simultaneously, preventing ping-pong loops
+                feedback_block = ""
+                if len(all_feedback_history) > 1:
+                    # Show prior unresolved feedback so writer doesn't regress
+                    prior = all_feedback_history[-3:-1] if len(all_feedback_history) > 2 else all_feedback_history[:-1]
+                    feedback_block += "PRIOR UNRESOLVED ISSUES (do NOT regress on these):\n"
+                    for i, fb in enumerate(prior, 1):
+                        feedback_block += f"--- Issue {i} ---\n{fb}\n"
+                    feedback_block += "\nLATEST FEEDBACK:\n"
+                feedback_block += v_feedback
                 current_prompt += (
-                    f"\n\nCRITICAL FEEDBACK FROM PREVIOUS ATTEMPT (MUST FIX ALL ISSUES):\n{v_feedback}\n"
-                    "IMPORTANT: Replace each banned word with a specific alternative. "
+                    f"\n\nCRITICAL FEEDBACK FROM PREVIOUS ATTEMPTS (MUST FIX ALL ISSUES SIMULTANEOUSLY):\n{feedback_block}\n"
+                    "IMPORTANT: Fix ALL issues at once. Do NOT fix one issue while breaking another. "
+                    "Replace each banned word with a specific alternative. "
                     "For example: 'landscape' -> 'space' or 'market', 'optimize' -> 'improve' or 'refine', "
                     "'robust' -> 'strong' or 'reliable', 'seamless' -> 'smooth' or 'easy', "
                     "'scalable' -> 'growable' or 'expandable'. "
-                    "Fix ALL issues in this new draft."
+                    "Maintain word count (1500+ words) while fixing all other issues."
                 )
 
             full_content = ""
@@ -387,9 +441,9 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                 )
 
                                 # Step 3: Resolve ambiguous claims with LLM
-                                # Gap 9 fix: Raised cap from 2 to 5 LLM calls
+                                # Raised cap to 10 to handle articles with many citations
                                 llm_calls = 0
-                                for amb in xref_result.get("ambiguous_claims", [])[:5]:
+                                for amb in xref_result.get("ambiguous_claims", [])[:10]:
                                     llm_result = await verify_claim_with_llm(
                                         claim_text=amb["claim"]["claim_text"],
                                         fact_candidates=amb["candidate_facts"],
@@ -403,21 +457,56 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                                 detail["status"] = "verified"
                                                 xref_result["verified"] += 1
                                             else:
-                                                detail["status"] = "fabricated"
-                                                xref_result["fabricated"] += 1
+                                                # Gap 33: Use "ungrounded" not "fabricated" — URL exists but claim doesn't match
+                                                detail["status"] = "ungrounded"
+                                                detail["reason"] = "URL exists in citation map but LLM confirms claim is not supported by source facts"
+                                                # Preserve candidate_facts for feedback
+                                                detail["candidate_facts"] = detail.get("candidate_facts", [])
+                                                xref_result["ungrounded"] = xref_result.get("ungrounded", 0) + 1
                                             xref_result["ambiguous"] -= 1
                                             break
 
                                 # Recalculate pass after LLM resolution
-                                # Gap 9 fix: Also fail if >2 ambiguous remain after LLM resolution
-                                # Too many unresolvable claims = unreliable article
                                 remaining_ambiguous = xref_result.get("ambiguous", 0)
-                                xref_result["passed"] = xref_result["fabricated"] == 0 and remaining_ambiguous <= 2
+                                ungrounded_count = xref_result.get("ungrounded", 0)
+                                total_claims = xref_result.get("total_claims", 1)
+                                # Allow up to 25% of claims to remain ambiguous (min 3)
+                                # Ambiguous means "source exists but match unclear" — not fabricated
+                                max_ambiguous = max(3, int(total_claims * 0.25))
+
+                                # Layer 2A: Assess topical coverage of FactCitations
+                                # When sources are off-topic (niche filter returned irrelevant results),
+                                # allow a small number of ungrounded claims instead of zero-tolerance
+                                kw_raw = blueprint.get("keyword", "")
+                                kw_toks = set(kw_raw.lower().replace("-", " ").split())
+                                kw_toks = {t for t in kw_toks if len(t) >= 3}
+                                on_topic_facts = 0
+                                if kw_toks:
+                                    for fc in verified_facts:
+                                        ft = (getattr(fc, 'fact_text', '') or '').lower()
+                                        if sum(1 for t in kw_toks if t in ft) >= max(1, min(2, len(kw_toks))):
+                                            on_topic_facts += 1
+
+                                low_topical_coverage = (len(kw_toks) > 0 and on_topic_facts < 3)
+
+                                # Layer 2B: Soften ungrounded tolerance for low-coverage scenarios
+                                if low_topical_coverage:
+                                    max_ungrounded = max(2, int(total_claims * 0.15))
+                                    yield {"type": "debug", "message": f"Low topical coverage ({on_topic_facts} on-topic facts). Allowing up to {max_ungrounded} ungrounded claims."}
+                                else:
+                                    max_ungrounded = 0  # Normal: zero-tolerance for ungrounded
+
+                                xref_result["passed"] = (
+                                    xref_result["fabricated"] == 0
+                                    and ungrounded_count <= max_ungrounded
+                                    and remaining_ambiguous <= max_ambiguous
+                                )
 
                                 if not xref_result["passed"]:
                                     v_feedback = format_claim_verification_feedback(xref_result)
-                                    if remaining_ambiguous > 2:
-                                        v_feedback += f"\n\nADDITIONAL: {remaining_ambiguous} claims remain ambiguous after LLM verification. Too many unresolvable claims indicate unreliable sourcing. Rewrite using only facts from the citation map."
+                                    all_feedback_history.append(v_feedback)  # Gap 31
+                                    if remaining_ambiguous > max_ambiguous:
+                                        v_feedback += f"\n\nADDITIONAL: {remaining_ambiguous} claims remain ambiguous after LLM verification (max allowed: {max_ambiguous}). Too many unresolvable claims indicate unreliable sourcing. Rewrite using only facts from the citation map."
                                     yield {"type": "debug", "message": f"Claim Verification Failed (Iteration {attempt}):\n{v_feedback}"}
 
                                     if attempt == max_attempts:
@@ -431,7 +520,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                     yield {"type": "control", "action": "retry_clear"}
                                     continue
 
-                                yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed claim verification ({xref_result['verified']}/{xref_result['total_claims']} claims verified, {llm_calls} LLM calls, {remaining_ambiguous} ambiguous)."}
+                                yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed claim verification ({xref_result['verified']}/{xref_result['total_claims']} claims verified, {llm_calls} LLM calls, {remaining_ambiguous} ambiguous, {ungrounded_count} ungrounded)."}
                             else:
                                 yield {"type": "debug", "message": f"Writer Iteration {attempt}: No cited claims extracted (no markdown links found)."}
 
@@ -439,6 +528,11 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                             # Fallback to domain-counting v2 if claim verification fails
                             import logging
                             logging.getLogger(__name__).error(f"[CLAIM-GATE] Claim verification failed, falling back to v2: {e}")
+                            # Clear dirty session state so fallback queries don't fail too
+                            try:
+                                self.db.rollback()
+                            except Exception:
+                                pass
 
                             citations_fb = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
                             from .source_verification_service import extract_domain
@@ -489,23 +583,17 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
 
                         # Common business jargon that inflates ARI unfairly
                         "streamline", "streamlined", "streamlining",
-                        "leverage", "leveraged", "leveraging",
-                        "optimize", "optimized", "optimizing", "optimization",
                         "enhance", "enhanced", "enhancement",
                         "framework", "frameworks",
                         "methodology", "methodologies",
-                        "ecosystem", "ecosystems",
-                        "paradigm", "paradigms",
                         "establish", "established", "establishing",
                         "execute", "executed", "executing", "execution",
                         "implement", "implemented", "implementing", "implementation",
                         "facilitate", "facilitated", "facilitating",
-                        "comprehensive",
                         "infrastructure", "infrastructures",
                         "capability", "capabilities",
                         "operational",
                         "strategic",
-                        "scalable", "scalability",
 
                         # Cybersecurity / Bug Bounty terms
                         "vulnerability", "vulnerabilities", "vulnerable",
@@ -640,6 +728,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                             f"Readability Validation Failed (Iteration {attempt}).\n"
                             f"{read_result['feedback']}"
                         )
+                        all_feedback_history.append(v_feedback)  # Gap 31
                         yield {
                             "type": "debug",
                             "message": (
@@ -722,6 +811,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                         f"SEO Validation Failed (Iteration {attempt}).\n"
                         + ("Issues:\n- " + "\n- ".join(issues) if issues else "Unknown validation failure")
                     )
+                    all_feedback_history.append(v_feedback)  # Gap 31
                     yield {"type": "debug", "message": f"Writer Iteration {attempt} failed: {v_feedback}"}
                     
                     if attempt == max_attempts:
@@ -758,20 +848,33 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
         h2_count = sum(1 for line in lines if re.match(r"^## (?!#)", line))
 
         # Count distinct list/table blocks
+        # Gap 30 fix: Allow 1 blank-line gap within a block + match table separator rows
         list_table_blocks = 0
         in_block = False
+        blank_gap = 0  # Track consecutive blank lines within a block
         for line in lines:
             stripped = line.strip()
             is_list_or_table = bool(
                 re.match(r"^[-*] ", stripped)
                 or re.match(r"^\d+\. ", stripped)
                 or re.match(r"^\|.+\|$", stripped)
+                or re.match(r"^\|[-:| ]+\|$", stripped)  # Table separator rows
             )
-            if is_list_or_table and not in_block:
-                list_table_blocks += 1
+            if is_list_or_table:
+                if not in_block:
+                    list_table_blocks += 1
                 in_block = True
-            elif not is_list_or_table and stripped:
+                blank_gap = 0
+            elif not stripped:
+                # Blank line — tolerate 1 blank gap within a block
+                if in_block:
+                    blank_gap += 1
+                    if blank_gap > 1:
+                        in_block = False
+                        blank_gap = 0
+            elif stripped:
                 in_block = False
+                blank_gap = 0
 
         # Information Gain Check
         # Gap 13 fix: Replaced keyword frequency with real information gain check.

@@ -350,10 +350,21 @@ def get_domain_tier_score(domain: str) -> tuple[int, int]:
                     return (tier_level, score)
 
         # TLD wildcard match: "anything.gov" matches ".gov"
+        # Gap 28 fix: For .gov/.edu/.mil, require the LAST TLD segment to match exactly.
+        # This prevents "tsinghua.edu.cn" from matching ".edu" (last segment is .cn).
+        # Country-code variants (.ac.uk, gov.uk) keep standard endswith matching.
         for tld_pattern in tier_set:
             if tld_pattern.startswith("."):  # TLD wildcard
-                if domain.endswith(tld_pattern):
-                    return (tier_level, score)
+                bare_tld = tld_pattern[1:]  # e.g. "gov", "edu", "mil"
+                if bare_tld in ("gov", "edu", "mil"):
+                    # Strict: domain's final TLD segment must be exactly this
+                    last_segment = domain.rsplit(".", 1)[-1] if "." in domain else domain
+                    if last_segment == bare_tld:
+                        return (tier_level, score)
+                else:
+                    # Standard endswith for .ac.uk etc.
+                    if domain.endswith(tld_pattern):
+                        return (tier_level, score)
 
     # Unknown domain
     return (0, 0)
