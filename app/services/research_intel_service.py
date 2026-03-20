@@ -13,9 +13,13 @@ import re
 from collections import Counter
 from difflib import SequenceMatcher
 
+import httpx
 from sqlalchemy.orm import Session
 
 from ..models import NichePlaybook, ResearchRun
+from ..settings import DEEPSEEK_API_KEY
+
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
 
 class ResearchIntelService:
@@ -131,9 +135,7 @@ class ResearchIntelService:
         }
 
     async def _distill_with_flash(self, niche: str, runs: list) -> dict:
-        """Use Gemini Flash to distill run telemetry into a structured playbook (~$0.001)."""
-        from ..settings import GEMINI_API_KEY
-
+        """Use DeepSeek V3 to distill run telemetry into a structured playbook (~$0.0001)."""
         run_summaries = []
         for run in runs[:20]:
             run_summaries.append({
@@ -163,13 +165,28 @@ class ResearchIntelService:
         )
 
         try:
-            from google import genai
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            response = await client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
-            text = response.text.strip()
+            headers = {
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": "You output valid JSON objects ONLY."},
+                    {"role": "user", "content": prompt}
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.3,
+            }
+
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
+                resp.raise_for_status()
+                text = resp.json()["choices"][0]["message"]["content"].strip()
+
             text = re.sub(r'^```(?:json)?\s*', '', text)
             text = re.sub(r'\s*```$', '', text)
             return json.loads(text)
         except Exception as e:
-            print(f"[ResearchIntel] Flash distillation failed: {e}. Using heuristic fallback.")
+            print(f"[ResearchIntel] DeepSeek distillation failed: {e}. Using heuristic fallback.")
             return self._compute_heuristic_playbook(runs)

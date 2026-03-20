@@ -31,12 +31,32 @@ class PsychologyAgent:
             "You are to generate a psychological blueprint based on the following research data.\n\n"
             "CRITICAL CONTEXT:\n"
             f"- Information Gap: {research_data.get('information_gap', 'None found')}\n"
-            f"- Semantic Entities: {', '.join(research_data.get('semantic_entities', []))}\n\n"
-            "FULL RESEARCH JSON:\n"
+            f"- Semantic Entities: {', '.join(research_data.get('semantic_entities', []))}\n"
+        )
+
+        # Gap 15: Inject fact category distribution so blueprint designs around available evidence
+        fact_cats = research_data.get("fact_categories")
+        if fact_cats:
+            prompt_instructions += (
+                f"- Fact Evidence Profile: {fact_cats.get('total_facts', 0)} verified facts "
+                f"(dominant type: {fact_cats.get('dominant_type', 'unknown')}). "
+                f"Distribution: {json.dumps(fact_cats.get('distribution', {}))}\n"
+            )
+            if fact_cats.get("has_stats"):
+                prompt_instructions += "  * Statistics available -- use data-driven hooks and agitation points\n"
+            if fact_cats.get("has_case_studies"):
+                prompt_instructions += "  * Case studies available -- leverage success/failure narratives\n"
+            if fact_cats.get("has_expert_quotes"):
+                prompt_instructions += "  * Expert quotes available -- use authority-based persuasion\n"
+
+        prompt_instructions += (
+            "\nFULL RESEARCH JSON:\n"
             f"{json.dumps(research_data, indent=2)}\n\n"
             "Ensure the output is STRICTLY a valid JSON object matching the required keys. "
             "Do NOT include markdown formatting like ```json or ```. Return ONLY the raw JSON object.\n"
-            "Your outline_structure must map out the SEO headings (H2/H3) based on the PAS flow (Problem, Agitation, Solution)."
+            "Your outline_structure must use H2 headings (## prefix) for ALL main sections — "
+            "the writer requires at least 5 H2 sections. Reserve H3 for sub-sections WITHIN an H2 only. "
+            "Structure headings based on the PAS flow (Problem, Agitation, Solution)."
         )
 
         headers = {
@@ -90,5 +110,19 @@ class PsychologyAgent:
         blueprint["entities"] = research_data.get("semantic_entities", [])
         blueprint["semantic_keywords"] = research_data.get("people_also_ask", [])
         blueprint["content_patterns"] = research_data.get("content_patterns")  # Optional: SERP structure insights
+        blueprint["information_gap"] = research_data.get("information_gap", "")
+
+        # Normalize: ensure at least 5 H2 headings in outline
+        outline = blueprint.get("outline_structure", [])
+        h2_count = sum(1 for s in outline if isinstance(s, dict) and s.get("heading", "").startswith("H2"))
+        if h2_count < 5:
+            for section in outline:
+                if not isinstance(section, dict):
+                    continue
+                heading = section.get("heading", "")
+                if heading.startswith("H3:"):
+                    section["heading"] = "H2:" + heading[3:]
+                elif heading and not heading.startswith("H2"):
+                    section["heading"] = "H2: " + heading
 
         return blueprint

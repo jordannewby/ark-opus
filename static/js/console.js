@@ -15,6 +15,7 @@ const els = {
     scoreText: document.getElementById('score-text'),
     agentNodes: {
         research: document.getElementById('agent-research'),
+        verify: document.getElementById('agent-verify'),
         psychology: document.getElementById('agent-psychology'),
         writer: document.getElementById('agent-writer')
     },
@@ -49,6 +50,7 @@ function updateAgentUI(activeNode) {
         } else {
             let label = 'Working...';
             if (activeNode === 'research') label = 'Agent: Researching';
+            if (activeNode === 'verify') label = 'Agent: Verifying Facts';
             if (activeNode === 'psychology') label = 'Agent: Strategizing';
             if (activeNode === 'writer') label = 'Agent: Writing Article';
             
@@ -143,29 +145,45 @@ function updateSEOAudit(content) {
 
     // 1. Calculate Metrics (aligned with backend writer_service.verify_seo_score)
     const wordCount = content.split(/\s+/).length;
-    const h1Count = (content.match(/^# [^#]/gm) || []).length;
-    const h2Count = (content.match(/^## /gm) || []).length;
+    const h1Count = (content.match(/^# (?!#)/gm) || []).length;
+    const h2Count = (content.match(/^## (?!#)/gm) || []).length;
 
-    // 2. Detect "Data Blocks" (Tables or Lists) — backend requires >= 3
-    const tableCount = (content.match(/^\|.*\|/gm) || []).length > 1 ? 1 : 0;
-    const listCount = (content.match(/^[*-] /gm) || []).length;
-    const dataBlockCount = tableCount + Math.floor(listCount / 3);
+    // 2. Count distinct list/table blocks (matches backend writer_service.py state machine)
+    const lines = content.split('\n');
+    let dataBlockCount = 0;
+    let inBlock = false;
+    for (const line of lines) {
+        const stripped = line.trim();
+        const isListOrTable = /^[-*] /.test(stripped) ||
+                              /^\d+\. /.test(stripped) ||
+                              /^\|.+\|$/.test(stripped);
+        if (isListOrTable && !inBlock) {
+            dataBlockCount++;
+            inBlock = true;
+        } else if (!isListOrTable && stripped) {
+            inBlock = false;
+        }
+    }
 
     // 3. Scoring aligned with backend validation gates
     let score = 0;
     const lengthOk = wordCount >= 1500;
+    const h1Ok = h1Count === 1;
     const h2Ok = h2Count >= 5;
     const dataOk = dataBlockCount >= 3;
 
-    // Weight: 40pts length, 30pts structure, 30pts data blocks
-    if (lengthOk) score += 40;
-    else score += Math.min((wordCount / 1500) * 40, 39);
+    // Weight: 25pts length, 25pts h1, 25pts structure, 25pts data blocks
+    if (lengthOk) score += 25;
+    else score += Math.min((wordCount / 1500) * 25, 24);
 
-    if (h2Ok) score += 30;
-    else score += Math.min((h2Count / 5) * 30, 29);
+    if (h1Ok) score += 25;
+    else score += 0;
 
-    if (dataOk) score += 30;
-    else score += Math.min((dataBlockCount / 3) * 30, 29);
+    if (h2Ok) score += 25;
+    else score += Math.min((h2Count / 5) * 25, 24);
+
+    if (dataOk) score += 25;
+    else score += Math.min((dataBlockCount / 3) * 25, 24);
 
     const finalScore = Math.round(score);
     const offset = 283 - (283 * Math.min(finalScore, 100)) / 100;
@@ -175,12 +193,22 @@ function updateSEOAudit(content) {
 
     // 4. Update Audit Dots
     const lengthDot = document.querySelector('#audit-length .audit-dot');
+    const h1Dot = document.querySelector('#audit-h1 .audit-dot');
     const entityDot = document.querySelector('#audit-entities .audit-dot');
     const visualDot = document.querySelector('#audit-visuals .audit-dot');
 
     if (lengthDot) lengthDot.style.background = lengthOk ? "#22d3ee" : "rgba(255,255,255,0.1)";
+    if (h1Dot) h1Dot.style.background = h1Ok ? "#22d3ee" : "rgba(255,255,255,0.1)";
     if (entityDot) entityDot.style.background = h2Ok ? "#22d3ee" : "rgba(255,255,255,0.1)";
     if (visualDot) visualDot.style.background = dataOk ? "#22d3ee" : "rgba(255,255,255,0.1)";
+
+    // 5. Backend-aligned pass/fail verdict
+    const allPassed = lengthOk && h1Ok && h2Ok && dataOk;
+    const verdictEl = document.querySelector('#seo-verdict');
+    if (verdictEl) {
+        verdictEl.innerText = allPassed ? 'PASS' : 'FAIL';
+        verdictEl.style.color = allPassed ? '#22d3ee' : '#f87171';
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -400,6 +428,26 @@ async function executeGeneration(userContext) {
                                     const bfColor = (payload.verified_count || 0) >= 3 ? "#10b981" : "#ef4444";
                                     terminalLog("BACKFILL", payload.message, bfColor);
                                     break;
+                                case 'ai_detection':
+                                    const aiColor = (payload.ai_probability || 0) >= 0.7 ? "#ef4444" : (payload.ai_probability || 0) >= 0.55 ? "#fbbf24" : "#10b981";
+                                    terminalLog("AI-DETECT", payload.message, aiColor);
+                                    break;
+                                case 'fact_verification_start':
+                                    updateAgentUI('verify');
+                                    terminalLog("FACT-CHECK", payload.message, "#a855f7");
+                                    break;
+                                case 'fact_verification_progress':
+                                    const fvpColor = payload.status === 'corroborated' ? "#10b981" : payload.status === 'unverifiable' ? "#fbbf24" : "#ef4444";
+                                    terminalLog("FACT-CHECK", payload.message, fvpColor);
+                                    break;
+                                case 'fact_verification_complete':
+                                    const fvcColor = (payload.unverifiable || 0) === 0 ? "#10b981" : "#fbbf24";
+                                    terminalLog("FACT-CHECK", payload.message, fvcColor);
+                                    break;
+                                case 'claim_cross_ref':
+                                    const cxrColor = (payload.fabricated || 0) === 0 ? "#10b981" : "#ef4444";
+                                    terminalLog("CLAIM-VERIFY", payload.message, cxrColor);
+                                    break;
                                 case 'phase2_start':
                                     updateAgentUI('psychology');
                                     terminalLog("PSYCHOLOGY", payload.message, "#d946ef");
@@ -420,12 +468,16 @@ async function executeGeneration(userContext) {
                                 case 'content':
                                     const streamEditor = document.getElementById('article-editor');
                                     if (!streamEditor) break;
-                                    if (payload.data === "RETRY_CLEAR") {
-                                        streamEditor.value = "";
-                                    } else {
-                                        streamEditor.value += payload.data;
-                                        // Auto-scroll editor if user hasn't scrolled up
-                                        streamEditor.scrollTop = streamEditor.scrollHeight;
+                                    streamEditor.value += payload.data;
+                                    streamEditor.scrollTop = streamEditor.scrollHeight;
+                                    break;
+                                case 'control':
+                                    if (payload.action === 'retry_clear') {
+                                        const clearEditor = document.getElementById('article-editor');
+                                        if (clearEditor) {
+                                            clearEditor.value = "";
+                                            terminalLog("WRITER", "Retrying draft generation...", "#fbbf24");
+                                        }
                                     }
                                     break;
                                 case 'complete':

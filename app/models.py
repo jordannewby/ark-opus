@@ -32,6 +32,16 @@ class UserStyleRule(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
 
 
+class UserStyleRuleArchive(Base):
+    __tablename__ = "user_style_rule_archives"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(50), index=True, default="default", server_default="default")
+    rule_descriptions_json: Mapped[str] = mapped_column(Text)
+    pruned_to_count: Mapped[int] = mapped_column(Integer)
+    archived_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class ResearchCache(Base):
     __tablename__ = "research_cache"
     __table_args__ = (UniqueConstraint("keyword", "profile_name", "niche", name="uix_cache_composite"),)
@@ -206,4 +216,39 @@ class FactCitation(Base):
     # Cross-source consensus (how many independent sources corroborate this fact)
     consensus_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
+    # Claim verification fields
+    is_grounded: Mapped[bool] = mapped_column(default=True, server_default="true")
+    grounding_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    is_verified: Mapped[bool] = mapped_column(default=True, server_default="true")
+    verification_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Values: "corroborated", "corrected", "unverifiable", "trusted", "not_checked", "suspect", "ungrounded"
+    corroboration_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class DomainCredibilityCache(Base):
+    """
+    Domain-level credibility cache to reduce redundant DeepSeek API calls.
+
+    Caches quality/integrity scores per domain-niche combination for 90 days.
+    Cache hit = skip 2 DeepSeek Reasoner calls per source (~$0.0001 saved).
+    Expected hit rate: ~40% in same niche.
+    """
+    __tablename__ = "domain_credibility_cache"
+    __table_args__ = (UniqueConstraint("domain", "niche", name="uix_domain_niche"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    domain: Mapped[str] = mapped_column(String(200), index=True)
+    niche: Mapped[str] = mapped_column(String(100), index=True)
+
+    # Cached scoring results from DeepSeek Reasoner
+    tier_level: Mapped[int] = mapped_column(Integer)  # From domain_tiers.py
+    base_score: Mapped[float] = mapped_column()  # Domain + tier score
+    integrity_score: Mapped[float | None] = mapped_column(nullable=True)  # Avg from past checks
+    quality_score: Mapped[float | None] = mapped_column(nullable=True)  # Avg from past checks
+
+    # Metadata
+    check_count: Mapped[int] = mapped_column(Integer, default=1)  # How many times verified
+    last_checked: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

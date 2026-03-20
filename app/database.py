@@ -5,9 +5,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# We removed os.getenv to prevent rogue local environment variables from hijacking the connection.
-# This strictly forces SQLAlchemy to use the Neon PostgreSQL cluster.
-SQLALCHEMY_DATABASE_URL = "postgresql://neondb_owner:npg_A1WgoOpGKC5h@ep-red-grass-aiy3x0x0-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require"
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+if not SQLALCHEMY_DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is required. Set it in .env")
 
 # Added `pool_pre_ping=True` and `pool_recycle=300` to prevent drop connections with Serverless Postgres
 engine = create_engine(
@@ -247,6 +247,95 @@ def migrate_fact_consensus():
             ADD COLUMN consensus_count INTEGER DEFAULT 1
         """))
         print("[OK] Added consensus_count column to fact_citations")
+
+
+def migrate_domain_credibility_cache():
+    """One-time migration: Create domain_credibility_cache table for cost optimization."""
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+
+    if 'domain_credibility_cache' in inspector.get_table_names():
+        return  # Already exists
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE domain_credibility_cache (
+                id SERIAL PRIMARY KEY,
+                domain VARCHAR(200) NOT NULL,
+                niche VARCHAR(100) NOT NULL,
+                tier_level INTEGER NOT NULL,
+                base_score FLOAT NOT NULL,
+                integrity_score FLOAT,
+                quality_score FLOAT,
+                check_count INTEGER DEFAULT 1,
+                last_checked TIMESTAMP DEFAULT NOW(),
+                created_at TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT uix_domain_niche UNIQUE (domain, niche)
+            )
+        """))
+        conn.execute(text("""
+            CREATE INDEX idx_domain_credibility_domain ON domain_credibility_cache(domain)
+        """))
+        conn.execute(text("""
+            CREATE INDEX idx_domain_credibility_niche ON domain_credibility_cache(niche)
+        """))
+        print("[OK] Created domain_credibility_cache table with indexes")
+
+
+def migrate_fact_verification():
+    """One-time migration: Add claim verification columns to fact_citations."""
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+
+    if 'fact_citations' not in inspector.get_table_names():
+        return  # Table doesn't exist yet
+
+    columns = [col['name'] for col in inspector.get_columns('fact_citations')]
+
+    new_columns = {
+        'is_grounded': "BOOLEAN DEFAULT TRUE",
+        'grounding_method': "VARCHAR(50) DEFAULT NULL",
+        'is_verified': "BOOLEAN DEFAULT TRUE",
+        'verification_status': "VARCHAR(50) DEFAULT NULL",
+        'corroboration_url': "VARCHAR(500) DEFAULT NULL",
+    }
+
+    added = []
+    with engine.begin() as conn:
+        for col_name, col_def in new_columns.items():
+            if col_name not in columns:
+                conn.execute(text(f"ALTER TABLE fact_citations ADD COLUMN {col_name} {col_def}"))
+                added.append(col_name)
+
+    if added:
+        print(f"[OK] Added claim verification columns to fact_citations: {', '.join(added)}")
+
+
+def migrate_style_rule_archive():
+    """One-time migration: Add user_style_rule_archives table."""
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
+
+    if 'user_style_rule_archives' in existing_tables:
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE user_style_rule_archives (
+                id SERIAL PRIMARY KEY,
+                profile_name VARCHAR(50) NOT NULL DEFAULT 'default',
+                rule_descriptions_json TEXT NOT NULL,
+                pruned_to_count INTEGER NOT NULL,
+                archived_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("CREATE INDEX idx_style_archive_profile ON user_style_rule_archives(profile_name)"))
+        print("[OK] Created user_style_rule_archives table")
+
 
 def get_db():
     db = SessionLocal()

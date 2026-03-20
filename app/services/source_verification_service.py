@@ -6,7 +6,7 @@ Validates credibility of research sources using multi-factor scoring:
 - Domain type (.gov, .edu, research journals)
 - Content freshness (publish date)
 - Internal citations (backlink verification)
-- Content quality (Gemini Flash)
+- Content quality (DeepSeek Reasoner)
 
 Extracts factual claims and maps them to verified sources for citation injection.
 """
@@ -17,11 +17,14 @@ import re
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
+import httpx
 from sqlalchemy.orm import Session
 
 from ..models import FactCitation, VerifiedSource
-from ..settings import GEMINI_API_KEY
+from ..settings import DEEPSEEK_API_KEY
 from ..domain_tiers import get_domain_tier_score
+
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,25 @@ def extract_domain(url: str) -> str:
         return ""
 
 
+def validate_url_format(url: str, expected_domain: str) -> bool:
+    """
+    Validate URL has proper format and netloc matches expected domain.
+    Catches spoofed URLs like 'nist.gov.fakesite.com' claiming Tier 1 status.
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        if not parsed.netloc:
+            return False
+        actual = parsed.netloc.lower()
+        if actual.startswith("www."):
+            actual = actual[4:]
+        return actual == expected_domain or actual.endswith("." + expected_domain)
+    except Exception:
+        return False
+
+
 def is_authoritative_domain(domain: str) -> bool:
     """Check if domain is Tier 1 (authoritative)."""
     tier_level, _ = get_domain_tier_score(domain)
@@ -78,9 +100,30 @@ def extract_publish_date(content: str, source_url: str = "") -> datetime | None:
     Falls back to URL pattern matching if content extraction fails.
     Returns None if not found.
 
-    Hybrid Approach (March 2026): Improved to capture more date formats.
+    Hybrid Approach (March 2026): Improved to capture more date formats + OpenGraph meta tags.
     """
-    # Enhanced date patterns covering more metadata formats
+    # Priority 1: Check OpenGraph meta tags (high confidence)
+    og_patterns = [
+        r'<meta\s+property=["\']article:published_time["\']\s+content=["\']([^"\']+)["\']',
+        r'<meta\s+property=["\']og:published_time["\']\s+content=["\']([^"\']+)["\']',
+        r'<meta\s+name=["\']publish[_-]?date["\']\s+content=["\']([^"\']+)["\']',
+        r'<meta\s+name=["\']date["\']\s+content=["\']([^"\']+)["\']',
+    ]
+
+    search_text = content[:5000]
+    for og_pattern in og_patterns:
+        og_match = re.search(og_pattern, search_text, re.IGNORECASE)
+        if og_match:
+            try:
+                date_str = og_match.group(1)
+                clean_date = date_str.replace("Z", "+00:00") if date_str.endswith("Z") else date_str
+                parsed_date = datetime.fromisoformat(clean_date).replace(tzinfo=None)
+                if datetime(2000, 1, 1) <= parsed_date <= datetime.now() + timedelta(days=30):
+                    return parsed_date
+            except Exception:
+                continue
+
+    # Priority 2: Enhanced date patterns covering more metadata formats
     patterns = [
         # Metadata patterns (high confidence)
         r"published[:\s]+(\d{4})-(\d{2})-(\d{2})",  # published: 2024-03-15
@@ -333,18 +376,12 @@ async def extract_internal_citations(content: str, source_url: str, db: Session)
 
 async def assess_content_quality(content: str) -> dict:
     """
-    Use Gemini Flash to assess content quality.
+    Use DeepSeek Reasoner to assess content quality.
     Returns: {score: 0.0-1.0, reasoning: str}
-    Cost: ~$0.0001 per assessment
+    Cost: ~$0.00005 per assessment
     """
     try:
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=GEMINI_API_KEY)
-
-        prompt = f"""
-You are a content quality assessment specialist. Evaluate the following article content.
+        prompt = f"""You are a content quality assessment specialist. Evaluate the following article content.
 
 CONTENT (first 4000 chars):
 {content[:4000]}
@@ -353,35 +390,40 @@ Assess content quality on these criteria:
 1. Depth: Does it provide substantive analysis or just surface-level info?
 2. Evidence: Are claims backed by data, examples, or expert quotes?
 3. Structure: Is it well-organized with clear sections?
-4. Authority: Does the author demonstrate subject matter expertise?
+4. Actionability: Does the content provide concrete takeaways, practical guidance, or implementable advice?
 
 Return JSON:
 {{
-  "score": 0.8,  // 0.0-1.0
+  "score": 0.8,
   "reasoning": "Brief explanation of score"
 }}
 
-Only return the JSON, no other text.
-"""
+Only return the JSON, no other text."""
 
-        # Use new async SDK with JSON response mode
-        response = await client.aio.models.generate_content(
-            model="gemini-2.5-pro",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.3,
-                response_mime_type="application/json"
-            )
-        )
+        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": "deepseek-reasoner",
+            "messages": [
+                {"role": "system", "content": "You output valid JSON ONLY."},
+                {"role": "user", "content": prompt}
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.3,
+        }
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip()
 
         # Parse JSON with error handling
         try:
-            result = json.loads(response.text)
-        except json.JSONDecodeError as e:
-            logger.error(f"[GEMINI] Invalid JSON response: {response.text[:200]}")
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            logger.error(f"[DEEPSEEK] Invalid JSON response: {text[:200]}")
             return {"score": 0.5, "reasoning": "JSON parse error"}
 
-        logger.info(f"[GEMINI] Content quality score: {result.get('score', 0.5)}")
+        logger.info(f"[DEEPSEEK] Content quality score: {result.get('score', 0.5)}")
 
         return {
             "score": result.get("score", 0.5),
@@ -389,24 +431,19 @@ Only return the JSON, no other text.
         }
 
     except Exception as e:
-        logger.error(f"[GEMINI] Content quality assessment failed: {e}")
+        logger.error(f"[DEEPSEEK] Content quality assessment failed: {e}")
         # Fallback: neutral score
         return {"score": 0.5, "reasoning": "Assessment failed"}
 
 
 async def detect_content_integrity(content: str) -> dict:
     """
-    Adversarial trustworthiness check via Gemini Flash.
+    Adversarial trustworthiness check via DeepSeek Reasoner.
     Assesses 5 dimensions that distinguish genuine analysis from promotional/spam content.
     Returns: {integrity_score: 0.0-1.0, scores: dict, flags: [str]}
-    Cost: ~$0.0001 per call (4000 chars to Gemini Flash)
+    Cost: ~$0.00005 per call (4000 chars to DeepSeek Reasoner)
     """
     try:
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=GEMINI_API_KEY)
-
         prompt = f"""You are a content integrity analyst. Today's date is {datetime.now().strftime('%B %d, %Y')}. Evaluate this article's TRUSTWORTHINESS, not its writing quality. A well-written advertisement is still untrustworthy.
 
 CONTENT (first 4000 chars):
@@ -435,9 +472,9 @@ Score each dimension 0.0-1.0:
    0.0 = generic advice anyone could write, no unique insight
 
 5. editorial_standards: Does this show editorial rigor?
-   1.0 = clear author attribution, methodology, sources section, publication context
-   0.5 = some editorial signals (author name OR date OR sources)
-   0.0 = anonymous, undated, no sources, no editorial oversight visible
+   1.0 = clear methodology, sources section, publication date, structured format
+   0.5 = some editorial signals (date OR sources OR structured sections)
+   0.0 = undated, no sources, no methodology, no editorial oversight visible
 
 Return JSON:
 {{
@@ -455,19 +492,26 @@ Return JSON:
 The integrity_score MUST be the average of all 5 dimension scores.
 Only return the JSON, no other text."""
 
-        response = await client.aio.models.generate_content(
-            model="gemini-2.5-pro",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.3,
-                response_mime_type="application/json"
-            )
-        )
+        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": "deepseek-reasoner",
+            "messages": [
+                {"role": "system", "content": "You output valid JSON ONLY."},
+                {"role": "user", "content": prompt}
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.3,
+        }
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip()
 
         try:
-            result = json.loads(response.text)
+            result = json.loads(text)
         except json.JSONDecodeError:
-            logger.error(f"[INTEGRITY] Invalid JSON response: {response.text[:200]}")
+            logger.error(f"[INTEGRITY] Invalid JSON response: {text[:200]}")
             return {"integrity_score": 0.5, "scores": {}, "flags": ["JSON parse error"]}
 
         integrity_score = result.get("integrity_score", 0.5)
@@ -475,7 +519,7 @@ Only return the JSON, no other text."""
         scores = result.get("scores", {})
         if scores and len(scores) == 5:
             calculated_avg = sum(scores.values()) / 5
-            # Use calculated average if Gemini's reported average is off
+            # Use calculated average if reported average is off
             if abs(calculated_avg - integrity_score) > 0.1:
                 integrity_score = calculated_avg
 
@@ -504,8 +548,8 @@ async def calculate_credibility_score(
     serp_position: int | None = None,
 ) -> float:
     """
-    9-factor credibility scoring algorithm with spam penalty.
-    Returns score 0.0-100.0. Minimum threshold: 45.0 to pass verification.
+    7-factor credibility scoring algorithm with spam penalty (SERP + Citations moved to rescue bonus).
+    Returns score 0.0-85.0 (up to 100.0 with rescue bonus). Minimum threshold: 45.0 to pass verification (53% pass rate).
 
     FACTORS (March 2026 v2 — enhanced with DataForSEO + SERP):
     - Content Integrity (25 pts) - "is this trustworthy?" (Gemini)
@@ -590,25 +634,13 @@ async def calculate_credibility_score(
     score += freshness_points
     breakdown["freshness"] = round(freshness_points, 1)
 
-    # Factor 5: SERP Ranking (10 pts max) — source domain ranks for target keyword
-    serp_points = 0.0
-    if serp_position is not None:
-        if serp_position <= 5:
-            serp_points = 10.0
-        elif serp_position <= 10:
-            serp_points = 7.0
-        elif serp_position <= 20:
-            serp_points = 4.0
-    score += serp_points
-    breakdown["serp"] = round(serp_points, 1)
+    # Factor 5: SERP Ranking — MOVED TO RESCUE BONUS (see calculate_rescue_bonus)
+    # SERP matching is unreliable for niche topics - generic keywords don't reflect niche authority
+    breakdown["serp"] = 0.0
 
-    # Factor 6: Internal Citation Quality (5 pts max)
-    citation_points = 0.0
-    if citations:
-        credible_citation_count = sum(1 for c in citations if c.get("is_credible"))
-        citation_points = min(5.0, credible_citation_count * 1.67)
-    score += citation_points
-    breakdown["citations"] = round(citation_points, 1)
+    # Factor 6: Internal Citations — MOVED TO RESCUE BONUS (see calculate_rescue_bonus)
+    # Citations are extracted AFTER initial verification, so always 0 during first pass
+    breakdown["citations"] = 0.0
 
     # Factor 7: Author Attribution (5 pts) — E-E-A-T signal
     has_author = bool(source.get("author"))
@@ -638,15 +670,22 @@ async def calculate_credibility_score(
 
 # --- Borderline Rescue ---
 
-def calculate_rescue_bonus(source: dict, content_integrity: dict | None) -> float:
+def calculate_rescue_bonus(
+    source: dict,
+    content_integrity: dict | None,
+    serp_position: int | None = None,
+    citations: list[dict] | None = None
+) -> float:
     """
     Borderline rescue for sources scoring 35.0-44.9.
     Only applies when promotional_intent >= 0.6 (non-salesy).
 
-    Three supplementary signals (max +8 pts, $0 cost):
+    Five supplementary signals (max +15 pts, mostly $0 cost):
     - Content depth (word count): >2000w +3, >1500w +2, >1000w +1
     - Technical content (code blocks): +3 if found
     - External reference density: 5+ domains +2, 3+ domains +1
+    - SERP ranking: top 5 +10, top 10 +7, top 20 +4
+    - Internal citations: +5 max (credible citations * 1.67)
     """
     if not content_integrity:
         return 0.0
@@ -697,28 +736,42 @@ def calculate_rescue_bonus(source: dict, content_integrity: dict | None) -> floa
         bonus += 1.0
         reasons.append(f"ext_refs:{len(external_domains)}(+1)")
 
+    # Signal 4: SERP ranking (moved from main scoring - better suited as rescue signal)
+    if serp_position is not None:
+        if serp_position <= 5:
+            bonus += 10.0
+            reasons.append(f"SERP:top5(+10)")
+        elif serp_position <= 10:
+            bonus += 7.0
+            reasons.append(f"SERP:top10(+7)")
+        elif serp_position <= 20:
+            bonus += 4.0
+            reasons.append(f"SERP:top20(+4)")
+
+    # Signal 5: Internal citations (moved from main scoring - extracted after initial verification)
+    if citations:
+        credible_count = sum(1 for c in citations if c.get("is_credible"))
+        if credible_count > 0:
+            cite_bonus = min(5.0, credible_count * 1.67)
+            bonus += cite_bonus
+            reasons.append(f"citations:{credible_count}(+{cite_bonus:.0f})")
+
     if bonus > 0:
         logger.info(f"[RESCUE] Bonus: +{bonus:.0f} pts | {', '.join(reasons)}")
 
-    return min(8.0, bonus)
+    return min(15.0, bonus)
 
 
 # --- Fact Extraction ---
 
 async def extract_facts_from_source(source: dict) -> list[dict]:
     """
-    Uses Gemini 2.0 Flash to extract verifiable factual claims.
+    Uses DeepSeek Reasoner to extract verifiable factual claims.
     Returns: [{fact_text, fact_type, citation_anchor, confidence}]
-    Cost: ~$0.0001 per source
+    Cost: ~$0.00005 per source
     """
     try:
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=GEMINI_API_KEY)
-
-        prompt = f"""
-You are a fact extraction specialist. Extract ONLY verifiable factual claims from the following article.
+        prompt = f"""You are a fact extraction specialist. Extract ONLY verifiable factual claims from the following article.
 
 SOURCE: {source['title']}
 URL: {source['url']}
@@ -751,15 +804,17 @@ Extract facts in the following categories:
    - "Security expert Bruce Schneier states: 'MFA reduces account takeovers by 99%'"
    - "Research from MIT found that..."
 
-Return JSON array:
-[
-  {{
-    "fact_text": "Exact claim extracted verbatim (include numbers, percentages, names, years)",
-    "fact_type": "statistic|benchmark|case_study|expert_quote",
-    "citation_anchor": "How to reference this (e.g., 'Source Name 2024', 'Gartner 2024', 'Company Blog')",
-    "confidence": 0.9
-  }}
-]
+Return a JSON object with a "facts" key containing an array:
+{{
+  "facts": [
+    {{
+      "fact_text": "Exact claim extracted verbatim (include numbers, percentages, names, years)",
+      "fact_type": "statistic|benchmark|case_study|expert_quote",
+      "citation_anchor": "How to reference this (e.g., 'Source Name 2024', 'Gartner 2024', 'Company Blog')",
+      "confidence": 0.9
+    }}
+  ]
+}}
 
 CRITICAL RULES:
 - Extract facts that include SPECIFIC NUMBERS, PERCENTAGES, DOLLAR AMOUNTS, or DIRECT QUOTES about the topic
@@ -769,50 +824,60 @@ CRITICAL RULES:
 - NEVER extract navigation text, headers, footers, or boilerplate content
 - Include the YEAR if mentioned in the claim
 - confidence: 0.6-1.0 based on how clearly stated and verifiable (be generous if fact is clear)
-- Return empty array [] if no specific factual claims about the topic exist
+- Return {{"facts": []}} if no specific factual claims about the topic exist
 
 WHAT TO EXTRACT: Claims about the subject matter with specific numbers, percentages, dollar amounts, or attributable quotes.
 WHAT TO SKIP: Article metadata (dates, "X min read", author info), vague generalizations, opinions, predictions without data.
 
-Only return the JSON array, no other text.
-"""
+Only return the JSON, no other text."""
 
-        # Use new async SDK with JSON response mode
-        response = await client.aio.models.generate_content(
-            model="gemini-2.5-pro",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.3,
-                response_mime_type="application/json"
-            )
-        )
+        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": "deepseek-reasoner",
+            "messages": [
+                {"role": "system", "content": "You output valid JSON ONLY."},
+                {"role": "user", "content": prompt}
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.3,
+        }
+
+        async with httpx.AsyncClient(timeout=90) as client:
+            resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip()
 
         # Parse JSON with error handling
         try:
-            facts = json.loads(response.text)
-            if not isinstance(facts, list):
-                logger.warning(f"[GEMINI] Expected list, got {type(facts)}")
+            parsed = json.loads(text)
+            # Handle both {"facts": [...]} and [...] formats
+            if isinstance(parsed, dict):
+                facts = next((v for v in parsed.values() if isinstance(v, list)), [])
+            elif isinstance(parsed, list):
+                facts = parsed
+            else:
+                logger.warning(f"[DEEPSEEK] Expected list/dict, got {type(parsed)}")
                 facts = []
-        except json.JSONDecodeError as e:
-            logger.error(f"[GEMINI] Invalid JSON response for {source['url']}: {response.text[:200]}")
+        except json.JSONDecodeError:
+            logger.error(f"[DEEPSEEK] Invalid JSON response for {source['url']}: {text[:200]}")
             return []
 
-        # Post-filter: strip metadata that Gemini sometimes extracts despite prompt instructions
+        # Post-filter: strip metadata that LLMs sometimes extract despite prompt instructions
         _metadata_patterns = re.compile(
             r'(min read|published on|updated on|last modified|posted on|written by|author:|byline)',
             re.IGNORECASE
         )
         filtered = [f for f in facts if not _metadata_patterns.search(f.get("fact_text", ""))]
         if len(filtered) < len(facts):
-            logger.info(f"[GEMINI] Filtered {len(facts) - len(filtered)} metadata entries from {source['url']}")
+            logger.info(f"[DEEPSEEK] Filtered {len(facts) - len(filtered)} metadata entries from {source['url']}")
         facts = filtered
 
-        logger.info(f"[GEMINI] Extracted {len(facts)} facts from {source['url']}")
+        logger.info(f"[DEEPSEEK] Extracted {len(facts)} facts from {source['url']}")
 
         return facts
 
     except Exception as e:
-        logger.error(f"[GEMINI] Fact extraction failed for {source['url']}: {e}")
+        logger.error(f"[DEEPSEEK] Fact extraction failed for {source['url']}: {e}")
         return []
 
 
@@ -878,12 +943,20 @@ def score_fact_consensus(all_citations: list) -> dict[int, int]:
 
 # --- Database Storage ---
 
-async def link_facts_to_sources(verified_sources: list, research_run_id: int, db: Session, elite_competitors: list[dict] | None = None):
+async def link_facts_to_sources(verified_sources: list, research_run_id: int, db: Session, elite_competitors: list[dict] | None = None, niche: str = ""):
     """
     Extracts facts from each verified source and stores in FactCitation table.
     Only processes sources with credibility_score >= 45.0.
-    After extraction, runs cross-source consensus scoring to boost corroborated facts.
+    After extraction:
+      1. Runs fact faithfulness check (free, pure Python)
+      2. Runs independent Exa verification for Tier 3-4 statistical claims
+      3. Runs cross-source consensus scoring to boost corroborated facts
+
+    Returns: dict with ai_detection_summary and fact_verification_summary for SSE events
     """
+    from .claim_verification_agent import verify_fact_faithfulness, batch_verify_facts
+    from ..settings import DEBUG_MODE
+
     # Build URL -> full content mapping for fact extraction
     full_content_map = {}
     if elite_competitors:
@@ -892,7 +965,18 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
             if url:
                 full_content_map[url] = comp.get("content", "")
 
+    # Build domain -> tier mapping for verification decisions
+    source_tiers = {}
+    for source_row in verified_sources:
+        tier_level, _ = get_domain_tier_score(source_row.domain)
+        # Gap 4: Validate URL format for Tier 1-2 before granting trust
+        if tier_level in (1, 2) and not validate_url_format(source_row.url, source_row.domain):
+            logger.warning(f"[URL-VALIDATE] {source_row.url} domain mismatch for claimed Tier {tier_level} domain {source_row.domain}")
+            tier_level = 0  # Demote to unknown
+        source_tiers[source_row.domain] = tier_level
+
     all_new_citations = []
+    all_facts_for_verification = []  # Collect facts for batch verification
 
     for source_row in verified_sources:
         if source_row.credibility_score < 45.0:
@@ -912,9 +996,29 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
             if fact.get("confidence", 0) < 0.6:
                 continue
 
+            # --- Fact faithfulness check (free, pure Python) ---
+            grounding = verify_fact_faithfulness(fact["fact_text"], full_content)
+
             source_cred = source_row.credibility_score
-            fact_conf = fact["confidence"]
+            fact_conf = fact["confidence"] * grounding["confidence_multiplier"]
             composite = (fact_conf * 100 + source_cred) / 2
+
+            # Determine initial verification status based on source tier
+            tier_level = source_tiers.get(source_row.domain, 0)
+            if tier_level in (1, 2):
+                verification_status = "trusted"
+                is_verified = True
+            else:
+                verification_status = "not_checked"
+                is_verified = True  # Default true, may be set False after Exa verification
+
+            # Gap 1 fix: Veto ungrounded facts regardless of tier
+            if grounding["grounding_method"] == "none":
+                is_verified = False
+                if tier_level in (1, 2):
+                    verification_status = "suspect"     # Trusted source, bad fact
+                else:
+                    verification_status = "ungrounded"  # Untrusted source, bad fact
 
             citation = FactCitation(
                 verified_source_id=source_row.id,
@@ -927,10 +1031,65 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
                 confidence_score=fact_conf,
                 source_credibility=source_cred,
                 composite_score=composite,
+                is_grounded=grounding["is_grounded"],
+                grounding_method=grounding["grounding_method"],
+                is_verified=is_verified,
+                verification_status=verification_status,
             )
             db.add(citation)
             db.flush()  # Get the ID assigned before consensus scoring
             all_new_citations.append(citation)
+
+            # Track for batch verification
+            all_facts_for_verification.append({
+                "fact_text": fact["fact_text"],
+                "source_url": source_row.url,
+                "citation_index": len(all_new_citations) - 1,
+            })
+
+    # --- Independent fact verification via Exa (Tier 3-4 statistical claims) ---
+    fact_verification_summary = {"verified": 0, "unverifiable": 0, "corrected": 0, "total_checked": 0}
+
+    if all_facts_for_verification:
+        try:
+            verification_map = await batch_verify_facts(
+                facts=all_facts_for_verification,
+                source_tiers=source_tiers,
+                niche=niche,
+                max_searches=15,
+            )
+
+            # Apply verification results to citations
+            for fact_idx, result in verification_map.items():
+                citation = all_new_citations[fact_idx]
+                status = result["status"]
+                citation.verification_status = status
+                citation.corroboration_url = result.get("corroboration_url")
+
+                if status == "corroborated":
+                    citation.is_verified = True
+                    fact_verification_summary["verified"] += 1
+                elif status == "corrected":
+                    citation.is_verified = False
+                    citation.composite_score = max(0.0, citation.composite_score * 0.7)
+                    fact_verification_summary["corrected"] += 1
+                elif status == "unverifiable":
+                    citation.is_verified = False
+                    citation.composite_score = max(0.0, citation.composite_score * 0.5)
+                    fact_verification_summary["unverifiable"] += 1
+
+                fact_verification_summary["total_checked"] += 1
+
+            if DEBUG_MODE:
+                print(
+                    f"[FACT-BATCH] Applied verification: "
+                    f"{fact_verification_summary['verified']} corroborated, "
+                    f"{fact_verification_summary['corrected']} corrected, "
+                    f"{fact_verification_summary['unverifiable']} unverifiable"
+                )
+
+        except Exception as e:
+            logger.error(f"[FACT-BATCH] Independent verification failed (non-critical): {e}")
 
     # --- Cross-source consensus scoring ---
     if all_new_citations:
@@ -956,6 +1115,11 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
     db.commit()
     logger.info(f"[FACTS] Linked {len(all_new_citations)} facts to {len(verified_sources)} verified sources")
 
+    return {
+        "total_facts": len(all_new_citations),
+        "fact_verification": fact_verification_summary,
+    }
+
 
 # --- Main Entry Point ---
 
@@ -966,6 +1130,8 @@ async def verify_sources(
     research_run_id: int = 0,
     mcp_session=None,
     keyword: str = "",
+    niche: str = "",
+    min_score_threshold: float = 45.0,
 ) -> dict:
     """
     Main source verification pipeline (9-factor scoring + spam penalty).
@@ -1037,25 +1203,69 @@ async def verify_sources(
         except Exception as e:
             logger.warning(f"[VERIFY] SERP fetch failed (non-critical): {e}")
 
-    # --- Phase 2: Batch Gemini calls in parallel (quality + integrity) ---
-    content_list = [s.get("content", "") for s in elite_competitors]
+    # --- Phase 2: Domain caching + Batch DeepSeek calls ---
+    from ..models import DomainCredibilityCache
+    from datetime import datetime, timedelta
 
-    # Fire all Gemini calls at once -- 2 calls per source, all sources in parallel
-    quality_tasks = [assess_content_quality(content) for content in content_list]
-    integrity_tasks = [detect_content_integrity(content) for content in content_list]
+    # Check cache for each domain (90-day TTL)
+    quality_results = [None] * len(elite_competitors)
+    integrity_results = [None] * len(elite_competitors)
+    cache_hits = 0
+    uncached_indices = []
 
-    logger.info(f"[VERIFY] Launching {len(quality_tasks) + len(integrity_tasks)} parallel Gemini calls...")
-    all_results = await asyncio.gather(*quality_tasks, *integrity_tasks, return_exceptions=True)
+    normalized_niche = niche.strip().lower().replace(" ", "-") if niche else "general"
 
-    # Split results: first N are quality, next N are integrity
-    n = len(elite_competitors)
-    quality_results = []
-    integrity_results = []
-    for i in range(n):
-        qr = all_results[i]
-        ir = all_results[n + i]
-        quality_results.append(qr if not isinstance(qr, Exception) else {"score": 0.5, "reasoning": "Error"})
-        integrity_results.append(ir if not isinstance(ir, Exception) else {"integrity_score": 0.5, "scores": {}, "flags": ["Error"]})
+    for i, source in enumerate(elite_competitors):
+        domain = local_signals[i]["domain"]
+
+        # Try cache lookup
+        cache_entry = db.query(DomainCredibilityCache).filter_by(
+            domain=domain,
+            niche=normalized_niche
+        ).first()
+
+        if cache_entry:
+            age_days = (datetime.now() - cache_entry.last_checked).days
+            if age_days < 90:
+                # Cache hit - use cached scores
+                quality_results[i] = {"score": cache_entry.quality_score or 0.5}
+                integrity_results[i] = {
+                    "integrity_score": cache_entry.integrity_score or 0.5,
+                    "scores": {},
+                    "flags": []
+                }
+                cache_hits += 1
+                logger.info(f"[CACHE-HIT] {domain} -> cached scores (age: {age_days}d)")
+                continue
+
+        # Cache miss - need to call DeepSeek
+        uncached_indices.append(i)
+
+    # Batch DeepSeek calls for uncached sources only
+    from .claim_verification_agent import detect_ai_generated_content, compute_ai_detection_penalty
+    ai_detection_results = [None] * len(elite_competitors)
+
+    if uncached_indices:
+        uncached_content = [elite_competitors[i].get("content", "") for i in uncached_indices]
+        quality_tasks = [assess_content_quality(content) for content in uncached_content]
+        integrity_tasks = [detect_content_integrity(content) for content in uncached_content]
+        ai_detect_tasks = [detect_ai_generated_content(content) for content in uncached_content]
+
+        total_tasks = len(quality_tasks) + len(integrity_tasks) + len(ai_detect_tasks)
+        logger.info(f"[VERIFY] Cache: {cache_hits} hits, {len(uncached_indices)} misses. Launching {total_tasks} DeepSeek calls (incl. AI detection)...")
+        all_results = await asyncio.gather(*quality_tasks, *integrity_tasks, *ai_detect_tasks, return_exceptions=True)
+
+        n = len(uncached_indices)
+        # Assign results to uncached indices
+        for idx, uncached_i in enumerate(uncached_indices):
+            qr = all_results[idx]
+            ir = all_results[n + idx]
+            ar = all_results[2 * n + idx]
+            quality_results[uncached_i] = qr if not isinstance(qr, Exception) else {"score": 0.5, "reasoning": "Error"}
+            integrity_results[uncached_i] = ir if not isinstance(ir, Exception) else {"integrity_score": 0.5, "scores": {}, "flags": ["Error"]}
+            ai_detection_results[uncached_i] = ar if not isinstance(ar, Exception) else {"ai_probability": 0.3, "signals": {}, "reasoning": "Error"}
+    else:
+        logger.info(f"[VERIFY] Cache: {cache_hits} hits, 0 misses. No DeepSeek calls needed.")
 
     # --- Phase 3: Score and persist ---
     for i, source in enumerate(elite_competitors):
@@ -1086,9 +1296,23 @@ async def verify_sources(
             serp_position=serp_pos,
         )
 
+        # Apply AI detection penalty (after scoring, before rescue)
+        ai_result = ai_detection_results[i]
+        if ai_result:
+            ai_penalty = compute_ai_detection_penalty(ai_result)
+            if ai_penalty != 0.0:
+                original_ai_score = credibility_score
+                credibility_score = max(0.0, credibility_score + ai_penalty)
+                ai_prob = ai_result.get("ai_probability", 0.0)
+                logger.info(
+                    f"[AI-DETECT] {extract_domain(source['url'])} "
+                    f"AI probability: {ai_prob:.2f} -> penalty: {ai_penalty} pts "
+                    f"(score: {original_ai_score:.1f} -> {credibility_score:.1f})"
+                )
+
         # Borderline rescue: sources scoring 35.0-44.9 get supplementary signal check
         if 35.0 <= credibility_score < 45.0:
-            rescue_bonus = calculate_rescue_bonus(source, content_integrity)
+            rescue_bonus = calculate_rescue_bonus(source, content_integrity, serp_pos, citations)
             if rescue_bonus > 0:
                 original_score = credibility_score
                 credibility_score = min(100.0, credibility_score + rescue_bonus)
@@ -1099,8 +1323,9 @@ async def verify_sources(
                         f"(+{rescue_bonus:.0f} borderline bonus)"
                     )
 
-        verification_passed = credibility_score >= 45.0
-        rejection_reason = None if verification_passed else f"Score {credibility_score:.1f} < 45.0 threshold"
+        # Restored to 45.0 after fixing metadata extraction (freshness+relevance) and moving SERP+citations to rescue
+        verification_passed = credibility_score >= min_score_threshold
+        rejection_reason = None if verification_passed else f"Score {credibility_score:.1f} < {min_score_threshold} threshold"
 
         # Resolve publish date: Exa primary, regex fallback
         publish_date = None
@@ -1122,29 +1347,74 @@ async def verify_sources(
             days_old = (datetime.now() - publish_date).days
             freshness_score = max(0.0, 1.0 - (days_old / 1095.0))
 
-        verified_source = VerifiedSource(
+        # Check if source already exists (prevent duplicate key error in iterative search)
+        existing_source = db.query(VerifiedSource).filter_by(
             research_run_id=research_run_id,
-            profile_name=profile_name,
-            url=source["url"],
-            title=source["title"],
-            domain=domain,
-            credibility_score=credibility_score,
-            domain_authority=domain_metrics.get("domain_authority"),
-            publish_date=publish_date,
-            freshness_score=freshness_score,
-            internal_citations_count=len(citations),
-            has_credible_citations=any(c.get("is_credible") for c in citations),
-            citation_urls_json=json.dumps([c["url"] for c in citations]),
-            is_academic=is_academic_domain(domain),
-            is_authoritative_domain=is_authoritative_domain(domain),
-            content_snippet=source.get("content", "")[:2000],  # Increased from 500 for better fallback
-            verification_passed=verification_passed,
-            rejection_reason=rejection_reason,
-        )
+            url=source["url"]
+        ).first()
 
-        db.add(verified_source)
+        if existing_source:
+            # Source already saved - use existing entry
+            verified_source = existing_source
+            logger.info(f"[DEDUP] Skipping duplicate save: {source['url'][:60]}... (already in DB)")
+        else:
+            # New source - create and save
+            verified_source = VerifiedSource(
+                research_run_id=research_run_id,
+                profile_name=profile_name,
+                url=source["url"],
+                title=source["title"],
+                domain=domain,
+                credibility_score=credibility_score,
+                domain_authority=domain_metrics.get("domain_authority"),
+                publish_date=publish_date,
+                freshness_score=freshness_score,
+                internal_citations_count=len(citations),
+                has_credible_citations=any(c.get("is_credible") for c in citations),
+                citation_urls_json=json.dumps([c["url"] for c in citations]),
+                is_academic=is_academic_domain(domain),
+                is_authoritative_domain=is_authoritative_domain(domain),
+                content_snippet=source.get("content", "")[:4000],  # Increased for fact faithfulness checks
+                verification_passed=verification_passed,
+                rejection_reason=rejection_reason,
+            )
+
+            db.add(verified_source)
+            db.commit()
+            db.refresh(verified_source)
+
+        # Update domain credibility cache
+        cache_entry = db.query(DomainCredibilityCache).filter_by(
+            domain=domain,
+            niche=normalized_niche
+        ).first()
+
+        if cache_entry:
+            # Update existing cache entry (rolling average)
+            cache_entry.quality_score = (
+                (cache_entry.quality_score * cache_entry.check_count + content_quality.get("score", 0.5))
+                / (cache_entry.check_count + 1)
+            )
+            cache_entry.integrity_score = (
+                (cache_entry.integrity_score * cache_entry.check_count + content_integrity.get("integrity_score", 0.5))
+                / (cache_entry.check_count + 1)
+            )
+            cache_entry.check_count += 1
+            cache_entry.last_checked = datetime.now()
+        else:
+            # Create new cache entry
+            cache_entry = DomainCredibilityCache(
+                domain=domain,
+                niche=normalized_niche,
+                tier_level=domain_metrics.get("tier_level", 0),
+                base_score=domain_metrics.get("score", 0.0),
+                quality_score=content_quality.get("score", 0.5),
+                integrity_score=content_integrity.get("integrity_score", 0.5),
+                check_count=1,
+            )
+            db.add(cache_entry)
+
         db.commit()
-        db.refresh(verified_source)
 
         if verification_passed:
             verified_sources.append(verified_source)
@@ -1161,4 +1431,181 @@ async def verify_sources(
     return {
         "verified_sources": verified_sources,
         "rejected_sources": rejected_sources,
+    }
+
+
+async def iterative_source_search(
+    keyword: str,
+    niche: str,
+    profile_name: str,
+    research_run_id: int,
+    db: Session,
+    mcp_session,
+    research_agent,
+    initial_sources: list,
+    target_count: int = 3,
+    max_iterations: int = 3,
+    min_threshold: float = 45.0,  # Restored after metadata fixes
+    threshold_decay: float = 5.0,
+) -> dict:
+    """
+    Iteratively search for verified sources until target_count is reached.
+
+    Cost control: max 3 iterations = max 45 total sources checked (15/iteration)
+    Budget impact: +$0.011 worst case (3 iterations × 15 sources × $0.00025/source)
+
+    Args:
+        keyword: Search keyword
+        niche: Content niche (normalized)
+        profile_name: Multi-tenant identifier
+        research_run_id: Database ID for this research run
+        db: SQLAlchemy session
+        mcp_session: MCP session for DataForSEO
+        research_agent: ResearchAgent instance with search methods
+        initial_sources: Already verified sources (from Phase 1)
+        target_count: Minimum verified sources needed (default 3)
+        max_iterations: Maximum search iterations (default 3)
+        min_threshold: Starting credibility threshold (default 35.0)
+        threshold_decay: How much to lower threshold each iteration (default 5.0)
+
+    Returns:
+        {
+            verified_sources: list[VerifiedSource],
+            rejected_sources: list[dict],
+            iterations_used: int,
+            final_threshold: float
+        }
+    """
+    from datetime import datetime as dt_now, timedelta as td
+
+    all_verified = list(initial_sources)  # Start with initial verified sources
+    all_rejected = []
+    seen_urls = {s.url for s in initial_sources}
+    rejected_domains = set()
+    current_threshold = min_threshold
+
+    logger.info(f"[ITERATIVE-SEARCH] Starting with {len(all_verified)}/{target_count} sources, threshold={current_threshold}")
+
+    iteration = 1
+    while len(all_verified) < target_count and iteration <= max_iterations:
+        logger.info(f"[ITERATIVE-SEARCH] Iteration {iteration}: {len(all_verified)}/{target_count} verified")
+
+        # Dynamic strategy selection based on iteration
+        new_sources = []
+
+        if iteration == 1 and all_verified:
+            # Strategy 1: FindSimilar using best source as seed
+            best_source = max(all_verified, key=lambda s: s.credibility_score)
+            logger.info(f"[ITERATIVE-SEARCH] Strategy: FindSimilar (seed: {best_source.url[:50]}...)")
+
+            try:
+                two_years_ago = (dt_now.now() - td(days=730)).strftime('%Y-%m-%d')
+                from .research_service import EXA_EXCLUDE_DOMAINS
+
+                similar_results = await research_agent.exa_find_similar(
+                    url=best_source.url,
+                    num_results=15,
+                    exclude_domains=list(EXA_EXCLUDE_DOMAINS) + list(rejected_domains),
+                    start_published_date=two_years_ago,
+                )
+
+                # Build metadata map from findSimilar results (preserves exa_score + published_date)
+                url_metadata_map = {
+                    r.get("url", ""): {
+                        "score": r.get("exa_score"),
+                        "published_date": r.get("published_date"),
+                    }
+                    for r in similar_results
+                    if not r.get("error")
+                }
+
+                # Extract full text for verification
+                similar_ids = [r.get("id") for r in similar_results if r.get("id") and not r.get("error")]
+                if similar_ids:
+                    similar_articles = await research_agent.exa_extract_full_text(similar_ids)
+                    # Merge preserved metadata back into extracted articles
+                    for article in similar_articles:
+                        if not article.get("error"):
+                            metadata = url_metadata_map.get(article.get("url", ""), {})
+                            if not article.get("exa_score"):
+                                article["exa_score"] = metadata.get("score")
+                            if not article.get("published_date"):
+                                article["published_date"] = metadata.get("published_date")
+                    new_sources = [s for s in similar_articles if s.get("url") not in seen_urls and not s.get("error")]
+            except Exception as e:
+                logger.error(f"[ITERATIVE-SEARCH] FindSimilar failed: {e}")
+
+        elif iteration == 2:
+            # Strategy 2: Niche-filtered backfill (authoritative domains only)
+            logger.info(f"[ITERATIVE-SEARCH] Strategy: Niche-filtered backfill")
+
+            try:
+                niche_results = await research_agent.niche_filtered_backfill(keyword, niche, list(rejected_domains))
+                new_sources = [s for s in niche_results if s.get("url") not in seen_urls]
+            except Exception as e:
+                logger.error(f"[ITERATIVE-SEARCH] Niche backfill failed: {e}")
+
+        else:
+            # Strategy 3: Broad search (wider net)
+            logger.info(f"[ITERATIVE-SEARCH] Strategy: Broad search fallback")
+
+            try:
+                broad_results = await research_agent.backfill_search(keyword, niche, list(rejected_domains))
+                new_sources = [s for s in broad_results if s.get("url") not in seen_urls]
+            except Exception as e:
+                logger.error(f"[ITERATIVE-SEARCH] Broad search failed: {e}")
+
+        # Update seen URLs
+        seen_urls.update(s.get("url") for s in new_sources)
+
+        if not new_sources:
+            logger.warning(f"[ITERATIVE-SEARCH] Iteration {iteration}: Strategy returned 0 new sources")
+            iteration += 1
+            continue
+
+        logger.info(f"[ITERATIVE-SEARCH] Found {len(new_sources)} new candidate sources")
+
+        # Verify batch with current threshold
+        verification_result = await verify_sources(
+            elite_competitors=new_sources,
+            db=db,
+            profile_name=profile_name,
+            research_run_id=research_run_id,
+            mcp_session=mcp_session,
+            keyword=keyword,
+            niche=niche,
+            min_score_threshold=current_threshold,
+        )
+
+        all_verified.extend(verification_result["verified_sources"])
+
+        all_rejected.extend(verification_result["rejected_sources"])
+        rejected_domains.update(s["domain"] for s in verification_result["rejected_sources"])
+
+        logger.info(f"[ITERATIVE-SEARCH] Iteration {iteration} results: +{len(verification_result['verified_sources'])} verified, +{len(verification_result['rejected_sources'])} rejected")
+
+        # Early exit if target reached mid-iteration
+        if len(all_verified) >= target_count:
+            logger.info(f"[ITERATIVE-SEARCH] Target reached: {len(all_verified)} sources verified")
+            break
+
+        # Threshold decay: lower bar if struggling (45 → 40 → 35)
+        if iteration >= 2 and len(all_verified) < target_count:
+            current_threshold -= threshold_decay
+            logger.info(f"[ITERATIVE-SEARCH] Lowering threshold to {current_threshold} (iteration {iteration})")
+
+        iteration += 1
+
+    # Final summary
+    final_count = len(all_verified)
+    if final_count < target_count:
+        logger.warning(f"[ITERATIVE-SEARCH] Only {final_count}/{target_count} sources after {iteration-1} iterations")
+    else:
+        logger.info(f"[ITERATIVE-SEARCH] Success: {final_count} sources verified after {iteration-1} iterations")
+
+    return {
+        "verified_sources": all_verified,
+        "rejected_sources": all_rejected,
+        "iterations_used": iteration - 1,
+        "final_threshold": current_threshold,
     }

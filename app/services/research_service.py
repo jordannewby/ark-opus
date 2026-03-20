@@ -292,7 +292,7 @@ class ResearchAgent:
         
         # Step B: Exa discovery is now handled by R1 via native tools (Scout & Extract)
         exa_results = []
-        exa_score_map = {}  # Map URL -> exa_score from scout searches for later merge
+        exa_score_map = {}  # Map URL -> {exa_score, published_date} from scout searches for later merge
 
         # Step C: MCP Context Lifecycle & Agentic Loop
         from ..settings import DEBUG_MODE
@@ -422,19 +422,28 @@ class ResearchAgent:
                                             exclude_domains=t_args.get("exclude_domains", EXA_EXCLUDE_DOMAINS),
                                             start_published_date=t_args.get("start_published_date"),
                                         )
-                                        # Capture exa_score from scout for later merge into extract results
+                                        # Capture exa metadata (score + published_date) for later merge into extract results
                                         for sr in native_result:
-                                            if sr.get("url") and sr.get("exa_score") is not None:
-                                                exa_score_map[sr["url"]] = sr["exa_score"]
+                                            if sr.get("url"):
+                                                exa_score_map[sr["url"]] = {
+                                                    "exa_score": sr.get("exa_score"),
+                                                    "published_date": sr.get("published_date"),
+                                                    "author": sr.get("author"),
+                                                }
                                         tool_results_text.append(
                                             f"TOOL RESULT [{t_name}]:\n{json.dumps(native_result, indent=2)}"
                                         )
                                     elif t_name == "exa_extract_full_text":
                                         native_result = await self.exa_extract_full_text(t_args.get("ids", []))
-                                        # Merge exa_score from earlier scout searches
+                                        # Merge exa metadata from earlier scout searches
                                         for article in native_result:
                                             if article.get("url") and article["url"] in exa_score_map:
-                                                article["exa_score"] = exa_score_map[article["url"]]
+                                                metadata = exa_score_map[article["url"]]
+                                                article["exa_score"] = metadata.get("exa_score")
+                                                article["published_date"] = metadata.get("published_date")
+                                                # Fallback: use scout author if /contents didn't return one
+                                                if not article.get("author") and metadata.get("author"):
+                                                    article["author"] = metadata["author"]
                                         # Store extracted articles for the final result
                                         exa_results.extend(native_result)
                                         tool_results_text.append(
@@ -668,8 +677,6 @@ class ResearchAgent:
             "content_patterns": content_patterns,  # Optional: None if disabled/failed, dict if enabled
         }
 
-        self._save_cache(keyword, profile_name, niche, result)
-
         run_id = await self._capture_run_telemetry(
             keyword=keyword,
             niche=niche,
@@ -683,6 +690,8 @@ class ResearchAgent:
             competitor_count=len(competitor_headers),
         )
         result["research_run_id"] = run_id
+
+        self._save_cache(keyword, profile_name, niche, result)
 
         return result
 
@@ -791,10 +800,16 @@ class ResearchAgent:
                         print("[DEBUG] Exa: No search results found.")
                     return []
                 
-                # Extract IDs and build score map from search results
+                # Extract IDs and build metadata maps from search results
                 result_ids = [r.get("id") for r in search_results if r.get("id")]
-                # Preserve Exa relevance scores (keyed by URL) for credibility scoring
-                url_score_map = {r.get("url", ""): r.get("score") for r in search_results}
+                # Preserve Exa metadata (score + publishedDate) keyed by URL for credibility scoring
+                url_metadata_map = {
+                    r.get("url", ""): {
+                        "score": r.get("score"),
+                        "published_date": r.get("publishedDate")
+                    }
+                    for r in search_results
+                }
 
                 if not result_ids:
                     # Fallback: return title/url from search results if no IDs available
@@ -827,13 +842,14 @@ class ResearchAgent:
                 for article in contents_data.get("results", []):
                     full_text = article.get("text", "")
                     article_url = article.get("url", "")
+                    metadata = url_metadata_map.get(article_url, {})
                     elite_articles.append({
                         "title": article.get("title", ""),
                         "url": article_url,
                         "content": full_text[:20000],  # Safety cap: ~3,500 words per article
-                        "published_date": article.get("publishedDate"),
+                        "published_date": metadata.get("published_date"),  # From search step
                         "author": article.get("author"),
-                        "exa_score": url_score_map.get(article_url),  # From search step
+                        "exa_score": metadata.get("score"),  # From search step
                     })
                 
                 if DEBUG_MODE:
@@ -890,7 +906,14 @@ class ResearchAgent:
                     return []
 
                 result_ids = [r.get("id") for r in search_results if r.get("id")]
-                url_score_map = {r.get("url", ""): r.get("score") for r in search_results}
+                # Preserve Exa metadata (score + publishedDate) for credibility scoring
+                url_metadata_map = {
+                    r.get("url", ""): {
+                        "score": r.get("score"),
+                        "published_date": r.get("publishedDate")
+                    }
+                    for r in search_results
+                }
                 if not result_ids:
                     return [{"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
                              "published_date": r.get("publishedDate"), "author": r.get("author"),
@@ -908,13 +931,14 @@ class ResearchAgent:
                 elite_articles = []
                 for article in contents_resp.json().get("results", []):
                     article_url = article.get("url", "")
+                    metadata = url_metadata_map.get(article_url, {})
                     elite_articles.append({
                         "title": article.get("title", ""),
                         "url": article_url,
                         "content": article.get("text", "")[:20000],
-                        "published_date": article.get("publishedDate"),
+                        "published_date": metadata.get("published_date"),  # From search step
                         "author": article.get("author"),
-                        "exa_score": url_score_map.get(article_url),
+                        "exa_score": metadata.get("score"),  # From search step
                     })
 
                 if DEBUG_MODE:
@@ -976,7 +1000,14 @@ class ResearchAgent:
                     return []
 
                 result_ids = [r.get("id") for r in search_results if r.get("id")]
-                url_score_map = {r.get("url", ""): r.get("score") for r in search_results}
+                # Preserve Exa metadata (score + publishedDate) for credibility scoring
+                url_metadata_map = {
+                    r.get("url", ""): {
+                        "score": r.get("score"),
+                        "published_date": r.get("publishedDate")
+                    }
+                    for r in search_results
+                }
                 if not result_ids:
                     return [{"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
                              "published_date": r.get("publishedDate"), "author": r.get("author"),
@@ -994,13 +1025,14 @@ class ResearchAgent:
                 elite_articles = []
                 for article in contents_resp.json().get("results", []):
                     article_url = article.get("url", "")
+                    metadata = url_metadata_map.get(article_url, {})
                     elite_articles.append({
                         "title": article.get("title", ""),
                         "url": article_url,
                         "content": article.get("text", "")[:20000],
-                        "published_date": article.get("publishedDate"),
+                        "published_date": metadata.get("published_date"),  # From search step
                         "author": article.get("author"),
-                        "exa_score": url_score_map.get(article_url),
+                        "exa_score": metadata.get("score"),  # From search step
                     })
 
                 if DEBUG_MODE:
@@ -1113,6 +1145,7 @@ class ResearchAgent:
                         "content": full_text[:20000],  # Safety cap: ~3,500 words
                         "published_date": article.get("publishedDate"),
                         "author": article.get("author"),
+                        "exa_score": None,  # /contents API has no score; caller must merge from search metadata
                     })
                 
                 if DEBUG_MODE:

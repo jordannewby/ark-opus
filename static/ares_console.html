@@ -464,6 +464,8 @@
         <div id="agent-nodes-container" class="hidden md:flex justify-center items-center py-2 px-6 gap-8 md:gap-24 shrink-0 mb-8 max-w-2xl mx-auto w-full transition-all opacity-100">
             <div id="agent-research" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">Researching</div>
             <div class="h-px w-8 bg-[rgba(255,255,255,0.08)]"></div>
+            <div id="agent-verify" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">Verifying</div>
+            <div class="h-px w-8 bg-[rgba(255,255,255,0.08)]"></div>
             <div id="agent-psychology" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">Strategizing</div>
             <div class="h-px w-8 bg-[rgba(255,255,255,0.08)]"></div>
             <div id="agent-writer" class="agent-node text-xs uppercase tracking-widest font-medium text-slate-500">Writing</div>
@@ -512,12 +514,16 @@
                             class="flex-1 flex flex-col gap-2.5 text-[10px] uppercase font-semibold text-slate-500 tracking-wider">
                             <div id="audit-length" class="flex items-center justify-between"><span>Length</span><span
                                     class="audit-dot bg-white/10 rounded-full"></span></div>
+                            <div id="audit-h1" class="flex items-center justify-between">
+                                <span>Title (H1)</span><span class="audit-dot bg-white/10 rounded-full"></span>
+                            </div>
                             <div id="audit-entities" class="flex items-center justify-between">
                                 <span>Headings</span><span class="audit-dot bg-white/10 rounded-full"></span>
                             </div>
                             <div id="audit-visuals" class="flex items-center justify-between">
                                 <span>Formatting</span><span class="audit-dot bg-white/10 rounded-full"></span>
                             </div>
+                            <div id="seo-verdict" class="text-center text-[9px] mt-1 font-bold tracking-widest" style="color: rgba(255,255,255,0.3)">---</div>
                         </div>
                     </div>
                 </div>

@@ -22,7 +22,40 @@ class WriterService:
         with open(prompt_path, "r", encoding="utf-8") as f:
             self.base_system_prompt = f.read()
 
-    async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general", research_run_id: int | None = None):
+    # Deterministic banned-word replacements (LLM prompt enforcement is unreliable)
+    _BANNED_REPLACEMENTS = {
+        "delve": "explore",
+        "tapestry": "mix",
+        "landscape": "space",
+        "multifaceted": "complex",
+        "comprehensive": "thorough",
+        "holistic": "complete",
+        "navigate": "move through",
+        "crucial": "critical",
+        "robust": "strong",
+        "seamless": "smooth",
+        "synergy": "collaboration",
+        "leverage": "use",
+        "scalable": "growable",
+        "foster": "encourage",
+        "optimize": "improve",
+        "ecosystem": "environment",
+        "paradigm": "model",
+    }
+
+    def _sanitize_banned_words(self, text: str) -> str:
+        """Replace banned single words with safe alternatives, preserving case."""
+        for banned, replacement in self._BANNED_REPLACEMENTS.items():
+            pattern = re.compile(r'\b' + re.escape(banned) + r'\b', re.IGNORECASE)
+            def _match_case(match, repl=replacement):
+                word = match.group()
+                if word[0].isupper():
+                    return repl[0].upper() + repl[1:]
+                return repl
+            text = pattern.sub(_match_case, text)
+        return text
+
+    async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general", research_run_id: int | None = None, source_content_map: dict | None = None):
         """
         Takes a blueprint JSON and streams a formatted Markdown article using Anthropic.
         Enforces Information Gain, E-E-A-T, and Entity Density rules with an iterative SEO loop.
@@ -55,7 +88,11 @@ class WriterService:
 
         prompt_instructions += (
             "CRITICAL WRITING CONSTRAINTS (Read Carefully):\n"
-            "1. NO AI FLUFF: Do NOT use the words 'delve', 'tapestry', 'landscape', 'multifaceted', 'comprehensive', 'holistic', 'navigate', or 'crucial'.\n"
+            "1. NO AI FLUFF: Do NOT use ANY of these words: "
+            "'delve', 'tapestry', 'landscape', 'multifaceted', 'comprehensive', 'holistic', "
+            "'navigate', 'crucial', 'robust', 'seamless', 'synergy', 'leverage', 'scalable', "
+            "'foster', 'optimize', 'ecosystem', 'paradigm'. Using ANY of these words will cause "
+            "an automatic validation failure and forced rewrite.\n"
             "2. NO CLICHES: Do NOT use 'In conclusion', 'Ultimately', 'In today's digital age', or 'game-changer'.\n"
             "3. FORMATTING: The very first ## H2 MUST focus entirely on the 'Information Gap' as a pattern interrupt.\n"
             "4. CADENCE: Max 2-3 sentences per paragraph. Short, punchy delivery. White space between every paragraph.\n"
@@ -149,12 +186,23 @@ class WriterService:
             citations = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
 
             if citations:
-                # Sort citations by composite_score (descending) to prioritize high-quality sources
-                citations_sorted = sorted(
-                    citations,
-                    key=lambda c: c.composite_score if c.composite_score else 0,
-                    reverse=True
-                )
+                # Filter out unverified facts and apply usability-tier weighting
+                verified_citations = [c for c in citations if getattr(c, 'is_verified', True)]
+
+                def _usability_weight(c):
+                    status = getattr(c, 'verification_status', 'not_checked') or 'not_checked'
+                    if status in ("corroborated", "trusted"):
+                        tier_mult = 1.5   # Premium: verified facts
+                    elif status == "not_checked":
+                        tier_mult = 0.6   # Discount: unchecked facts
+                    elif status == "suspect":
+                        tier_mult = 0.4   # Heavy discount: suspect source
+                    else:
+                        tier_mult = 0.5
+                    grounding_mult = 1.2 if getattr(c, 'is_grounded', True) else 0.8
+                    return (c.composite_score or 0) * tier_mult * grounding_mult
+
+                citations_sorted = sorted(verified_citations, key=_usability_weight, reverse=True)
 
                 prompt_instructions += "\n╔════════════════════════════════════════════════════════════════╗\n"
                 prompt_instructions += "║   CRITICAL CITATION REQUIREMENTS (NON-NEGOTIABLE)             ║\n"
@@ -239,66 +287,182 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
 
         max_attempts = 5
         v_feedback = ""
+        last_readability_scores = None  # Track for max-attempts fallback
+
+        # Gap 12 fix: Track best attempt across retries.
+        # On max-attempts or early-exit, return the best-scoring attempt, not the last.
+        best_attempt = None  # {"content": str, "readability": dict, "seo_passed": bool, "claims_passed": bool, "score": float}
 
         for attempt in range(1, max_attempts + 1):
             yield {"type": "debug", "message": f"Writer Iteration {attempt}: Starting draft generation..."}
             
             current_prompt = prompt_instructions
             if v_feedback:
-                current_prompt += f"\n\nCRITICAL FEEDBACK FROM PREVIOUS ATTEMPT:\n{v_feedback}\nFix these issues in this new draft."
+                current_prompt += (
+                    f"\n\nCRITICAL FEEDBACK FROM PREVIOUS ATTEMPT (MUST FIX ALL ISSUES):\n{v_feedback}\n"
+                    "IMPORTANT: Replace each banned word with a specific alternative. "
+                    "For example: 'landscape' -> 'space' or 'market', 'optimize' -> 'improve' or 'refine', "
+                    "'robust' -> 'strong' or 'reliable', 'seamless' -> 'smooth' or 'easy', "
+                    "'scalable' -> 'growable' or 'expandable'. "
+                    "Fix ALL issues in this new draft."
+                )
 
             full_content = ""
             try:
+                # Lower temperature on retries for tighter readability compliance
+                retry_temperature = 0.7 if attempt <= 2 else 0.5
+
                 async with self.client.messages.stream(
                     model=self.model_name,
                     max_tokens=8192,
                     system=system_instructions,
                     messages=[{"role": "user", "content": current_prompt}],
-                    temperature=0.7
+                    temperature=retry_temperature
                 ) as stream:
                     async for text_delta in stream.text_stream:
                         full_content += text_delta
                         yield {"type": "content", "data": text_delta}
 
+                # 1b. Deterministic banned-word sanitization (LLM often slips)
+                full_content = self._sanitize_banned_words(full_content)
+
                 # 2. Perform SEO Validation
                 yield {"type": "debug", "message": f"Writer Iteration {attempt}: Validating draft quality..."}
                 score = self.verify_seo_score(full_content, information_gap)
 
+                # Gap 12: Score this attempt for best-of-N tracking
+                # Higher = better. SEO pass is worth 50pts, each sub-check adds points.
+                attempt_score = 0.0
+                if score["word_count_ok"]:
+                    attempt_score += 10
+                if score["h1_ok"]:
+                    attempt_score += 5
+                if score["h2_ok"]:
+                    attempt_score += 10
+                if score["lists_tables_ok"]:
+                    attempt_score += 5
+                if score["info_gain_ok"]:
+                    attempt_score += 10
+                if not score["banned_words_used"]:
+                    attempt_score += 10
+
+                # Gap 12: Update best_attempt if this is the best so far
+                if best_attempt is None or attempt_score > best_attempt["score"]:
+                    best_attempt = {
+                        "content": full_content,
+                        "readability": last_readability_scores,
+                        "score": attempt_score,
+                        "attempt": attempt,
+                    }
+
                 if score["passed"]:
                     yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed SEO validation."}
 
-                    # --- Gate 3: Intelligent Citation Validation ---
+                    # --- Gate 3: Claim Cross-Referencing (replaces domain-counting Gate 2) ---
+                    # Gap 8 fix: Always verify citation URLs exist in FactCitation table,
+                    # not just for quantitative articles. Qualitative articles with fabricated
+                    # citation links were passing unchecked.
                     if research_run_id:
-                        # Detect quantitative claims that require citations
-                        claim_detection = self.detect_quantitative_claims(full_content)
+                        try:
+                            from .claim_verification_agent import (
+                                extract_article_claims,
+                                cross_reference_claims,
+                                verify_claim_with_llm,
+                                format_claim_verification_feedback,
+                            )
 
-                        if claim_detection['has_claims']:
-                            # Article has stats/numbers → require citations
-                            min_required = claim_detection['required_citations']
-                            citation_result = self.verify_citation_requirements(full_content, min_citations=min_required)
+                            # Step 1: Always extract claim+citation pairs from article
+                            article_claims = extract_article_claims(full_content)
 
-                            if not citation_result["passed"]:
-                                v_feedback = (
-                                    f"Citation Validation Failed (Iteration {attempt}).\n"
-                                    f"Detected {claim_detection['claim_count']} quantitative claims requiring {min_required} citations.\n"
-                                    f"{citation_result['feedback']}\n\n"
-                                    f"Example claims found:\n" + "\n".join(f"- {c[:100]}..." for c in claim_detection['claim_samples'])
+                            if article_claims:
+                                # Step 2: Cross-reference against verified FactCitations
+                                fact_citations = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+                                # Only use verified facts for cross-referencing
+                                verified_facts = [fc for fc in fact_citations if getattr(fc, 'is_verified', True)]
+
+                                xref_result = cross_reference_claims(
+                                    article_claims=article_claims,
+                                    fact_citations=verified_facts,
+                                    source_content_map=source_content_map,
                                 )
-                                yield {"type": "debug", "message": v_feedback}
 
+                                # Step 3: Resolve ambiguous claims with LLM
+                                # Gap 9 fix: Raised cap from 2 to 5 LLM calls
+                                llm_calls = 0
+                                for amb in xref_result.get("ambiguous_claims", [])[:5]:
+                                    llm_result = await verify_claim_with_llm(
+                                        claim_text=amb["claim"]["claim_text"],
+                                        fact_candidates=amb["candidate_facts"],
+                                        source_snippet=(source_content_map or {}).get(amb["claim"]["citation_url"], "")[:1000] if source_content_map else None,
+                                    )
+                                    llm_calls += 1
+                                    # Update detail status based on LLM result
+                                    for detail in xref_result["details"]:
+                                        if detail["claim_text"] == amb["claim"]["claim_text"][:200] and detail["status"] == "ambiguous":
+                                            if llm_result["supported"]:
+                                                detail["status"] = "verified"
+                                                xref_result["verified"] += 1
+                                            else:
+                                                detail["status"] = "fabricated"
+                                                xref_result["fabricated"] += 1
+                                            xref_result["ambiguous"] -= 1
+                                            break
+
+                                # Recalculate pass after LLM resolution
+                                # Gap 9 fix: Also fail if >2 ambiguous remain after LLM resolution
+                                # Too many unresolvable claims = unreliable article
+                                remaining_ambiguous = xref_result.get("ambiguous", 0)
+                                xref_result["passed"] = xref_result["fabricated"] == 0 and remaining_ambiguous <= 2
+
+                                if not xref_result["passed"]:
+                                    v_feedback = format_claim_verification_feedback(xref_result)
+                                    if remaining_ambiguous > 2:
+                                        v_feedback += f"\n\nADDITIONAL: {remaining_ambiguous} claims remain ambiguous after LLM verification. Too many unresolvable claims indicate unreliable sourcing. Rewrite using only facts from the citation map."
+                                    yield {"type": "debug", "message": f"Claim Verification Failed (Iteration {attempt}):\n{v_feedback}"}
+
+                                    if attempt == max_attempts:
+                                        yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
+                                        best_c = best_attempt["content"] if best_attempt else full_content
+                                        best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
+                                        yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
+                                        return
+
+                                    # Clear editor for next attempt
+                                    yield {"type": "control", "action": "retry_clear"}
+                                    continue
+
+                                yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed claim verification ({xref_result['verified']}/{xref_result['total_claims']} claims verified, {llm_calls} LLM calls, {remaining_ambiguous} ambiguous)."}
+                            else:
+                                yield {"type": "debug", "message": f"Writer Iteration {attempt}: No cited claims extracted (no markdown links found)."}
+
+                        except Exception as e:
+                            # Fallback to domain-counting v2 if claim verification fails
+                            import logging
+                            logging.getLogger(__name__).error(f"[CLAIM-GATE] Claim verification failed, falling back to v2: {e}")
+
+                            citations_fb = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+                            from .source_verification_service import extract_domain
+                            available_domains = len(set(
+                                extract_domain(c.source_url) for c in citations_fb
+                                if c.source_url and extract_domain(c.source_url)
+                            ))
+                            min_required = min(3, max(available_domains, 3))
+
+                            citation_result = self.verify_citation_requirements_v2(
+                                full_content, citation_map=citations_fb, min_citations=min_required
+                            )
+                            if not citation_result["passed"]:
+                                v_feedback = f"Citation Validation Failed (fallback v2, Iteration {attempt}). {citation_result['feedback']}"
+                                yield {"type": "debug", "message": v_feedback}
                                 if attempt == max_attempts:
                                     yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                                    yield {"status": "success", "text": full_content}
+                                    best_c = best_attempt["content"] if best_attempt else full_content
+                                    best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
+                                    yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
                                     return
-
-                                # Clear editor for next attempt
-                                yield {"type": "content", "data": "RETRY_CLEAR"}
+                                yield {"type": "control", "action": "retry_clear"}
                                 continue
-
-                            yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed citation validation ({citation_result['citation_count']} citations for {claim_detection['claim_count']} claims)."}
-                        else:
-                            # No quantitative claims → skip citation requirement
-                            yield {"type": "debug", "message": f"Writer Iteration {attempt}: No quantitative claims detected. Skipping citation validation (general advice article)."}
+                            yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed citation validation (fallback v2)."}
 
                     # --- Gate 2: Readability Validation ---
                     # Build broad keyword list for readability masking
@@ -411,6 +575,47 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                 f"FK: {details['flesch_kincaid_grade']})"
                             )
                         }
+
+                        # Gap 14: Lightweight blueprint compliance check (soft gate — warn only)
+                        outline = blueprint.get("outline_structure", [])
+                        if outline:
+                            article_h2s = [
+                                line.strip().lstrip('#').strip().lower()
+                                for line in full_content.split('\n')
+                                if re.match(r'^## (?!#)', line)
+                            ]
+                            blueprint_headings = []
+                            for item in outline:
+                                if isinstance(item, dict):
+                                    blueprint_headings.append((item.get("heading") or item.get("title") or "").lower())
+                                elif isinstance(item, str):
+                                    blueprint_headings.append(item.lower())
+
+                            matched_h2s = 0
+                            for bh in blueprint_headings:
+                                bh_words = set(re.findall(r'[a-zA-Z]{4,}', bh))
+                                if not bh_words:
+                                    continue
+                                for ah in article_h2s:
+                                    ah_words = set(re.findall(r'[a-zA-Z]{4,}', ah))
+                                    if len(bh_words & ah_words) >= 2:
+                                        matched_h2s += 1
+                                        break
+
+                            if matched_h2s < min(3, len(blueprint_headings)):
+                                yield {"type": "debug", "message": f"Blueprint compliance: {matched_h2s}/{len(blueprint_headings)} outline headings reflected in article H2s (soft warning)."}
+
+                        # Gap 14: Hook strategy compliance check (soft gate — warn only)
+                        hook_strategy = blueprint.get("hook_strategy", "")
+                        if hook_strategy and len(hook_strategy) > 5:
+                            hook_words = set(re.findall(r'[a-zA-Z]{4,}', hook_strategy.lower()))
+                            if hook_words:
+                                article_opening = full_content[:200].lower()
+                                opening_words = set(re.findall(r'[a-zA-Z]{4,}', article_opening))
+                                hook_overlap = hook_words & opening_words
+                                if len(hook_overlap) < 1:
+                                    yield {"type": "debug", "message": f"Blueprint compliance: Hook strategy not reflected in article opening (0/{len(hook_words)} hook words in first 200 chars). Hook: '{hook_strategy[:80]}' (soft warning)."}
+
                         # Include readability scores for database tracking
                         yield {
                             "status": "success",
@@ -425,6 +630,12 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                         return
                     else:
                         details = read_result["details"]
+                        last_readability_scores = {
+                            "ari": details['ari_grade'],
+                            "fk": details['flesch_kincaid_grade'],
+                            "cli": details['coleman_liau_grade'],
+                            "avg_sentence_length": details['avg_sentence_length'],
+                        }
                         v_feedback = (
                             f"Readability Validation Failed (Iteration {attempt}).\n"
                             f"{read_result['feedback']}"
@@ -443,13 +654,55 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                             )
                         }
 
+                        # Gap 12: Update best_attempt with readability scores
+                        read_scores = {
+                            "ari": details['ari_grade'],
+                            "fk": details['flesch_kincaid_grade'],
+                            "cli": details['coleman_liau_grade'],
+                            "avg_sentence_length": details['avg_sentence_length'],
+                        }
+                        # Readability-failing attempts that passed SEO+claims score higher
+                        read_attempt_score = attempt_score + 50  # +50 for passing SEO
+                        if best_attempt is None or read_attempt_score > best_attempt["score"]:
+                            best_attempt = {
+                                "content": full_content,
+                                "readability": read_scores,
+                                "score": read_attempt_score,
+                                "attempt": attempt,
+                            }
+
+                        # Early exit detection for unsimplifiable jargon (after 3rd attempt)
+                        if attempt >= 3:
+                            if self.detect_unsimplifiable_jargon(full_content, read_keywords):
+                                yield {
+                                    "type": "debug",
+                                    "message": (
+                                        "Technical jargon detected (>30% density). "
+                                        "Content contains unavoidable domain-specific terms. "
+                                        "Accepting current readability level to preserve accuracy."
+                                    )
+                                }
+                                # Gap 12: Return best attempt, not current
+                                best_c = best_attempt["content"] if best_attempt else full_content
+                                best_r = best_attempt.get("readability", read_scores) if best_attempt else read_scores
+                                best_r["early_exit"] = "unsimplifiable_jargon"
+                                yield {
+                                    "status": "success",
+                                    "text": best_c,
+                                    "readability_score": best_r,
+                                    "quality_flag": "best_effort",
+                                }
+                                return
+
                         if attempt == max_attempts:
                             yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                            yield {"status": "success", "text": full_content}
+                            best_c = best_attempt["content"] if best_attempt else full_content
+                            best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
+                            yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
                             return
 
                         # Clear editor for next attempt
-                        yield {"type": "content", "data": "RETRY_CLEAR"}
+                        yield {"type": "control", "action": "retry_clear"}
                 else:
                     issues = []
                     if score['banned_words_used']:
@@ -464,7 +717,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                     if not score['lists_tables_ok']:
                         issues.append(f"Not enough list/table blocks (found {score['list_table_blocks']}, need 3+)")
                     if not score['info_gain_ok']:
-                        issues.append(f"Information gain density too low ({score['info_gain_density']:.1f}, need 2.0+)")
+                        issues.append(f"Information gain too low ({score['info_gain_density']} angles covered, need 2+). Address more angles from the information gap in your H2 sections.")
                     v_feedback = (
                         f"SEO Validation Failed (Iteration {attempt}).\n"
                         + ("Issues:\n- " + "\n- ".join(issues) if issues else "Unknown validation failure")
@@ -473,11 +726,13 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                     
                     if attempt == max_attempts:
                         yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                        yield {"status": "success", "text": full_content}
+                        best_c = best_attempt["content"] if best_attempt else full_content
+                        best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
+                        yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
                         return
-                    
+
                     # Clear editor for next attempt
-                    yield {"type": "content", "data": "RETRY_CLEAR"}
+                    yield {"type": "control", "action": "retry_clear"}
 
             except Exception as e:
                 error_msg = f"Anthropic API Error: {str(e)}"
@@ -518,19 +773,67 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
             elif not is_list_or_table and stripped:
                 in_block = False
 
-        # Information Gain Density Check
+        # Information Gain Check
+        # Gap 13 fix: Replaced keyword frequency with real information gain check.
+        # Extracts distinct claims/angles from information_gap and verifies they
+        # appear as H2 sections or cited facts in the article.
         info_gain_density = 0
         if information_gap:
-            significant_words = {w.lower() for w in re.findall(r'\b[A-Za-z]{5,}\b', information_gap)}
-            if significant_words:
+            # Extract distinct angles: split on sentence boundaries and list markers
+            raw_angles = re.split(r'[.;!\n•\-]', information_gap)
+            angles = [a.strip() for a in raw_angles if len(a.strip()) > 20]
+
+            if angles:
                 text_lower = text.lower()
-                word_counts = sum(text_lower.count(w) for w in significant_words)
-                info_gain_density = word_counts / len(significant_words) if len(significant_words) > 0 else 0
-                
-        info_gain_ok = info_gain_density >= 2.0 if information_gap else True
+                # Extract H2 headings from article
+                h2_headings = [line.strip().lstrip('#').strip().lower() for line in text_no_code.split('\n') if re.match(r'^## (?!#)', line)]
+
+                matched_angles = 0
+                for angle in angles:
+                    angle_lower = angle.lower()
+                    # Extract 3 most significant words (5+ chars) from this angle
+                    angle_words = [w for w in re.findall(r'[a-zA-Z]{5,}', angle_lower)][:5]
+                    if len(angle_words) < 2:
+                        continue
+
+                    # Check 1: Do 2+ angle words appear in any H2 heading?
+                    h2_match = any(
+                        sum(1 for w in angle_words if w in h2) >= 2
+                        for h2 in h2_headings
+                    )
+                    # Check 2: Do 3+ angle words appear in the article body?
+                    body_match = sum(1 for w in angle_words if w in text_lower) >= 3
+
+                    if h2_match or body_match:
+                        matched_angles += 1
+
+                # info_gain_density = matched angles (need at least 2)
+                info_gain_density = matched_angles
+
+            info_gain_ok = info_gain_density >= 2 if angles else True
+        else:
+            info_gain_ok = True
+            import logging
+            logging.getLogger(__name__).info("[SEO-CHECK] No information_gap provided -- info gain check bypassed")
 
         # Banned phrases check
-        banned_list = ["delve", "tapestry", "landscape", "multifaceted", "comprehensive", "holistic", "navigate", "crucial", "in conclusion", "ultimately", "fast-paced world", "digital age", "game-changer"]
+        # Gap 11 fix: Merged prompt banned list (22 words) + AI slop phrases into gate.
+        # Previously only 13 words were enforced; the rest were prompt-only (unenforced).
+        banned_list = [
+            # Original 13
+            "delve", "tapestry", "landscape", "multifaceted", "comprehensive",
+            "holistic", "navigate", "crucial", "in conclusion", "ultimately",
+            "fast-paced world", "digital age", "game-changer",
+            # 9 additional from readability directive (were prompt-only, never gate-enforced)
+            "robust", "seamless", "synergy", "leverage", "scalable",
+            "foster", "optimize", "ecosystem", "paradigm",
+            # AI slop phrases
+            "it's worth noting", "it's important to note", "it is worth noting",
+            "whether you're a", "in the ever-evolving",
+            "when it comes to", "at the end of the day", "let's face it",
+            "in today's world", "in today's digital landscape",
+            "it cannot be overstated", "needless to say",
+        ]
         text_lower = text.lower()
         found_banned_words = [word for word in banned_list if word in text_lower]
         banned_words_used = len(found_banned_words) > 0
@@ -627,6 +930,95 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
         }
 
     @staticmethod
+    def extract_citation_domains(text: str) -> set[str]:
+        """
+        Extract all domains from inline citations (markdown links).
+
+        Returns set of domains cited in the article.
+        Used for domain-based citation validation (more flexible than exact text matching).
+        """
+        from .source_verification_service import extract_domain
+
+        domains = set()
+
+        # Markdown links: [text](https://domain.com/path)
+        markdown_pattern = r'\[([^\]]+)\]\((https?://[^\)]+)\)'
+        markdown_urls = re.findall(markdown_pattern, text)
+
+        for _, url in markdown_urls:
+            domain = extract_domain(url)
+            if domain:
+                domains.add(domain)
+
+        return domains
+
+    @staticmethod
+    def verify_citation_requirements_v2(
+        text: str,
+        citation_map: list,
+        min_citations: int = 3
+    ) -> dict:
+        """
+        Domain-based citation validation (v2).
+
+        More flexible than regex text matching - validates that article cites
+        domains from the citation map, not exact anchor text.
+
+        This fixes the common issue where DeepSeek extracts "Verizon 2024" but
+        Claude writes "Verizon Report 2024" - both cite the same domain, so both valid.
+
+        Args:
+            text: Article markdown content
+            citation_map: list of FactCitation objects with source_url
+            min_citations: Minimum number of verified sources that must be cited
+
+        Returns:
+            {
+                "passed": bool,
+                "citation_count": int,  # How many map domains are cited
+                "feedback": str
+            }
+        """
+        from .source_verification_service import extract_domain
+
+        # Extract all domains cited in article
+        article_domains = WriterService.extract_citation_domains(text)
+
+        # Extract all domains from citation map
+        map_domains = set()
+        for cite in citation_map:
+            domain = extract_domain(cite.source_url)
+            if domain:
+                map_domains.add(domain)
+
+        # Count how many map sources are cited (intersection)
+        cited_count = len(article_domains & map_domains)
+
+        passed = cited_count >= min_citations
+
+        feedback = ""
+        if not passed:
+            missing = map_domains - article_domains
+            feedback = (
+                f"Only {cited_count}/{min_citations} verified sources cited.\n"
+                f"You cited domains: {', '.join(sorted(article_domains)) if article_domains else 'NONE'}\n"
+                f"Missing verified sources from these domains: {', '.join(sorted(list(missing)[:5]))}\n"
+                f"Use the citation map provided in the prompt and cite these domains."
+            )
+
+        from ..settings import DEBUG_MODE
+        if DEBUG_MODE:
+            print(f"[CITATION-V2] Article domains: {article_domains}")
+            print(f"[CITATION-V2] Map domains: {map_domains}")
+            print(f"[CITATION-V2] Cited {cited_count}/{min_citations} required sources")
+
+        return {
+            "passed": passed,
+            "citation_count": cited_count,
+            "feedback": feedback,
+        }
+
+    @staticmethod
     def detect_quantitative_claims(text: str) -> dict:
         """
         Detect quantitative claims that require citations.
@@ -696,17 +1088,27 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                 context = text[start:end].strip()
                 claims.append(context)
 
-        # Deduplicate overlapping matches
-        unique_claims = list(set(claims))
+        # Deduplicate by numeric core (not 50-char context window)
+        seen_cores = set()
+        unique_claims = []
+        for claim in claims:
+            numbers = re.findall(r'\d[\d,.]*%?', claim)
+            core = ' '.join(numbers) if numbers else claim[:30]
+            if core not in seen_cores:
+                seen_cores.add(core)
+                unique_claims.append(claim)
         claim_count = len(unique_claims)
 
-        # Calculate required citations
+        # Calculate required citations (logarithmic scaling)
+        # One source often backs multiple claims (e.g., Verizon DBIR provides 5+ stats)
+        import math
         if claim_count == 0:
             required = 0  # No claims = no citations needed
         elif claim_count <= 2:
             required = 3  # Few claims = maintain credibility floor
         else:
-            required = claim_count  # Many claims = 1 citation each
+            # 3-5 claims → 3-5, 10 claims → 7, 21 claims → 9
+            required = min(claim_count, 3 + int(math.log2(claim_count)))
 
         return {
             'has_claims': claim_count > 0,
@@ -714,3 +1116,46 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
             'claim_samples': unique_claims[:3],
             'required_citations': required
         }
+
+    @staticmethod
+    def detect_unsimplifiable_jargon(content: str, keywords: list[str]) -> bool:
+        """
+        Detect if article uses many technical terms that can't be simplified.
+
+        Heuristic: If >30% of unique words are 10+ characters AND not in common word list,
+        likely unsimplifiable technical content (e.g., "authentication", "containerization").
+
+        Returns True if jargon density suggests simplification is impossible.
+        """
+        from .readability_service import strip_markdown
+
+        # Common long words that are NOT jargon
+        COMMON_LONG_WORDS = {
+            "organization", "information", "management", "important", "significant",
+            "technology", "development", "experience", "environment", "different",
+            "understand", "following", "including", "according", "implementation",
+            "everything", "something", "understand", "understanding", "relationship",
+            "relationships", "traditional", "customer", "customers", "professional",
+            "professionals", "opportunity", "opportunities", "performance",
+            "generation", "businesses", "enterprise", "enterprises", "investment",
+            "investments", "protection", "competitive", "competition", "infrastructure",
+        }
+
+        clean = strip_markdown(content)
+        words = re.findall(r'[a-zA-Z]+', clean.lower())
+
+        if not words:
+            return False
+
+        long_words = [w for w in words if len(w) >= 10]
+        unique_long = set(long_words) - COMMON_LONG_WORDS - set(k.lower() for k in keywords)
+
+        jargon_density = len(unique_long) / len(set(words)) if set(words) else 0
+
+        from ..settings import DEBUG_MODE
+        if DEBUG_MODE:
+            print(f"[JARGON] Unique long words: {len(unique_long)}, Total unique: {len(set(words))}, Density: {jargon_density:.2%}")
+            if jargon_density > 0.25:
+                print(f"[JARGON] Sample jargon: {list(unique_long)[:10]}")
+
+        return jargon_density > 0.30

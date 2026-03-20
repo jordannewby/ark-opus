@@ -1,10 +1,12 @@
 import os
+import asyncio
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Configure logging so INFO-level messages (scoring breakdowns, verified sources) are visible
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Ensure environment is loaded BEFORE importing services
 env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -19,8 +21,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from sqlalchemy.exc import OperationalError
-from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, SessionLocal
-from .models import Post, ResearchRun, UserStyleRule, Workspace, WriterRun
+from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, migrate_domain_credibility_cache, migrate_fact_verification, migrate_style_rule_archive, SessionLocal
+from .models import Post, ResearchRun, UserStyleRule, Workspace, WriterRun, FactCitation
 from .schemas import (
     BlueprintResponse,
     GenerateFullResponse,
@@ -46,6 +48,9 @@ migrate_writer_learning()
 migrate_source_verification()
 migrate_composite_scoring()
 migrate_fact_consensus()
+migrate_domain_credibility_cache()
+migrate_fact_verification()
+migrate_style_rule_archive()
 Base.metadata.create_all(bind=engine)
 
 def normalize_niche(niche: str | None) -> str:
@@ -295,13 +300,20 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             yield f"data: {json.dumps({'event': 'phase1_start', 'message': 'Gathering intelligence and analyzing context...'})}\n\n"
             p1_start = time.time()
             research_agent = ResearchAgent(db)
-            research_data_dict = await research_agent.research(
-                keyword, 
-                niche=niche, 
-                user_context=context, 
-                profile_name=payload.profile_name,
-                mcp_session=request.app.state.mcp_session
-            )
+            try:
+                research_data_dict = await asyncio.wait_for(
+                    research_agent.research(
+                        keyword,
+                        niche=niche,
+                        user_context=context,
+                        profile_name=payload.profile_name,
+                        mcp_session=request.app.state.mcp_session
+                    ),
+                    timeout=300
+                )
+            except asyncio.TimeoutError:
+                yield f"data: {json.dumps({'event': 'error', 'message': 'Research phase timed out after 5 minutes. Try a more specific keyword or check your API connections.'})}\n\n"
+                return
             if DEBUG_MODE:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1 (DeepSeek-R1 + MCP) completed in {round(time.time() - p1_start, 2)}s'})}\n\n"
             
@@ -313,6 +325,8 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             # Phase 1.5 - Source Verification
             elite_competitors = research_data_dict.get("elite_competitors", [])
             research_run_id = research_data_dict.get("research_run_id", 0)
+
+            source_content_map = {}  # Built during Phase 1.5, passed to writer for claim verification
 
             if elite_competitors:
                 yield f"data: {json.dumps({'event': 'phase1_5_start', 'message': 'Verifying source credibility...'})}\n\n"
@@ -327,6 +341,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     research_run_id=research_run_id,
                     mcp_session=request.app.state.mcp_session,
                     keyword=keyword,
+                    niche=niche,
                 )
 
                 verified_sources = verification_result["verified_sources"]
@@ -336,103 +351,92 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     for i, source in enumerate(verified_sources):
                         yield f"data: {json.dumps({'event': 'source_verification', 'source_title': source.title, 'domain': source.domain, 'credibility_score': round(source.credibility_score, 1), 'progress': f'{i+1}/{len(elite_competitors)}'})}\n\n"
 
-                # Backfill if < 3 verified sources
+                # Iterative source search if < 3 verified sources
                 if len(verified_sources) < 3:
-                    yield f"data: {json.dumps({'event': 'source_backfill_start', 'message': f'Only {len(verified_sources)} credible sources found. Searching for alternatives...'})}\n\n"
+                    yield f"data: {json.dumps({'event': 'source_backfill_start', 'message': f'Only {len(verified_sources)} credible sources found. Starting iterative search...'})}\n\n"
 
-                    rejected_domains = list({s["domain"] for s in rejected_sources})
-                    seen_urls = {s.url for s in verified_sources} | {s["url"] for s in rejected_sources}
+                    from .services.source_verification_service import iterative_source_search
 
-                    # Step 1: Try Find Similar from highest-scoring verified source
-                    if verified_sources:
-                        from datetime import datetime as dt_now, timedelta as td
-                        from .services.research_service import EXA_EXCLUDE_DOMAINS
+                    search_result = await iterative_source_search(
+                        keyword=keyword,
+                        niche=niche,
+                        profile_name=payload.profile_name,
+                        research_run_id=research_run_id,
+                        db=db,
+                        mcp_session=request.app.state.mcp_session,
+                        research_agent=research_agent,
+                        initial_sources=verified_sources,
+                        target_count=3,
+                        max_iterations=3,
+                    )
 
-                        best_source = max(verified_sources, key=lambda s: s.credibility_score)
-                        if DEBUG_MODE:
-                            seed_msg = f"FindSimilar: Using seed URL {best_source.url} (score: {round(best_source.credibility_score, 1)})"
-                            yield f"data: {json.dumps({'event': 'debug', 'message': seed_msg})}\n\n"
+                    verified_sources = search_result["verified_sources"]
+                    rejected_sources.extend(search_result["rejected_sources"])
 
-                        two_years_ago = (dt_now.now() - td(days=730)).strftime('%Y-%m-%d')
-                        similar_results = await research_agent.exa_find_similar(
-                            url=best_source.url,
-                            num_results=5,
-                            exclude_domains=list(EXA_EXCLUDE_DOMAINS) + rejected_domains,
-                            start_published_date=two_years_ago,
-                        )
-                        # Find Similar returns search-like results; fetch full text for verification
-                        similar_ids = [r.get("id") for r in similar_results if r.get("id") and not r.get("error")]
-                        if similar_ids:
-                            similar_articles = await research_agent.exa_extract_full_text(similar_ids)
-                            similar_new = [s for s in similar_articles if s.get("url") not in seen_urls and not s.get("error")]
-                            if similar_new:
-                                similar_verification = await verify_sources(
-                                    elite_competitors=similar_new,
-                                    db=db,
-                                    profile_name=payload.profile_name,
-                                    research_run_id=research_run_id,
-                                    mcp_session=request.app.state.mcp_session,
-                                    keyword=keyword,
-                                )
-                                verified_sources.extend(similar_verification["verified_sources"])
-                                rejected_sources.extend(similar_verification["rejected_sources"])
-                                elite_competitors.extend(similar_new)
-                                seen_urls.update(s.get("url") for s in similar_new)
-                                if DEBUG_MODE:
-                                    fs_count = len(similar_verification["verified_sources"])
-                                    yield f"data: {json.dumps({'event': 'debug', 'message': f'FindSimilar added {fs_count} verified sources'})}\n\n"
-
-                    # Step 2: Niche-filtered backfill (authoritative domains only)
-                    if len(verified_sources) < 3:
-                        niche_backfill_results = await research_agent.niche_filtered_backfill(keyword, niche, rejected_domains)
-                        niche_new = [s for s in niche_backfill_results if s.get("url") not in seen_urls]
-
-                        if niche_new:
-                            niche_verification = await verify_sources(
-                                elite_competitors=niche_new,
-                                db=db,
-                                profile_name=payload.profile_name,
-                                research_run_id=research_run_id,
-                                mcp_session=request.app.state.mcp_session,
-                                keyword=keyword,
-                            )
-                            verified_sources.extend(niche_verification["verified_sources"])
-                            rejected_sources.extend(niche_verification["rejected_sources"])
-                            elite_competitors.extend(niche_new)
-                            seen_urls.update(s.get("url") for s in niche_new)
-                            if DEBUG_MODE:
-                                nb_count = len(niche_verification["verified_sources"])
-                                yield f"data: {json.dumps({'event': 'debug', 'message': f'Niche backfill added {nb_count} verified sources'})}\n\n"
-
-                    # Step 3: Broad search fallback if still < 3
-                    if len(verified_sources) < 3:
-                        backfill_results = await research_agent.backfill_search(keyword, niche, rejected_domains)
-                        new_sources = [s for s in backfill_results if s.get("url") not in seen_urls]
-
-                        if new_sources:
-                            backfill_verification = await verify_sources(
-                                elite_competitors=new_sources,
-                                db=db,
-                                profile_name=payload.profile_name,
-                                research_run_id=research_run_id,
-                                mcp_session=request.app.state.mcp_session,
-                                keyword=keyword,
-                            )
-                            verified_sources.extend(backfill_verification["verified_sources"])
-                            rejected_sources.extend(backfill_verification["rejected_sources"])
-                            elite_competitors.extend(new_sources)  # Merge for fact extraction
+                    # Merge new sources into elite_competitors for fact extraction
+                    for source in verified_sources:
+                        elite_competitors.append({
+                            "url": source.url,
+                            "title": source.title,
+                            "content": source.content_snippet or "",
+                            "credibility_score": source.credibility_score,
+                            "domain_authority": source.domain_authority,
+                            "freshness_score": source.freshness_score,
+                            "publish_date": source.publish_date.isoformat() if source.publish_date else None,
+                            "domain": source.domain,
+                        })
 
                     backfill_found = len(verified_sources)
-                    yield f"data: {json.dumps({'event': 'source_backfill_complete', 'message': f'Backfill complete: {backfill_found} total verified sources', 'verified_count': backfill_found})}\n\n"
+                    iterations_used = search_result["iterations_used"]
+                    yield f"data: {json.dumps({'event': 'source_backfill_complete', 'message': f'Iterative search complete: {backfill_found} total verified sources after {iterations_used} iterations', 'verified_count': backfill_found, 'iterations': iterations_used})}\n\n"
 
-                    # Final gate — still fail if <3 after backfill
-                    if len(verified_sources) < 3:
-                        error_msg = f"Insufficient credible sources after backfill: only {len(verified_sources)} found (need 3 minimum). Rejected: {len(rejected_sources)} sources."
+                    # Softer gate: allow 1-2 high-quality sources if avg credibility is very high
+                    if len(verified_sources) == 0:
+                        error_msg = f"Insufficient credible sources after iterative search: 0 sources found (need at least 1). Rejected: {len(rejected_sources)} sources."
                         yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
                         return
+                    elif len(verified_sources) < 3:
+                        avg_score = sum(s.credibility_score for s in verified_sources) / len(verified_sources)
+                        if avg_score >= 60.0:
+                            logger.info(f"[GATE] Allowing {len(verified_sources)} sources (avg credibility: {avg_score:.1f})")
+                            yield f"data: {json.dumps({'event': 'debug', 'message': f'Proceeding with {len(verified_sources)} high-quality sources (avg credibility: {avg_score:.1f}/100)'})}\n\n"
+                        else:
+                            error_msg = f"Insufficient credible sources: only {len(verified_sources)} found with avg credibility {avg_score:.1f} < 60.0 threshold."
+                            yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
+                            return
 
                 # Extract facts and link to sources (pass full content for better extraction)
-                await link_facts_to_sources(verified_sources, research_run_id, db, elite_competitors=elite_competitors)
+                yield f"data: {json.dumps({'event': 'fact_verification_start', 'message': 'Verifying extracted facts against authoritative sources...'})}\n\n"
+
+                fact_link_result = await link_facts_to_sources(
+                    verified_sources, research_run_id, db,
+                    elite_competitors=elite_competitors, niche=niche,
+                )
+
+                # Emit fact verification SSE events
+                if fact_link_result:
+                    fv = fact_link_result.get("fact_verification", {})
+                    total_checked = fv.get("total_checked", 0)
+                    fv_verified = fv.get("verified", 0)
+                    fv_unverifiable = fv.get("unverifiable", 0)
+                    fv_corrected = fv.get("corrected", 0)
+
+                    if total_checked > 0:
+                        yield f"data: {json.dumps({'event': 'fact_verification_complete', 'message': f'{fv_verified}/{total_checked} facts independently verified, {fv_unverifiable} unverifiable, {fv_corrected} corrected', 'verified': fv_verified, 'unverifiable': fv_unverifiable, 'corrected': fv_corrected, 'total_checked': total_checked})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'event': 'fact_verification_complete', 'message': 'All facts from trusted sources (Tier 1-2) - independent verification skipped', 'verified': 0, 'unverifiable': 0, 'corrected': 0, 'total_checked': 0})}\n\n"
+
+                # Build source_content_map for post-writer claim cross-referencing
+                source_content_map = {}
+                for comp in elite_competitors:
+                    url = comp.get("url", "")
+                    content = comp.get("content", "")
+                    if url and content:
+                        source_content_map[url] = content
+                # Fallback: fill gaps from VerifiedSource.content_snippet
+                for vs in verified_sources:
+                    if vs.url not in source_content_map and vs.content_snippet:
+                        source_content_map[vs.url] = vs.content_snippet
 
                 avg_credibility = sum(s.credibility_score for s in verified_sources) / len(verified_sources) if verified_sources else 0
 
@@ -446,6 +450,22 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     {"title": s.title, "url": s.url, "credibility_score": s.credibility_score}
                     for s in verified_sources
                 ]
+
+                # Gap 15: Enrich with fact category distribution for psychology agent
+                fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+                if fact_citations:
+                    fact_type_counts = {}
+                    for fc in fact_citations:
+                        ft = fc.fact_type or "unknown"
+                        fact_type_counts[ft] = fact_type_counts.get(ft, 0) + 1
+                    research_data_dict["fact_categories"] = {
+                        "distribution": fact_type_counts,
+                        "total_facts": len(fact_citations),
+                        "dominant_type": max(fact_type_counts, key=fact_type_counts.get),
+                        "has_stats": fact_type_counts.get("stat", 0) > 0,
+                        "has_case_studies": fact_type_counts.get("case_study", 0) > 0,
+                        "has_expert_quotes": fact_type_counts.get("expert_quote", 0) > 0,
+                    }
             else:
                 if DEBUG_MODE:
                     yield f"data: {json.dumps({'event': 'debug', 'message': 'Phase 1.5 skipped: No elite competitors found in research'})}\n\n"
@@ -465,17 +485,31 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             writer_service = WriterService(db=db)
             article_content = ""
             run_id = research_data_dict.get("research_run_id")
-            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, normalize_niche(payload.niche), research_run_id=run_id):
+            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, normalize_niche(payload.niche), research_run_id=run_id, source_content_map=source_content_map):
                 if result.get("type") == "content":
                     yield f"data: {json.dumps({'event': 'content', 'data': result['data']})}\n\n"
                 elif result.get("type") == "debug":
                     yield f"data: {json.dumps({'event': 'debug', 'message': result['message']})}\n\n"
+                elif result.get("type") == "control":
+                    yield f"data: {json.dumps({'event': 'control', 'action': result.get('action', '')})}\n\n"
                 elif result.get("status") == "error":
                     yield f"data: {json.dumps({'event': 'error', 'message': result['message']})}\n\n"
                     return
                 elif result.get("status") == "success":
                     article_content = result["text"]
                     readability_scores = result.get("readability_score")  # Extract readability scores
+
+            # Fix 5: Fallback readability if all writer iterations failed at SEO gate
+            if article_content and not readability_scores:
+                from .services.readability_service import analyze_readability
+                fallback_read = analyze_readability(article_content)
+                if fallback_read and fallback_read.passed is not None:
+                    readability_scores = {
+                        "ari": fallback_read.ari_grade,
+                        "fk": fallback_read.flesch_kincaid_grade,
+                        "cli": fallback_read.coleman_liau_grade,
+                        "avg_sentence_length": fallback_read.avg_sentence_length,
+                    }
 
             if DEBUG_MODE:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 3 (Claude 3.5 Sonnet) completed in {round(time.time() - p3_start, 2)}s'})}\n\n"
@@ -496,7 +530,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 db.rollback()
                 db.close()
                 db = SessionLocal()
-                db.add(post)
+                post = db.merge(post)
                 db.commit()
             db.refresh(post)
 

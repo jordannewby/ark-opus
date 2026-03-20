@@ -95,8 +95,8 @@ def mask_keywords(text: str, keywords: list[str]) -> str:
     """
     masked = text
     for kw in sorted(keywords, key=len, reverse=True):
-        # Case-insensitive replacement, preserve word boundaries
-        pattern = re.compile(re.escape(kw), re.IGNORECASE)
+        # Case-insensitive replacement with word boundaries
+        pattern = re.compile(r'\b' + re.escape(kw) + r'\b', re.IGNORECASE)
         masked = pattern.sub('word', masked)
     return masked
 
@@ -485,8 +485,30 @@ def analyze_readability(
         target_range_percentage=target_range_pct
     )
     
-    # Step 6: Find complex sentences (use clean text, not masked)
-    complex_sents = [] if passed else find_complex_sentences(clean, threshold=8.0)
+    # Step 6: Find complex sentences
+    # Gap 18 fix: Run on masked text so we don't flag sentences that are only
+    # "complex" due to technical terms (already neutralized in scoring).
+    # Map identified sentences back to unmasked versions for readable feedback.
+    if not passed and keywords:
+        complex_masked = find_complex_sentences(scoring_text, threshold=8.0)
+        # Build masked→original sentence mapping
+        orig_sents = split_sentences(clean)
+        masked_sents = split_sentences(scoring_text)
+        m2o = {}
+        for ms, os in zip(masked_sents, orig_sents):
+            m2o[ms] = os
+        complex_sents = []
+        for cs in complex_masked:
+            orig = m2o.get(cs.text, cs.text)
+            complex_sents.append(SentenceAnalysis(
+                text=orig, word_count=cs.word_count,
+                ari_grade=cs.ari_grade, coleman_liau_grade=cs.coleman_liau_grade,
+                avg_grade=cs.avg_grade,
+            ))
+    elif not passed:
+        complex_sents = find_complex_sentences(clean, threshold=8.0)
+    else:
+        complex_sents = []
     
     # Step 7: Generate feedback if failing
     feedback = None if passed else _build_feedback(
