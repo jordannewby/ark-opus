@@ -7,8 +7,8 @@ import asyncio
 import sys
 import os
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(__file__))
+# Add project root to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.database import SessionLocal
 from app.services.research_service import ResearchAgent

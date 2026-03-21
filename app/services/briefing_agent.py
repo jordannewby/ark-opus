@@ -1,6 +1,9 @@
 import json
+import logging
 import httpx
-from ..settings import DEEPSEEK_API_KEY
+from ..settings import DEEPSEEK_API_KEY, BRIEFING_TIMEOUT
+
+logger = logging.getLogger(__name__)
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
@@ -38,7 +41,7 @@ class BriefingAgent:
                 "temperature": 0.7
             }
 
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=BRIEFING_TIMEOUT) as client:
                 resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
                 resp.raise_for_status()
                 content = resp.json()["choices"][0]["message"]["content"].strip()
@@ -58,5 +61,5 @@ class BriefingAgent:
             return ["Who is the exact target audience?", "What is the primary goal of this article?", "Are there any specific pain points to highlight?"]
 
         except Exception as e:
-            print(f"BriefingAgent Error: {e}")
+            logger.error(f"BriefingAgent Error: {e}")
             return ["Could you clarify the main objective?", "Who should be reading this?", "What is the key takeaway?"]

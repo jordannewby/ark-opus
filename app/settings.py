@@ -32,3 +32,44 @@ if not EXA_API_KEY:
     raise ValueError("EXA_API_KEY is missing.")
 if not ANTHROPIC_API_KEY:
     raise ValueError("ANTHROPIC_API_KEY is missing.")
+
+# ── Operational Constants ──────────────────────────────────────────
+# Timeouts (seconds)
+BRIEFING_TIMEOUT = 30
+DEEPSEEK_TIMEOUT = 60
+DEEPSEEK_REASONER_TIMEOUT = 90
+CARTOGRAPHER_TIMEOUT = 300
+EXA_TIMEOUT = 30
+
+# Research tuning
+CACHE_TTL_HOURS = 24
+MAX_AGENTIC_ITERATIONS = 5
+EXA_NUM_RESULTS = 10
+EXA_MAX_CHARACTERS = 25000
+SERP_DEPTH = 10
+LOCATION_CODE = 2840
+LANGUAGE_CODE = "en"
+
+# Writer tuning
+MAX_WRITER_ATTEMPTS = 5
+WRITER_MAX_TOKENS = 8192
+
+# Source verification
+SOURCE_CREDIBILITY_THRESHOLD = 45.0
+SOURCE_THRESHOLD_DECAY = 5.0
+MAX_VERIFICATION_ITERATIONS = 3
+
+# Claim verification
+MAX_EXA_FACT_CHECKS = 15
+MAX_LLM_VERIFICATIONS = 10
+CLAIM_TEXT_SIMILARITY_THRESHOLD = 0.2
+LLM_SOURCE_CONTEXT_CHARS = 5000
+MAX_UNCITED_CLAIMS = 2
+
+# Source credibility penalties
+BLOG_DOMAIN_PENALTY = 10.0        # pts deducted for blog.* subdomains
+BLOG_PATH_PENALTY = 5.0           # pts deducted for /blog/ in URL path
+UNSOURCED_CLAIMS_PENALTY = 15.0   # pts deducted for Tier 0 with claim_sourcing < 0.4
+
+# Feedback
+RULE_CONSOLIDATION_THRESHOLD = 20

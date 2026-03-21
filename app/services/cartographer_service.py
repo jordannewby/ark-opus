@@ -1,12 +1,15 @@
 import json
+import logging
 import httpx
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from ..models import ContentCampaign
+
+logger = logging.getLogger(__name__)
 from ..schemas import CampaignResponse, PillarKeyword, SpokeKeyword
-from ..settings import DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD, DEEPSEEK_API_KEY
+from ..settings import DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD, DEEPSEEK_API_KEY, CARTOGRAPHER_TIMEOUT
 
 
 class CartographerService:
@@ -76,8 +79,8 @@ class CartographerService:
             clean_json_str = match.group(0).strip()
             parsed_map = json.loads(clean_json_str)
         except Exception as e:
-            print(f"Error parsing deepseek JSON: {e}")
-            print(f"Raw output was: {json_output}")
+            logger.error(f"Error parsing DeepSeek JSON: {e}")
+            logger.error(f"Raw output was: {json_output}")
             raise Exception("Failed to parse campaign JSON from AI.")
 
         # 5. Persist to Neon Postgres DB
@@ -119,7 +122,7 @@ class CartographerService:
         auth = httpx.BasicAuth(username=DATAFORSEO_LOGIN, password=DATAFORSEO_PASSWORD)
         
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, auth=auth, timeout=120.0)
+            response = await client.post(url, json=payload, auth=auth, timeout=CARTOGRAPHER_TIMEOUT)
             response.raise_for_status()
             data = response.json()
             
@@ -128,7 +131,7 @@ class CartographerService:
                 items = data["tasks"][0]["result"][0]["items"]
                 return items
             except (KeyError, IndexError):
-                print(f"Unexpected DataForSEO response: {data}")
+                logger.error(f"Unexpected DataForSEO response: {data}")
                 return []
 
     async def _call_deepseek_reasoner(self, seed_topic: str, keyword_data: list, niche_context: str) -> str:
@@ -173,7 +176,7 @@ Output ONLY a strict JSON object:
         }
         
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, headers=headers, timeout=300.0)
+            response = await client.post(url, json=payload, headers=headers, timeout=CARTOGRAPHER_TIMEOUT)
             response.raise_for_status()
             result = response.json()
             

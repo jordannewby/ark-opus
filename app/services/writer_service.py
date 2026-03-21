@@ -1,9 +1,12 @@
 import json
+import logging
 import re
 from pathlib import Path
 from anthropic import AsyncAnthropic
-from ..settings import ANTHROPIC_API_KEY
+from ..settings import ANTHROPIC_API_KEY, MAX_WRITER_ATTEMPTS, WRITER_MAX_TOKENS, LLM_SOURCE_CONTEXT_CHARS, MAX_UNCITED_CLAIMS
 from .readability_service import verify_readability, READABILITY_DIRECTIVE
+
+logger = logging.getLogger(__name__)
 
 
 class WriterService:
@@ -227,45 +230,45 @@ class WriterService:
                 prompt_instructions += "║   CRITICAL CITATION REQUIREMENTS (NON-NEGOTIABLE)             ║\n"
                 prompt_instructions += "╚════════════════════════════════════════════════════════════════╝\n\n"
 
-                prompt_instructions += f"⚠️  You have access to {len(citations_sorted)} VERIFIED factual claims below.\n"
-                prompt_instructions += "⚠️  You MUST cite sources when making ANY factual claim.\n\n"
+                prompt_instructions += f"[!] You have access to {len(citations_sorted)} VERIFIED factual claims below.\n"
+                prompt_instructions += "[!] You MUST cite sources when making ANY factual claim.\n\n"
 
                 prompt_instructions += "═══ AVAILABLE CITATIONS (use exact markdown format) ═══\n\n"
 
                 for cite in citations_sorted:
                     markdown_link = f"[{cite.citation_anchor}]({cite.source_url})"
                     # Truncate fact to 100 chars for readability
-                    fact_preview = cite.fact_text[:100] + "..." if len(cite.fact_text) > 100 else cite.fact_text
+                    fact_preview = cite.fact_text
                     prompt_instructions += f"  • {markdown_link} — {fact_preview}\n"
 
                 prompt_instructions += "\n═══════════════════════════════════════════════════\n\n"
 
-                prompt_instructions += "📋 MANDATORY FORMAT:\n"
+                prompt_instructions += "MANDATORY FORMAT:\n"
                 prompt_instructions += "   When you write a fact from the map, cite it IMMEDIATELY like this:\n"
                 prompt_instructions += '   "67% of SMBs experienced a cyberattack in 2023 [Verizon 2024](https://verizon.com/dbir)."\n\n'
 
-                prompt_instructions += "📊 MINIMUM CITATION REQUIREMENTS:\n"
+                prompt_instructions += "MINIMUM CITATION REQUIREMENTS:\n"
                 prompt_instructions += "   • If your article has 0-2 quantitative claims: Cite at least 3 sources\n"
                 prompt_instructions += "   • If your article has 3+ quantitative claims: Cite 1 source per claim\n"
                 prompt_instructions += "   • Distribute citations throughout the article (not all in one section)\n\n"
 
-                prompt_instructions += "🚫 STRICT PROHIBITIONS:\n"
+                prompt_instructions += "STRICT PROHIBITIONS:\n"
                 prompt_instructions += "   • DO NOT invent statistics, percentages, or dollar amounts\n"
                 prompt_instructions += "   • DO NOT use vague claims like 'many companies' or 'recent studies'\n"
                 prompt_instructions += "   • DO NOT cite sources not in the citation map above\n"
                 prompt_instructions += "   • DO NOT write facts without immediate inline citations\n\n"
 
-                prompt_instructions += "✅ ACCEPTED CITATION FORMATS:\n"
+                prompt_instructions += "ACCEPTED CITATION FORMATS:\n"
                 prompt_instructions += "   1. Markdown links: [Source Name 2024](URL)  ← PREFERRED\n"
                 prompt_instructions += "   2. Parenthetical: (Source 2024)\n"
                 prompt_instructions += "   3. Footnotes: [1], [2], etc.\n\n"
 
-                prompt_instructions += "💡 EXAMPLES OF PROPER CITATION:\n"
-                prompt_instructions += "   ✓ 'According to [Gartner 2024](url), cloud adoption will reach 85% by 2026.'\n"
-                prompt_instructions += "   ✓ 'The average cost of a data breach is $4.35 million [IBM Report](url).'\n"
-                prompt_instructions += "   ✓ 'Healthcare faces 3x more attacks than other sectors (Verizon 2024).'\n"
-                prompt_instructions += "   ✗ '67% of SMBs report security concerns.' ← NO CITATION!\n"
-                prompt_instructions += "   ✗ 'Many companies are adopting AI.' ← VAGUE, NO DATA!\n\n"
+                prompt_instructions += "EXAMPLES OF PROPER CITATION:\n"
+                prompt_instructions += "   [OK] 'According to [Gartner 2024](url), cloud adoption will reach 85% by 2026.'\n"
+                prompt_instructions += "   [OK] 'The average cost of a data breach is $4.35 million [IBM Report](url).'\n"
+                prompt_instructions += "   [OK] 'Healthcare faces 3x more attacks than other sectors (Verizon 2024).'\n"
+                prompt_instructions += "   [X] '67% of SMBs report security concerns.' -- NO CITATION!\n"
+                prompt_instructions += "   [X] 'Many companies are adopting AI.' -- VAGUE, NO DATA!\n\n"
 
                 prompt_instructions += "================================================\n"
 
@@ -326,7 +329,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
         prompt_instructions += f"\n\n{READABILITY_DIRECTIVE}"
         prompt_instructions += "\nFollow all system prompt guidelines strictly. Write directly in Markdown."
 
-        max_attempts = 5
+        max_attempts = MAX_WRITER_ATTEMPTS
         v_feedback = ""
         all_feedback_history = []  # Gap 31: Accumulate feedback across iterations to prevent ping-pong
         last_readability_scores = None  # Track for max-attempts fallback
@@ -368,7 +371,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
 
                 async with self.client.messages.stream(
                     model=self.model_name,
-                    max_tokens=8192,
+                    max_tokens=WRITER_MAX_TOKENS,
                     system=system_instructions,
                     messages=[{"role": "user", "content": current_prompt}],
                     temperature=retry_temperature
@@ -423,6 +426,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                 cross_reference_claims,
                                 verify_claim_with_llm,
                                 format_claim_verification_feedback,
+                                detect_uncited_claims,
                             )
 
                             # Step 1: Always extract claim+citation pairs from article
@@ -440,6 +444,12 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                     source_content_map=source_content_map,
                                 )
 
+                                # Step 2B: Detect uncited factual claims
+                                uncited_claims = detect_uncited_claims(full_content, article_claims)
+                                if uncited_claims:
+                                    xref_result["uncited"] = uncited_claims
+                                    xref_result["uncited_count"] = len(uncited_claims)
+
                                 # Step 3: Resolve ambiguous claims with LLM
                                 # Raised cap to 10 to handle articles with many citations
                                 llm_calls = 0
@@ -447,7 +457,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                     llm_result = await verify_claim_with_llm(
                                         claim_text=amb["claim"]["claim_text"],
                                         fact_candidates=amb["candidate_facts"],
-                                        source_snippet=(source_content_map or {}).get(amb["claim"]["citation_url"], "")[:1000] if source_content_map else None,
+                                        source_snippet=(source_content_map or {}).get(amb["claim"]["citation_url"], "")[:LLM_SOURCE_CONTEXT_CHARS] if source_content_map else None,
                                     )
                                     llm_calls += 1
                                     # Update detail status based on LLM result
@@ -496,10 +506,13 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                 else:
                                     max_ungrounded = 0  # Normal: zero-tolerance for ungrounded
 
+                                uncited_count = xref_result.get("uncited_count", 0)
+
                                 xref_result["passed"] = (
                                     xref_result["fabricated"] == 0
                                     and ungrounded_count <= max_ungrounded
                                     and remaining_ambiguous <= max_ambiguous
+                                    and uncited_count <= MAX_UNCITED_CLAIMS
                                 )
 
                                 if not xref_result["passed"]:
@@ -520,14 +533,13 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                     yield {"type": "control", "action": "retry_clear"}
                                     continue
 
-                                yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed claim verification ({xref_result['verified']}/{xref_result['total_claims']} claims verified, {llm_calls} LLM calls, {remaining_ambiguous} ambiguous, {ungrounded_count} ungrounded)."}
+                                yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed claim verification ({xref_result['verified']}/{xref_result['total_claims']} claims verified, {llm_calls} LLM calls, {remaining_ambiguous} ambiguous, {ungrounded_count} ungrounded, {uncited_count} uncited)."}
                             else:
                                 yield {"type": "debug", "message": f"Writer Iteration {attempt}: No cited claims extracted (no markdown links found)."}
 
                         except Exception as e:
                             # Fallback to domain-counting v2 if claim verification fails
-                            import logging
-                            logging.getLogger(__name__).error(f"[CLAIM-GATE] Claim verification failed, falling back to v2: {e}")
+                            logger.error(f"[CLAIM-GATE] Claim verification failed, falling back to v2: {e}")
                             # Clear dirty session state so fallback queries don't fail too
                             try:
                                 self.db.rollback()
@@ -643,13 +655,12 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
 
                     # DEBUG: Validate keyword masking effectiveness
                     if read_keywords:
-                        import logging
-                        logging.debug(f"[READABILITY] Masking {len(read_keywords)} keywords: {read_keywords[:10]}...")
+                        logger.debug(f"[READABILITY] Masking {len(read_keywords)} keywords: {read_keywords[:10]}...")
                         sample_text = full_content[:500]
                         from app.services.readability_service import mask_keywords, strip_markdown
                         sample_masked = mask_keywords(strip_markdown(sample_text), read_keywords)
-                        logging.debug(f"[READABILITY] Original: {sample_text[:100]}")
-                        logging.debug(f"[READABILITY] Masked: {sample_masked[:100]}")
+                        logger.debug(f"[READABILITY] Original: {sample_text[:100]}")
+                        logger.debug(f"[READABILITY] Masked: {sample_masked[:100]}")
 
                     if read_result["pass"]:
                         details = read_result["details"]
@@ -826,7 +837,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
 
             except Exception as e:
                 error_msg = f"Anthropic API Error: {str(e)}"
-                print(f"[Writer] {error_msg}")
+                logger.error(f"[Writer] {error_msg}")
                 yield {"status": "error", "message": error_msg}
                 return
 
@@ -916,8 +927,7 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
             info_gain_ok = info_gain_density >= 2 if angles else True
         else:
             info_gain_ok = True
-            import logging
-            logging.getLogger(__name__).info("[SEO-CHECK] No information_gap provided -- info gain check bypassed")
+            logger.info("[SEO-CHECK] No information_gap provided -- info gain check bypassed")
 
         # Banned phrases check
         # Gap 11 fix: Merged prompt banned list (22 words) + AI slop phrases into gate.
@@ -1004,14 +1014,12 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
         citation_count = len(all_citations)
 
         # DEBUG: Log what was found
-        from ..settings import DEBUG_MODE
-        if DEBUG_MODE:
-            print(f"[DEBUG] Citation validation: Found {citation_count} citations")
-            print(f"  - Markdown: {len(markdown_citations)}")
-            print(f"  - Parenthetical: {len(parenthetical_citations)}")
-            print(f"  - Footnotes: {len(unique_footnotes)}")
-            if citation_count > 0:
-                print(f"  - Sample: {all_citations[:3]}")
+        logger.debug(f"[DEBUG] Citation validation: Found {citation_count} citations")
+        logger.debug(f"  - Markdown: {len(markdown_citations)}")
+        logger.debug(f"  - Parenthetical: {len(parenthetical_citations)}")
+        logger.debug(f"  - Footnotes: {len(unique_footnotes)}")
+        if citation_count > 0:
+            logger.debug(f"  - Sample: {all_citations[:3]}")
 
         passed = citation_count >= min_citations
 
@@ -1109,11 +1117,9 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                 f"Use the citation map provided in the prompt and cite these domains."
             )
 
-        from ..settings import DEBUG_MODE
-        if DEBUG_MODE:
-            print(f"[CITATION-V2] Article domains: {article_domains}")
-            print(f"[CITATION-V2] Map domains: {map_domains}")
-            print(f"[CITATION-V2] Cited {cited_count}/{min_citations} required sources")
+        logger.debug(f"[CITATION-V2] Article domains: {article_domains}")
+        logger.debug(f"[CITATION-V2] Map domains: {map_domains}")
+        logger.debug(f"[CITATION-V2] Cited {cited_count}/{min_citations} required sources")
 
         return {
             "passed": passed,
@@ -1255,10 +1261,8 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
 
         jargon_density = len(unique_long) / len(set(words)) if set(words) else 0
 
-        from ..settings import DEBUG_MODE
-        if DEBUG_MODE:
-            print(f"[JARGON] Unique long words: {len(unique_long)}, Total unique: {len(set(words))}, Density: {jargon_density:.2%}")
-            if jargon_density > 0.25:
-                print(f"[JARGON] Sample jargon: {list(unique_long)[:10]}")
+        logger.debug(f"[JARGON] Unique long words: {len(unique_long)}, Total unique: {len(set(words))}, Density: {jargon_density:.2%}")
+        if jargon_density > 0.25:
+            logger.debug(f"[JARGON] Sample jargon: {list(unique_long)[:10]}")
 
         return jargon_density > 0.30

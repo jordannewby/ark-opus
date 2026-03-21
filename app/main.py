@@ -126,7 +126,7 @@ async def approve_and_train_post(
 ):
     """
     Accepts the human-edited content, updates the database, and spins up the FeedbackAgent
-    in the background so the user's browser doesn't have to wait for Gemini to extract style rules.
+    in the background so the user's browser doesn't have to wait for DeepSeek to extract style rules.
     """
     post = db.query(Post).filter(Post.id == post_id, Post.profile_name == profile_name).first()
     if not post:
@@ -596,10 +596,10 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             error_msg = str(e)
             if DEBUG_MODE:
                 tb = traceback.format_exc()
-                print(f"\n[CRITICAL ERROR TRACEBACK]\n{tb}\n")
+                logger.error(f"[CRITICAL ERROR TRACEBACK]\n{tb}")
                 error_msg = f"{str(e)} | Check backend terminal for full traceback."
             else:
-                print(f"[ARES] Generation Error: {e}")
+                logger.error(f"[ARES] Generation Error: {e}")
             yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
         finally:
             # If db was reassigned via SSL retry (nonlocal db = SessionLocal()),

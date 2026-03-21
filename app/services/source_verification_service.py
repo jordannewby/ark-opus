@@ -21,8 +21,13 @@ import httpx
 from sqlalchemy.orm import Session
 
 from ..models import FactCitation, VerifiedSource
-from ..settings import DEEPSEEK_API_KEY
+from ..settings import (
+    DEEPSEEK_API_KEY, DEEPSEEK_TIMEOUT, DEEPSEEK_REASONER_TIMEOUT,
+    SOURCE_CREDIBILITY_THRESHOLD, SOURCE_THRESHOLD_DECAY, MAX_VERIFICATION_ITERATIONS,
+    BLOG_DOMAIN_PENALTY, BLOG_PATH_PENALTY, UNSOURCED_CLAIMS_PENALTY,
+)
 from ..domain_tiers import get_domain_tier_score
+from .research_service import mcp_call_with_retry
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
@@ -242,7 +247,7 @@ async def fetch_domain_authority(domains: list[str], mcp_session) -> dict[str, d
         return {}
 
     try:
-        result = await mcp_session.call_tool("domain_rank_overview", {"targets": domains[:10]})
+        result = await mcp_call_with_retry(mcp_session, "domain_rank_overview", {"targets": domains[:10]})
 
         result_text = None
         if hasattr(result, 'content') and result.content:
@@ -290,7 +295,7 @@ async def fetch_serp_ranking_urls(keyword: str, mcp_session) -> dict[str, int]:
         return {}
 
     try:
-        result = await mcp_session.call_tool("serp_organic_live_advanced", {
+        result = await mcp_call_with_retry(mcp_session, "serp_organic_live_advanced", {
             "keyword": keyword,
             "location_code": 2840,
             "language_code": "en",
@@ -411,7 +416,7 @@ Only return the JSON, no other text."""
             "temperature": 0.3,
         }
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
             resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
             text = resp.json()["choices"][0]["message"]["content"].strip()
@@ -503,7 +508,7 @@ Only return the JSON, no other text."""
             "temperature": 0.3,
         }
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
             resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
             text = resp.json()["choices"][0]["message"]["content"].strip()
@@ -552,8 +557,8 @@ async def calculate_credibility_score(
     Returns score 0.0-85.0 (up to 100.0 with rescue bonus). Minimum threshold: 45.0 to pass verification (53% pass rate).
 
     FACTORS (March 2026 v2 — enhanced with DataForSEO + SERP):
-    - Content Integrity (25 pts) - "is this trustworthy?" (Gemini)
-    - Content Quality (15 pts) - "is this well-written?" (Gemini)
+    - Content Integrity (25 pts) - "is this trustworthy?" (DeepSeek)
+    - Content Quality (15 pts) - "is this well-written?" (DeepSeek)
     - Domain Tier + Authority (20 pts) - Curated tiers + DataForSEO Domain Rank fallback
     - Content Freshness (15 pts) - Exa publishedDate primary, regex fallback
     - SERP Ranking (10 pts) - Source domain appears in top SERP results (DataForSEO)
@@ -654,6 +659,34 @@ async def calculate_credibility_score(
     score += relevance_points
     breakdown["relevance"] = round(relevance_points, 1)
 
+    # Blog domain penalty — corporate blogs are inherently promotional
+    source_url = source.get("url", "")
+    source_domain = domain_metrics.get("domain", "")
+    blog_penalty = 0.0
+
+    if source_domain.startswith("blog."):
+        blog_penalty = BLOG_DOMAIN_PENALTY
+        logger.info(f"[BLOG-PENALTY] {source_domain} is a blog subdomain: -{BLOG_DOMAIN_PENALTY} pts")
+    elif "/blog/" in source_url or source_url.endswith("/blog"):
+        blog_penalty = BLOG_PATH_PENALTY
+        logger.info(f"[BLOG-PENALTY] {source_url} contains /blog/ path: -{BLOG_PATH_PENALTY} pts")
+
+    score -= blog_penalty
+    breakdown["blog_penalty"] = round(-blog_penalty, 1)
+
+    # Unsourced claims penalty — Tier 0 domains must cite their own evidence
+    unsourced_penalty = 0.0
+    if tier_level == 0 and content_integrity:
+        claim_sourcing = content_integrity.get("scores", {}).get("claim_sourcing", 0.5)
+        if claim_sourcing < 0.4:
+            unsourced_penalty = UNSOURCED_CLAIMS_PENALTY
+            logger.info(
+                f"[UNSOURCED] {source_domain} is Tier 0 with claim_sourcing={claim_sourcing:.2f}: "
+                f"-{UNSOURCED_CLAIMS_PENALTY} pts (claims not backed by evidence)"
+            )
+    score -= unsourced_penalty
+    breakdown["unsourced_penalty"] = round(-unsourced_penalty, 1)
+
     final_score = max(0.0, min(100.0, score))
 
     # Log full breakdown for debugging
@@ -662,7 +695,8 @@ async def calculate_credibility_score(
         f"(Integrity:{breakdown['integrity']} Quality:{breakdown['quality']} "
         f"Domain:{breakdown['domain']} Fresh:{breakdown['freshness']} "
         f"SERP:{breakdown['serp']} Cite:{breakdown['citations']} "
-        f"Author:{breakdown['author']} Relevance:{breakdown['relevance']})"
+        f"Author:{breakdown['author']} Relevance:{breakdown['relevance']} "
+        f"BlogPen:{breakdown['blog_penalty']} UnsourcedPen:{breakdown['unsourced_penalty']})"
     )
 
     return final_score
@@ -842,7 +876,7 @@ Only return the JSON, no other text."""
             "temperature": 0.3,
         }
 
-        async with httpx.AsyncClient(timeout=90) as client:
+        async with httpx.AsyncClient(timeout=DEEPSEEK_REASONER_TIMEOUT) as client:
             resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
             text = resp.json()["choices"][0]["message"]["content"].strip()
@@ -955,7 +989,6 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
     Returns: dict with ai_detection_summary and fact_verification_summary for SSE events
     """
     from .claim_verification_agent import verify_fact_faithfulness, batch_verify_facts
-    from ..settings import DEBUG_MODE
 
     # Build URL -> full content mapping for fact extraction
     full_content_map = {}
@@ -1080,13 +1113,12 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
 
                 fact_verification_summary["total_checked"] += 1
 
-            if DEBUG_MODE:
-                print(
-                    f"[FACT-BATCH] Applied verification: "
-                    f"{fact_verification_summary['verified']} corroborated, "
-                    f"{fact_verification_summary['corrected']} corrected, "
-                    f"{fact_verification_summary['unverifiable']} unverifiable"
-                )
+            logger.debug(
+                f"[FACT-BATCH] Applied verification: "
+                f"{fact_verification_summary['verified']} corroborated, "
+                f"{fact_verification_summary['corrected']} corrected, "
+                f"{fact_verification_summary['unverifiable']} unverifiable"
+            )
 
         except Exception as e:
             logger.error(f"[FACT-BATCH] Independent verification failed (non-critical): {e}")
@@ -1143,7 +1175,7 @@ async def verify_sources(
     1. Deduplicate sources by URL
     2. Pre-compute local signals (domain tier, citations) -- free, instant
     3. Fetch DataForSEO backlinks authority + SERP rankings -- parallel, ~$0.04
-    4. Batch Gemini calls (quality + integrity) via asyncio.gather -- parallel
+    4. Batch DeepSeek calls (quality + integrity) via asyncio.gather -- parallel
     5. Calculate 9-factor credibility score per source (with spam penalty)
     6. Save to VerifiedSource table if score >= 45.0
     """
@@ -1316,7 +1348,8 @@ async def verify_sources(
         # Apply AI detection penalty (after scoring, before rescue)
         ai_result = ai_detection_results[i]
         if ai_result:
-            ai_penalty = compute_ai_detection_penalty(ai_result)
+            tier_level = local_signals[i].get("domain_metrics", {}).get("tier_level", 0)
+            ai_penalty = compute_ai_detection_penalty(ai_result, tier_level=tier_level)
             if ai_penalty != 0.0:
                 original_ai_score = credibility_score
                 credibility_score = max(0.0, credibility_score + ai_penalty)

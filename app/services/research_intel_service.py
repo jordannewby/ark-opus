@@ -9,15 +9,18 @@ Responsibilities:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import Counter
 from difflib import SequenceMatcher
 
 import httpx
+
+logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
 
 from ..models import NichePlaybook, ResearchRun
-from ..settings import DEEPSEEK_API_KEY
+from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_TIMEOUT
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
@@ -179,7 +182,7 @@ class ResearchIntelService:
                 "temperature": 0.3,
             }
 
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
                 resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
                 resp.raise_for_status()
                 text = resp.json()["choices"][0]["message"]["content"].strip()
@@ -188,5 +191,5 @@ class ResearchIntelService:
             text = re.sub(r'\s*```$', '', text)
             return json.loads(text)
         except Exception as e:
-            print(f"[ResearchIntel] DeepSeek distillation failed: {e}. Using heuristic fallback.")
+            logger.error(f"[ResearchIntel] DeepSeek distillation failed: {e}. Using heuristic fallback.")
             return self._compute_heuristic_playbook(runs)

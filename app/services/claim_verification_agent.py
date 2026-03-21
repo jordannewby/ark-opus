@@ -21,7 +21,7 @@ from collections import Counter
 
 import httpx
 
-from ..settings import DEEPSEEK_API_KEY, EXA_API_KEY, DEBUG_MODE
+from ..settings import DEEPSEEK_API_KEY, EXA_API_KEY, CLAIM_TEXT_SIMILARITY_THRESHOLD, LLM_SOURCE_CONTEXT_CHARS
 from ..domain_tiers import TIER_1_DOMAINS, TIER_2_DOMAINS, get_domain_tier_score
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
@@ -231,9 +231,9 @@ ai_probability = 1.0 - average(all signals). Only return JSON."""
 
         ai_probability = final_ai_prob
 
-        if DEBUG_MODE:
+        if logger.isEnabledFor(logging.DEBUG):
             sig_str = ", ".join(f"{k}={v}" for k, v in signals.items())
-            print(
+            logger.debug(
                 f"[AI-DETECT] LLM signals: {sig_str} | "
                 f"Deterministic: ttr={det_signals['ttr']}, var={det_signals['sentence_variance']}, "
                 f"hedge={det_signals['hedging']}, trans={det_signals['transitions']} | "
@@ -257,24 +257,39 @@ ai_probability = 1.0 - average(all signals). Only return JSON."""
         return {"ai_probability": det_ai_prob, "signals": {}, "deterministic_signals": det_signals, "reasoning": f"LLM failed: {e}, using deterministic only"}
 
 
-def compute_ai_detection_penalty(ai_result: dict) -> float:
+def compute_ai_detection_penalty(ai_result: dict, tier_level: int = 0) -> float:
     """
-    Penalty applied AFTER 7-factor scoring, BEFORE rescue bonus.
+    Tier-aware penalty applied AFTER 7-factor scoring, BEFORE rescue bonus.
+    Tier 0 (unknown) domains get stricter thresholds — can't trust them.
+    Tier 1-4 (curated) domains keep standard thresholds — they've earned trust.
     Returns negative float (penalty) or 0.0.
     """
     ai_prob = ai_result.get("ai_probability", 0.0)
 
-    if ai_prob >= 0.85:
-        penalty = -15.0
-    elif ai_prob >= 0.70:
-        penalty = -10.0
-    elif ai_prob >= 0.55:
-        penalty = -5.0
+    if tier_level == 0:
+        # Stricter for unknown domains
+        if ai_prob >= 0.75:
+            penalty = -15.0
+        elif ai_prob >= 0.60:
+            penalty = -10.0
+        elif ai_prob >= 0.45:
+            penalty = -5.0
+        else:
+            penalty = 0.0
     else:
-        penalty = 0.0
+        # Standard for curated domains
+        if ai_prob >= 0.85:
+            penalty = -15.0
+        elif ai_prob >= 0.70:
+            penalty = -10.0
+        elif ai_prob >= 0.55:
+            penalty = -5.0
+        else:
+            penalty = 0.0
 
-    if penalty != 0.0 and DEBUG_MODE:
-        print(f"[AI-DETECT] Penalty: {penalty} pts (ai_probability={ai_prob:.2f})")
+    if penalty != 0.0:
+        tier_label = f"Tier {tier_level}" if tier_level > 0 else "Tier 0 (unknown)"
+        logger.debug(f"[AI-DETECT] Penalty: {penalty} pts (ai_probability={ai_prob:.2f}, {tier_label})")
 
     return penalty
 
@@ -411,8 +426,7 @@ async def verify_fact_independently(
             "score_adjustment": 0.0,
         }
 
-    if DEBUG_MODE:
-        print(f"[FACT-CHECK] Searching Exa for: {query}")
+    logger.debug(f"[FACT-CHECK] Searching Exa for: {query}")
 
     try:
         headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
@@ -435,8 +449,7 @@ async def verify_fact_independently(
         results = data.get("results", [])
 
         if not results:
-            if DEBUG_MODE:
-                print(f"[FACT-CHECK] '{fact_text[:60]}...' -> UNVERIFIABLE (no authoritative results)")
+            logger.debug(f"[FACT-CHECK] '{fact_text[:60]}...' -> UNVERIFIABLE (no authoritative results)")
             return {
                 "status": "unverifiable",
                 "corroboration_url": None,
@@ -481,8 +494,7 @@ async def verify_fact_independently(
                         snippet = result_text[start:end].strip()
                         break
 
-                if DEBUG_MODE:
-                    print(f"[FACT-CHECK] '{fact_text[:60]}...' -> CORROBORATED ({result_url})")
+                logger.debug(f"[FACT-CHECK] '{fact_text[:60]}...' -> CORROBORATED ({result_url})")
 
                 return {
                     "status": "corroborated",
@@ -497,11 +509,10 @@ async def verify_fact_independently(
             if result_numbers and original_numbers:
                 # Both have numbers but they don't overlap => possible correction
                 snippet = result_text[:300]
-                if DEBUG_MODE:
-                    print(
-                        f"[FACT-CHECK] '{fact_text[:60]}...' -> CORRECTED "
-                        f"(original: {original_numbers}, authoritative: {result_numbers}, source: {result_url})"
-                    )
+                logger.debug(
+                    f"[FACT-CHECK] '{fact_text[:60]}...' -> CORRECTED "
+                    f"(original: {original_numbers}, authoritative: {result_numbers}, source: {result_url})"
+                )
                 return {
                     "status": "corrected",
                     "corroboration_url": result_url,
@@ -511,8 +522,7 @@ async def verify_fact_independently(
                 }
 
         # No result had matching or conflicting numbers
-        if DEBUG_MODE:
-            print(f"[FACT-CHECK] '{fact_text[:60]}...' -> UNVERIFIABLE (no number match in {len(results)} results)")
+        logger.debug(f"[FACT-CHECK] '{fact_text[:60]}...' -> UNVERIFIABLE (no number match in {len(results)} results)")
 
         return {
             "status": "unverifiable",
@@ -557,18 +567,17 @@ async def batch_verify_facts(
     candidates = _prioritize_facts_for_verification(facts, source_tiers)
 
     if not candidates:
-        if DEBUG_MODE:
-            print(f"[FACT-BATCH] No statistical claims from Tier 3-4/unknown sources to verify")
+        logger.debug(f"[FACT-BATCH] No statistical claims from Tier 3-4/unknown sources to verify")
         return {}
 
     # Limit to budget
     to_verify = candidates[:max_searches]
     skipped = len(candidates) - len(to_verify)
 
-    if DEBUG_MODE:
+    if logger.isEnabledFor(logging.DEBUG):
         total_facts = len(facts)
         auto_trusted = total_facts - len(candidates)
-        print(
+        logger.debug(
             f"[FACT-BATCH] Verifying {len(to_verify)}/{total_facts} facts "
             f"({auto_trusted} auto-trusted Tier 1-2, {skipped} deprioritized)"
         )
@@ -611,9 +620,9 @@ async def batch_verify_facts(
             verification_map[orig_idx] = result
 
     # Summary log
-    if DEBUG_MODE:
+    if logger.isEnabledFor(logging.DEBUG):
         statuses = Counter(v["status"] for v in verification_map.values())
-        print(f"[FACT-BATCH] Results: {dict(statuses)}")
+        logger.debug(f"[FACT-BATCH] Results: {dict(statuses)}")
 
     return verification_map
 
@@ -638,8 +647,7 @@ def verify_fact_faithfulness(fact_text: str, source_content: str) -> dict:
 
     # Tier 1: Exact substring match (case-insensitive)
     if fact_lower in content_lower:
-        if DEBUG_MODE:
-            print(f"[GROUNDING] '{fact_text[:60]}...' -> grounded (exact_match)")
+        logger.debug(f"[GROUNDING] '{fact_text[:60]}...' -> grounded (exact_match)")
         return {"is_grounded": True, "grounding_method": "exact_match", "confidence_multiplier": 1.0}
 
     # Tier 2: Number anchoring — extract numbers from fact, check proximity in source
@@ -683,21 +691,17 @@ def verify_fact_faithfulness(fact_text: str, source_content: str) -> dict:
                     break
 
             if proximity_ok:
-                if DEBUG_MODE:
-                    print(f"[GROUNDING] '{fact_text[:60]}...' -> grounded (number_anchor: all {len(fact_numbers)} numbers within 300-char window)")
+                logger.debug(f"[GROUNDING] '{fact_text[:60]}...' -> grounded (number_anchor: all {len(fact_numbers)} numbers within 300-char window)")
                 return {"is_grounded": True, "grounding_method": "number_anchor", "confidence_multiplier": 1.0}
             else:
-                if DEBUG_MODE:
-                    print(f"[GROUNDING] '{fact_text[:60]}...' -> partial (all {len(fact_numbers)} numbers found but scattered, no 300-char window)")
+                logger.debug(f"[GROUNDING] '{fact_text[:60]}...' -> partial (all {len(fact_numbers)} numbers found but scattered, no 300-char window)")
                 return {"is_grounded": True, "grounding_method": "partial_number", "confidence_multiplier": 0.6}
         elif matched_numbers == len(fact_numbers) and len(fact_numbers) == 1:
             # Single number — no proximity needed, but lower confidence
-            if DEBUG_MODE:
-                print(f"[GROUNDING] '{fact_text[:60]}...' -> grounded (number_anchor: single number found)")
+            logger.debug(f"[GROUNDING] '{fact_text[:60]}...' -> grounded (number_anchor: single number found)")
             return {"is_grounded": True, "grounding_method": "number_anchor", "confidence_multiplier": 0.9}
         elif matched_numbers > 0:
-            if DEBUG_MODE:
-                print(f"[GROUNDING] '{fact_text[:60]}...' -> partial ({matched_numbers}/{len(fact_numbers)} numbers found)")
+            logger.debug(f"[GROUNDING] '{fact_text[:60]}...' -> partial ({matched_numbers}/{len(fact_numbers)} numbers found)")
             return {"is_grounded": True, "grounding_method": "partial_number", "confidence_multiplier": 0.6}
 
     # Tier 3: N-gram overlap — 4-word n-grams, require >= 55% overlap
@@ -714,13 +718,11 @@ def verify_fact_faithfulness(fact_text: str, source_content: str) -> dict:
             overlap = matched / len(fact_ngrams)
 
             if overlap >= 0.55:
-                if DEBUG_MODE:
-                    print(f"[GROUNDING] '{fact_text[:60]}...' -> grounded (ngram_overlap: {overlap:.0%})")
+                logger.debug(f"[GROUNDING] '{fact_text[:60]}...' -> grounded (ngram_overlap: {overlap:.0%})")
                 return {"is_grounded": True, "grounding_method": "ngram_overlap", "confidence_multiplier": 0.9}
 
     # Failed all three tiers — ungrounded
-    if DEBUG_MODE:
-        print(f"[GROUNDING] '{fact_text[:60]}...' -> UNGROUNDED (no match in source)")
+    logger.debug(f"[GROUNDING] '{fact_text[:60]}...' -> UNGROUNDED (no match in source)")
 
     return {"is_grounded": False, "grounding_method": "none", "confidence_multiplier": 0.5}
 
@@ -826,11 +828,52 @@ def extract_article_claims(article_text: str) -> list[dict]:
             "has_quantitative_claim": has_quant,
         })
 
-    if DEBUG_MODE:
+    if logger.isEnabledFor(logging.DEBUG):
         quant_count = sum(1 for c in claims if c["has_quantitative_claim"])
-        print(f"[CLAIM-EXTRACT] Found {len(claims)} cited claims ({quant_count} with quantitative data)")
+        logger.debug(f"[CLAIM-EXTRACT] Found {len(claims)} cited claims ({quant_count} with quantitative data)")
 
     return claims
+
+
+def detect_uncited_claims(article_text: str, cited_claims: list[dict]) -> list[dict]:
+    """
+    Find factual claims (stats, percentages, dollar amounts) that lack citations.
+    Returns: [{claim_text, reason}]
+    """
+    uncited = []
+
+    # Get all cited sentence texts to avoid double-flagging
+    cited_texts = {c["claim_text"] for c in cited_claims}
+
+    # Split article into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', article_text)
+
+    for sentence in sentences:
+        stripped = sentence.strip()
+        if len(stripped) < 20:
+            continue
+        # Skip headings, list markers
+        if stripped.startswith('#') or stripped.startswith('- ') or stripped.startswith('* '):
+            continue
+        # Check if sentence has quantitative data
+        if not _QUANT_CLAIM_PATTERN.search(stripped):
+            continue
+        # Check if this sentence already has a citation (markdown link)
+        if _CITATION_LINK_PATTERN.search(stripped):
+            continue
+        # Check if it overlaps with an already-cited claim
+        if any(stripped in ct or ct in stripped for ct in cited_texts):
+            continue
+
+        uncited.append({
+            "claim_text": stripped[:200],
+            "reason": "Factual claim with statistic/percentage/dollar amount but no citation",
+        })
+
+    if uncited:
+        logger.debug(f"[CLAIM-UNCITED] Found {len(uncited)} uncited factual claims")
+
+    return uncited
 
 
 # Stopwords excluded from context matching
@@ -952,8 +995,7 @@ def cross_reference_claims(
                 "source_url": claim_url,
                 "reason": "No verified facts matched this URL (checked: exact, normalized, path-prefix)",
             })
-            if DEBUG_MODE:
-                print(f"[CLAIM-XREF] FABRICATED: '{claim_text[:60]}...' cites {claim_url} (no URL match)")
+            logger.debug(f"[CLAIM-XREF] FABRICATED: '{claim_text[:60]}...' cites {claim_url} (no URL match)")
             continue
 
         # Try number-matching first
@@ -969,8 +1011,7 @@ def cross_reference_claims(
                     "reason": "Number match with verified fact",
                 })
                 matched = True
-                if DEBUG_MODE:
-                    print(f"[CLAIM-XREF] Claim '{claim_text[:50]}...' matched FactCitation #{fc.id} via number_anchor")
+                logger.debug(f"[CLAIM-XREF] Claim '{claim_text[:50]}...' matched FactCitation #{fc.id} via number_anchor")
                 break
 
         if not matched:
@@ -981,7 +1022,7 @@ def cross_reference_claims(
                 fact_words = set(re.findall(r'\w{4,}', fc.fact_text.lower()))
                 if claim_words and fact_words:
                     overlap = len(claim_words & fact_words) / min(len(claim_words), len(fact_words))
-                    if overlap >= 0.3:
+                    if overlap >= CLAIM_TEXT_SIMILARITY_THRESHOLD:
                         verified_count += 1
                         details.append({
                             "claim_text": claim_text[:200],
@@ -991,8 +1032,7 @@ def cross_reference_claims(
                             "reason": f"Text similarity ({overlap:.0%} word overlap)",
                         })
                         matched = True
-                        if DEBUG_MODE:
-                            print(f"[CLAIM-XREF] Claim '{claim_text[:50]}...' matched via text_similarity ({overlap:.0%})")
+                        logger.debug(f"[CLAIM-XREF] Claim '{claim_text[:50]}...' matched via text_similarity ({overlap:.0%})")
                         break
 
         if not matched:
@@ -1028,9 +1068,9 @@ def cross_reference_claims(
         "ambiguous_claims": ambiguous_claims,
     }
 
-    if DEBUG_MODE:
+    if logger.isEnabledFor(logging.DEBUG):
         status = "PASSED" if passed else "FAILED"
-        print(
+        logger.debug(
             f"[CLAIM-GATE] {status}: {verified_count}/{len(article_claims)} verified, "
             f"{fabricated_count} fabricated, {len(ambiguous_claims)} ambiguous"
         )
@@ -1060,23 +1100,28 @@ async def verify_claim_with_llm(
 
         context = ""
         if source_snippet:
-            context = f"\nSOURCE CONTEXT (snippet):\n{source_snippet[:1000]}\n"
+            context = f"\nSOURCE CONTEXT (snippet):\n{source_snippet[:LLM_SOURCE_CONTEXT_CHARS]}\n"
 
-        prompt = f"""Does this article claim match any of the verified facts from the same source?
+        prompt = f"""Does this article claim match or is it supported by any of the verified facts from the same source?
 
 ARTICLE CLAIM: "{claim_text}"
 
 VERIFIED FACTS FROM SOURCE:
 {fact_list}
 {context}
+IMPORTANT: The writer paraphrases facts in its own tone. Accept the claim as SUPPORTED if:
+- The core fact, statistic, or percentage is present in any verified fact (even if worded differently)
+- The claim is a reasonable summary or restatement of information in the verified facts or source context
+- Numbers expressed differently still count (e.g., "67%" vs "nearly seven in ten", "4,500" vs "thousands")
+
+Mark as UNSUPPORTED only if the claim introduces a fact, number, or statistic NOT found anywhere in the verified facts or source context.
+
 Return JSON:
 {{
   "supported": true/false,
   "matched_fact_index": 1,
   "reasoning": "Brief explanation"
 }}
-
-'supported' = true if the claim is a reasonable paraphrase or use of any verified fact.
 Only return JSON."""
 
         headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
@@ -1103,9 +1148,9 @@ Only return JSON."""
         if supported and matched_idx and 1 <= matched_idx <= len(fact_candidates):
             matched_fact_text = fact_candidates[matched_idx - 1].fact_text
 
-        if DEBUG_MODE:
+        if logger.isEnabledFor(logging.DEBUG):
             status = "supported" if supported else "unsupported"
-            print(f"[CLAIM-LLM] Ambiguous claim -> {status}: {result.get('reasoning', '')[:80]}")
+            logger.debug(f"[CLAIM-LLM] Ambiguous claim -> {status}: {result.get('reasoning', '')[:80]}")
 
         return {
             "supported": supported,
@@ -1171,17 +1216,27 @@ def format_claim_verification_feedback(verification_result: dict) -> str:
             lines.append(f"     Fix: Rewrite to closely match one of the available facts above.")
         lines.append("")
 
+    uncited = verification_result.get("uncited", [])
+    if uncited:
+        lines.append("UNCITED FACTUAL CLAIMS (must add citation from the citation map):")
+        for i, d in enumerate(uncited, 1):
+            lines.append(f"  {i}. \"{d['claim_text'][:120]}\"")
+            lines.append(f"     Problem: {d['reason']}")
+            lines.append(f"     Fix: Add a [Source](URL) citation from the citation map, or remove the claim.")
+        lines.append("")
+
     # Summary
     total = verification_result["total_claims"]
     verified = verification_result["verified"]
     fab = verification_result["fabricated"]
     amb = verification_result.get("ambiguous", 0)
     ung = verification_result.get("ungrounded", 0)
+    unc = len(uncited)
 
-    lines.append(f"CLAIM VERIFICATION: {verified}/{total} verified, {fab} fabricated, {ung} ungrounded, {amb} ambiguous")
+    lines.append(f"CLAIM VERIFICATION: {verified}/{total} verified, {fab} fabricated, {ung} ungrounded, {amb} ambiguous, {unc} uncited")
 
-    if fab > 0 or ung > 0:
-        lines.append("STATUS: FAILED - Fix all fabricated and ungrounded citations before retry.")
+    if fab > 0 or ung > 0 or unc > 0:
+        lines.append("STATUS: FAILED - Fix all fabricated, ungrounded, and uncited claims before retry.")
     else:
         lines.append("STATUS: PASSED")
 

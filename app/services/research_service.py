@@ -12,21 +12,29 @@ Returns structured JSON with:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
+
+logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
 from mcp import ClientSession
 
 from ..models import ResearchCache, NichePlaybook, ResearchRun
-from ..settings import DEEPSEEK_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD
+from ..settings import (
+    DEEPSEEK_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD,
+    CACHE_TTL_HOURS, MAX_AGENTIC_ITERATIONS, EXA_NUM_RESULTS,
+    EXA_MAX_CHARACTERS, EXA_TIMEOUT, SERP_DEPTH,
+    LOCATION_CODE, LANGUAGE_CODE, DEEPSEEK_TIMEOUT, DEEPSEEK_REASONER_TIMEOUT,
+)
 
 DATAFORSEO_API_URL = "https://api.dataforseo.com/v3"
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
-CACHE_TTL_HOURS = 24
 
 ALLOWED_TOOL_CATEGORIES = ["serp", "keyword", "backlink", "on_page"]
 
@@ -38,8 +46,21 @@ EXA_EXCLUDE_DOMAINS = [
     "tumblr.com",          # Social blogging
     "wix.com",             # Website builder sites
     "weebly.com",          # Website builder sites
-    "hubspot.com/blog",    # Marketing content
-    "forbes.com/sites",    # Contributor network (not editorial staff)
+    # Corporate blog subdomains (content marketing dressed as education)
+    "blog.hubspot.com",
+    "blog.salesforce.com",
+    "blog.marketo.com",
+    "blog.hootsuite.com",
+    "blog.semrush.com",
+    "blog.ahrefs.com",
+    "blog.mailchimp.com",
+    "blog.buffer.com",
+    "blog.drift.com",
+    "blog.intercom.com",
+    "blog.zendesk.com",
+    "blog.shopify.com",
+    # Contributor networks (not editorial staff)
+    "forbes.com/sites",
 ]
 
 # Gap 27: Non-English TLD exclusions + content filters
@@ -86,9 +107,7 @@ def _filter_non_english_results(results: list[dict], label: str = "") -> list[di
             continue
         filtered.append(r)
     if removed > 0:
-        from ..settings import DEBUG_MODE
-        if DEBUG_MODE:
-            print(f"[LANG-FILTER]{' ' + label if label else ''} Removed {removed} non-English results")
+        logger.debug(f"[LANG-FILTER]{' ' + label if label else ''} Removed {removed} non-English results")
     return filtered
 
 def _keyword_relevance_score(keyword: str, results: list[dict]) -> int:
@@ -343,6 +362,24 @@ EXA_NATIVE_TOOLS = [
 NATIVE_TOOL_NAMES = {t["name"] for t in EXA_NATIVE_TOOLS}
 
 
+# --- MCP Call Retry Helper (429 rate-limit protection) ---
+
+async def mcp_call_with_retry(session, tool_name: str, arguments: dict, max_retries: int = 3):
+    """Wrap session.call_tool with exponential backoff for 429 rate limits."""
+    for attempt in range(max_retries + 1):
+        try:
+            return await session.call_tool(tool_name, arguments=arguments)
+        except Exception as e:
+            err_str = str(e).lower()
+            is_rate_limit = "429" in err_str or "rate limit" in err_str or "too many requests" in err_str
+            if is_rate_limit and attempt < max_retries:
+                delay = 2 ** attempt  # 1s, 2s, 4s
+                logger.warning(f"[MCP-RETRY] 429 on {tool_name}, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(delay)
+                continue
+            raise  # Non-429 or exhausted retries — let caller handle
+
+
 class ResearchAgent:
     """Gathers SEO research data for a keyword using DataForSEO MCP Server and DeepSeek-R1."""
 
@@ -360,8 +397,7 @@ class ResearchAgent:
         
         # Bypass cache if DEBUG_MODE is True or if user provided customized context
         if cached is not None and not user_context and not DEBUG_MODE:
-            if DEBUG_MODE:
-                print(f"[DEBUG] Cache Hit! Returning data for {keyword}")
+            logger.debug(f"[DEBUG] Cache Hit! Returning data for {keyword}")
             return cached
         
         # Step B: Exa discovery is now handled by R1 via native tools (Scout & Extract)
@@ -369,10 +405,7 @@ class ResearchAgent:
         exa_score_map = {}  # Map URL -> {exa_score, published_date} from scout searches for later merge
 
         # Step C: MCP Context Lifecycle & Agentic Loop
-        from ..settings import DEBUG_MODE
-        
-        if DEBUG_MODE:
-            print(f"\n[DEBUG] Using global persistent MCP Session...")
+        logger.debug(f"\n[DEBUG] Using global persistent MCP Session...")
             
         executed_tools = []
         exa_queries_log: list[str] = []
@@ -387,8 +420,7 @@ class ResearchAgent:
             async with dummy_context() as session:
                 if not session:
                     raise ValueError("Global MCP Session not initialized")
-                if DEBUG_MODE:
-                    print(f"[DEBUG] MCP Session attached successfully.")
+                logger.debug(f"[DEBUG] MCP Session attached successfully.")
                 
                 # Fetch available DataForSEO tools
                 tools_response = await session.list_tools()
@@ -423,7 +455,7 @@ class ResearchAgent:
                 # ================================================================
                 mcp_results = {}
                 info_gap_from_loop = None
-                MAX_ITERATIONS = 5
+                MAX_ITERATIONS = MAX_AGENTIC_ITERATIONS
                 iteration_count = 0
 
                 niche_intel = self._get_niche_playbook(niche, profile_name)
@@ -436,15 +468,13 @@ class ResearchAgent:
 
                     for loop_count in range(MAX_ITERATIONS):
                         iteration_count += 1
-                        if DEBUG_MODE:
-                            print(f"\n[DEBUG] === R1 Agentic Loop: Iteration {loop_count + 1}/{MAX_ITERATIONS} ===")
+                        logger.debug(f"\n[DEBUG] === R1 Agentic Loop: Iteration {loop_count + 1}/{MAX_ITERATIONS} ===")
                         
                         # Call DeepSeek-R1
                         r1_response = await self._call_deepseek_r1(messages)
 
-                        if DEBUG_MODE:
-                            # Show first 500 chars of R1's raw response to diagnose tool skipping
-                            print(f"[DEBUG] R1 raw response (first 500 chars): {r1_response[:500]}")
+                        # Show first 500 chars of R1's raw response to diagnose tool skipping
+                        logger.debug(f"[DEBUG] R1 raw response (first 500 chars): {r1_response[:500]}")
 
                         # Parse the response for tool_calls vs final analysis
                         parsed = self._parse_r1_response(r1_response)
@@ -457,14 +487,12 @@ class ResearchAgent:
                                 info_gap_from_loop = parsed  # Full dict with all fields
                             else:
                                 info_gap_from_loop = parsed["information_gap"]  # Legacy string format
-                            if DEBUG_MODE:
-                                print(f"[DEBUG] R1 produced Information Gap. Exiting loop.")
+                            logger.debug(f"[DEBUG] R1 produced Information Gap. Exiting loop.")
                             break
                         
                         # If no tool_calls and no info_gap, R1 is confused — force final output
                         if not tool_calls:
-                            if DEBUG_MODE:
-                                print(f"[DEBUG] R1 returned no tool_calls and no info_gap. Forcing final output.")
+                            logger.debug(f"[DEBUG] R1 returned no tool_calls and no info_gap. Forcing final output.")
                             messages.append({"role": "assistant", "content": r1_response})
                             messages.append({"role": "user", "content": (
                                 "You did not request any tools or provide an information_gap. "
@@ -484,14 +512,13 @@ class ResearchAgent:
                             
                             if t_name in NATIVE_TOOL_NAMES:
                                 # --- Route A: Native Exa Tool ---
-                                if DEBUG_MODE:
-                                    print(f"[DEBUG] Executing Native Tool: {t_name}")
+                                logger.debug(f"[DEBUG] Executing Native Tool: {t_name}")
                                 try:
                                     if t_name == "exa_scout_search":
                                         exa_queries_log.append(t_args.get("query", keyword))
                                         native_result = await self.exa_scout_search(
                                             query=t_args.get("query", keyword),
-                                            num_results=t_args.get("num_results", 10),
+                                            num_results=t_args.get("num_results", EXA_NUM_RESULTS),
                                             include_domains=t_args.get("include_domains"),
                                             exclude_domains=t_args.get("exclude_domains", EXA_EXCLUDE_DOMAINS),
                                             start_published_date=t_args.get("start_published_date"),
@@ -542,18 +569,16 @@ class ResearchAgent:
                             elif t_name in valid_mcp_names:
                                 # --- Route B: Valid MCP Tool ---
                                 if not any(cat in t_name.lower() for cat in ALLOWED_TOOL_CATEGORIES):
-                                    if DEBUG_MODE:
-                                        print(f"[DEBUG-SECURITY] Blocked unauthorized MCP tool: {t_name}")
+                                    logger.debug(f"[DEBUG-SECURITY] Blocked unauthorized MCP tool: {t_name}")
                                     tool_results_text.append(
                                         f"TOOL RESULT [{t_name}]: BLOCKED — Tool category not authorized."
                                     )
                                     continue
                                     
-                                if DEBUG_MODE:
-                                    print(f"[DEBUG] Executing MCP Tool: {t_name}")
+                                logger.debug(f"[DEBUG] Executing MCP Tool: {t_name}")
                                 
                                 try:
-                                    res = await session.call_tool(t_name, arguments=t_args)
+                                    res = await mcp_call_with_retry(session, t_name, t_args)
                                     executed_tools.append(t_name)
                                     
                                     # Store MCP results in the standard buckets
@@ -579,8 +604,7 @@ class ResearchAgent:
                                     )
                             else:
                                 # --- Route C: Hallucinated Tool ---
-                                if DEBUG_MODE:
-                                    print(f"[DEBUG-HALLUCINATION] R1 called non-existent tool: {t_name}")
+                                logger.debug(f"[DEBUG-HALLUCINATION] R1 called non-existent tool: {t_name}")
                                 tool_results_text.append(
                                     f"TOOL RESULT [{t_name}]: ERROR — Tool '{t_name}' does not exist. "
                                     f"Please evaluate your strategy and use only the provided tools."
@@ -597,8 +621,7 @@ class ResearchAgent:
                     
                     # Circuit Breaker: If we exhausted all iterations without an info_gap
                     if not info_gap_from_loop:
-                        if DEBUG_MODE:
-                            print(f"[DEBUG] Circuit breaker hit ({MAX_ITERATIONS} iterations). Forcing final output.")
+                        logger.debug(f"[DEBUG] Circuit breaker hit ({MAX_ITERATIONS} iterations). Forcing final output.")
                         messages.append({"role": "user", "content": (
                             f"CIRCUIT BREAKER: You have used {MAX_ITERATIONS} iterations. "
                             "You MUST return your final analysis NOW. Output JSON with an 'information_gap' key."
@@ -608,23 +631,22 @@ class ResearchAgent:
                         info_gap_from_loop = final_parsed.get("information_gap", final_response[:500])
                     
                 except Exception as e:
-                    if DEBUG_MODE: print(f"[DEBUG] Agentic loop failed, fallback triggered. Error: {e}")
+                    logger.debug(f"[DEBUG] Agentic loop failed, fallback triggered. Error: {e}")
                     # Fallback Logic: Safe Gather baseline
                     mcp_results = {}
                     executed_tools = []
-                    mcp_results["keywords"] = await session.call_tool(
-                        "dataforseo_labs_google_keyword_ideas", 
-                        arguments={"keywords": [keyword], "location_code": 2840, "language_code": "en"}
+                    mcp_results["keywords"] = await mcp_call_with_retry(
+                        session, "dataforseo_labs_google_keyword_ideas",
+                        {"keywords": [keyword], "location_code": LOCATION_CODE, "language_code": LANGUAGE_CODE}
                     )
                     executed_tools.append("dataforseo_labs_google_keyword_ideas (fallback)")
-                    mcp_results["serp"] = await session.call_tool(
-                        "serp_organic_live_advanced", 
-                        arguments={"keyword": keyword, "location_code": 2840, "language_code": "en", "depth": 10}
+                    mcp_results["serp"] = await mcp_call_with_retry(
+                        session, "serp_organic_live_advanced",
+                        {"keyword": keyword, "location_code": LOCATION_CODE, "language_code": LANGUAGE_CODE, "depth": SERP_DEPTH}
                     )
                     executed_tools.append("serp_organic_live_advanced (fallback)")
 
-        if DEBUG_MODE:
-            print(f"[DEBUG] Ephemeral MCP Subprocess terminated cleanly.\n")
+        logger.debug(f"[DEBUG] Ephemeral MCP Subprocess terminated cleanly.\n")
 
         # Step C.5: Exa Elite Discovery Supplement (ensures Phase 1.5 always has enough sources)
         # Layer 1C: Also trigger when we have enough sources but too few are keyword-relevant
@@ -632,8 +654,7 @@ class ResearchAgent:
         needs_supplement = len(exa_results) < 5 or relevant_count < 3
 
         if needs_supplement:
-            if DEBUG_MODE:
-                print(f"[DEBUG] Supplement needed: {len(exa_results)} sources, {relevant_count} relevant. Running _exa_elite_discovery()...")
+            logger.debug(f"[DEBUG] Supplement needed: {len(exa_results)} sources, {relevant_count} relevant. Running _exa_elite_discovery()...")
 
             try:
                 existing_urls = {r.get("url", "") for r in exa_results}
@@ -644,19 +665,16 @@ class ResearchAgent:
                 new_sources = [s for s in elite_supplement if s.get("url", "") not in existing_urls]
                 exa_results.extend(new_sources)
 
-                if DEBUG_MODE:
-                    print(f"[DEBUG] Exa elite_discovery added {len(new_sources)} new sources (total: {len(exa_results)})")
+                logger.debug(f"[DEBUG] Exa elite_discovery added {len(new_sources)} new sources (total: {len(exa_results)})")
             except Exception as e:
-                if DEBUG_MODE:
-                    print(f"[DEBUG] Exa elite_discovery supplement failed (non-critical): {e}")
+                logger.debug(f"[DEBUG] Exa elite_discovery supplement failed (non-critical): {e}")
                 if not exa_results:
                     exa_results = []  # Graceful degradation only if we had nothing
 
             # Layer 1C: If still too few relevant, try broad backfill (no niche filter)
             relevant_after = _keyword_relevance_score(keyword, exa_results)
             if relevant_after < 3:
-                if DEBUG_MODE:
-                    print(f"[DEBUG] Still only {relevant_after} relevant after elite_discovery, trying broad backfill...")
+                logger.debug(f"[DEBUG] Still only {relevant_after} relevant after elite_discovery, trying broad backfill...")
                 try:
                     existing_urls = {r.get("url", "") for r in exa_results}
                     backfill_results = await self.backfill_search(
@@ -665,12 +683,11 @@ class ResearchAgent:
                     )
                     new_backfill = [s for s in backfill_results if s.get("url", "") not in existing_urls]
                     exa_results.extend(new_backfill)
-                    if DEBUG_MODE:
+                    if logger.isEnabledFor(logging.DEBUG):
                         final_relevant = _keyword_relevance_score(keyword, exa_results)
-                        print(f"[DEBUG] Backfill added {len(new_backfill)} sources. Now {final_relevant} relevant out of {len(exa_results)} total.")
+                        logger.debug(f"[DEBUG] Backfill added {len(new_backfill)} sources. Now {final_relevant} relevant out of {len(exa_results)} total.")
                 except Exception as e:
-                    if DEBUG_MODE:
-                        print(f"[DEBUG] Broad backfill failed (non-critical): {e}")
+                    logger.debug(f"[DEBUG] Broad backfill failed (non-critical): {e}")
 
         # Step D: Data Formatting
         kw_data = mcp_results.get("keywords")
@@ -849,7 +866,7 @@ class ResearchAgent:
         2. Extract: Fetch full article text via get_contents(ids)
         Returns truncated full-text for DeepSeek-R1 Information Gap analysis.
         """
-        from ..settings import EXA_API_KEY, DEBUG_MODE
+        from ..settings import EXA_API_KEY
         if not EXA_API_KEY:
             return []
             
@@ -869,7 +886,7 @@ class ResearchAgent:
         # Calculate 2 years ago for recency filter
         two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
             try:
                 # --- Step 1: Neural Search (discovery only, no inline content) ---
                 search_payload = {
@@ -882,8 +899,7 @@ class ResearchAgent:
                 if include_domains:
                     search_payload["include_domains"] = include_domains  # Quality filter for recognized niches
                 
-                if DEBUG_MODE:
-                    print(f"[DEBUG] Exa Step 1: Neural Search for '{keyword}'")
+                logger.debug(f"[DEBUG] Exa Step 1: Neural Search for '{keyword}'")
                 
                 search_resp = await client.post(
                     "https://api.exa.ai/search", headers=headers, json=search_payload
@@ -893,8 +909,7 @@ class ResearchAgent:
                 
                 search_results = search_data.get("results", [])
                 if not search_results:
-                    if DEBUG_MODE:
-                        print("[DEBUG] Exa: No search results found.")
+                    logger.debug("[DEBUG] Exa: No search results found.")
                     return []
                 
                 # Extract IDs and build metadata maps from search results
@@ -917,14 +932,13 @@ class ResearchAgent:
                         for r in search_results[:5]
                     ]
                 
-                if DEBUG_MODE:
-                    print(f"[DEBUG] Exa Step 2: Fetching full text for {len(result_ids)} articles")
+                logger.debug(f"[DEBUG] Exa Step 2: Fetching full text for {len(result_ids)} articles")
                 
                 # --- Step 2: Full-Text Extraction via get_contents ---
                 contents_payload = {
                     "ids": result_ids,
                     "text": {
-                        "max_characters": 25000  # Generous fetch — full article body
+                        "max_characters": EXA_MAX_CHARACTERS  # Generous fetch — full article body
                     }
                 }
                 
@@ -956,8 +970,8 @@ class ResearchAgent:
                 # If niche filter returned mostly off-topic results, retry WITHOUT include_domains
                 if include_domains:
                     relevant_count = _keyword_relevance_score(keyword, elite_articles)
-                    if relevant_count < 3 and DEBUG_MODE:
-                        print(f"[RELEVANCE] Only {relevant_count}/{len(elite_articles)} results relevant to '{keyword}', trying unfiltered search...")
+                    if relevant_count < 3:
+                        logger.debug(f"[RELEVANCE] Only {relevant_count}/{len(elite_articles)} results relevant to '{keyword}', trying unfiltered search...")
                     if relevant_count < 3:
                         try:
                             unfilt_payload = {
@@ -977,7 +991,7 @@ class ResearchAgent:
 
                             if new_ids:
                                 unfilt_meta = {r.get("url", ""): {"score": r.get("score"), "published_date": r.get("publishedDate")} for r in unfilt_results}
-                                cont_resp = await client.post("https://api.exa.ai/contents", headers=headers, json={"ids": new_ids[:10], "text": {"max_characters": 25000}})
+                                cont_resp = await client.post("https://api.exa.ai/contents", headers=headers, json={"ids": new_ids[:10], "text": {"max_characters": EXA_MAX_CHARACTERS}})
                                 cont_resp.raise_for_status()
                                 for article in cont_resp.json().get("results", []):
                                     a_url = article.get("url", "")
@@ -991,21 +1005,20 @@ class ResearchAgent:
                                         "exa_score": meta.get("score"),
                                     })
                                 elite_articles = _filter_non_english_results(elite_articles, "elite_unfiltered")
-                                if DEBUG_MODE:
+                                if logger.isEnabledFor(logging.DEBUG):
                                     new_relevant = _keyword_relevance_score(keyword, elite_articles)
-                                    print(f"[RELEVANCE] After unfiltered fallback: {new_relevant}/{len(elite_articles)} relevant")
+                                    logger.debug(f"[RELEVANCE] After unfiltered fallback: {new_relevant}/{len(elite_articles)} relevant")
                         except Exception as e:
-                            if DEBUG_MODE:
-                                print(f"[RELEVANCE] Unfiltered fallback failed (non-critical): {e}")
+                            logger.debug(f"[RELEVANCE] Unfiltered fallback failed (non-critical): {e}")
 
-                if DEBUG_MODE:
+                if logger.isEnabledFor(logging.DEBUG):
                     total_chars = sum(len(a["content"]) for a in elite_articles)
-                    print(f"[DEBUG] Exa Full-Text Audit complete: {len(elite_articles)} articles, {total_chars} total chars")
+                    logger.debug(f"[DEBUG] Exa Full-Text Audit complete: {len(elite_articles)} articles, {total_chars} total chars")
 
                 return elite_articles
 
             except Exception as e:
-                print(f"Exa.ai API Error: {e}")
+                logger.error(f"Exa.ai API Error: {e}")
                 return []
     async def backfill_search(self, keyword: str, niche: str, exclude_domains: list[str]) -> list[dict]:
         """
@@ -1013,7 +1026,7 @@ class ResearchAgent:
         Drops niche-specific include_domains and excludes already-rejected domains.
         Returns [{title, url, content}, ...] — same format as _exa_elite_discovery().
         """
-        from ..settings import EXA_API_KEY, DEBUG_MODE
+        from ..settings import EXA_API_KEY
         if not EXA_API_KEY:
             return []
 
@@ -1028,7 +1041,7 @@ class ResearchAgent:
         # Combine standard exclusions with rejected domains
         all_excluded = list(set(EXA_EXCLUDE_DOMAINS + exclude_domains))
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
             try:
                 search_payload = {
                     "query": prompt,
@@ -1039,16 +1052,14 @@ class ResearchAgent:
                 }
                 # No include_domains — search broadly
 
-                if DEBUG_MODE:
-                    print(f"[BACKFILL] Exa broad search for '{keyword}' (excluding {len(all_excluded)} domains)")
+                logger.debug(f"[BACKFILL] Exa broad search for '{keyword}' (excluding {len(all_excluded)} domains)")
 
                 search_resp = await client.post("https://api.exa.ai/search", headers=headers, json=search_payload)
                 search_resp.raise_for_status()
                 search_results = search_resp.json().get("results", [])
 
                 if not search_results:
-                    if DEBUG_MODE:
-                        print("[BACKFILL] No results found in broad search")
+                    logger.debug("[BACKFILL] No results found in broad search")
                     return []
 
                 result_ids = [r.get("id") for r in search_results if r.get("id")]
@@ -1065,12 +1076,11 @@ class ResearchAgent:
                              "published_date": r.get("publishedDate"), "author": r.get("author"),
                              "exa_score": r.get("score")} for r in search_results[:5]]
 
-                if DEBUG_MODE:
-                    print(f"[BACKFILL] Fetching full text for {len(result_ids)} articles")
+                logger.debug(f"[BACKFILL] Fetching full text for {len(result_ids)} articles")
 
                 contents_resp = await client.post(
                     "https://api.exa.ai/contents", headers=headers,
-                    json={"ids": result_ids, "text": {"max_characters": 25000}}
+                    json={"ids": result_ids, "text": {"max_characters": EXA_MAX_CHARACTERS}}
                 )
                 contents_resp.raise_for_status()
 
@@ -1090,13 +1100,12 @@ class ResearchAgent:
                 # Gap 27: Filter non-English results
                 elite_articles = _filter_non_english_results(elite_articles, "backfill")
 
-                if DEBUG_MODE:
-                    print(f"[BACKFILL] Found {len(elite_articles)} backfill articles")
+                logger.debug(f"[BACKFILL] Found {len(elite_articles)} backfill articles")
 
                 return elite_articles
 
             except Exception as e:
-                print(f"[BACKFILL] Exa API Error: {e}")
+                logger.error(f"[BACKFILL] Exa API Error: {e}")
                 return []
 
     async def niche_filtered_backfill(self, keyword: str, niche: str, exclude_domains: list[str]) -> list[dict]:
@@ -1105,12 +1114,11 @@ class ResearchAgent:
         Uses curated include_domains for the niche before falling back to broad search.
         Returns [] for unrecognized niches (lets broad backfill handle them).
         """
-        from ..settings import EXA_API_KEY, DEBUG_MODE
+        from ..settings import EXA_API_KEY
 
         include_domains = self._get_niche_include_domains(niche)
         if not include_domains:
-            if DEBUG_MODE:
-                print(f"[BACKFILL-NICHE] No domain list for niche '{niche}', skipping niche backfill")
+            logger.debug(f"[BACKFILL-NICHE] No domain list for niche '{niche}', skipping niche backfill")
             return []
 
         if not EXA_API_KEY:
@@ -1125,7 +1133,7 @@ class ResearchAgent:
         two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
         all_excluded = list(set(EXA_EXCLUDE_DOMAINS + exclude_domains))
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
             try:
                 search_payload = {
                     "query": prompt,
@@ -1136,16 +1144,14 @@ class ResearchAgent:
                     "start_published_date": two_years_ago,
                 }
 
-                if DEBUG_MODE:
-                    print(f"[BACKFILL-NICHE] Exa niche-filtered search for '{keyword}' with {len(include_domains)} domains")
+                logger.debug(f"[BACKFILL-NICHE] Exa niche-filtered search for '{keyword}' with {len(include_domains)} domains")
 
                 search_resp = await client.post("https://api.exa.ai/search", headers=headers, json=search_payload)
                 search_resp.raise_for_status()
                 search_results = search_resp.json().get("results", [])
 
                 if not search_results:
-                    if DEBUG_MODE:
-                        print("[BACKFILL-NICHE] No results found in niche-filtered search")
+                    logger.debug("[BACKFILL-NICHE] No results found in niche-filtered search")
                     return []
 
                 result_ids = [r.get("id") for r in search_results if r.get("id")]
@@ -1162,12 +1168,11 @@ class ResearchAgent:
                              "published_date": r.get("publishedDate"), "author": r.get("author"),
                              "exa_score": r.get("score")} for r in search_results[:5]]
 
-                if DEBUG_MODE:
-                    print(f"[BACKFILL-NICHE] Fetching full text for {len(result_ids)} articles")
+                logger.debug(f"[BACKFILL-NICHE] Fetching full text for {len(result_ids)} articles")
 
                 contents_resp = await client.post(
                     "https://api.exa.ai/contents", headers=headers,
-                    json={"ids": result_ids, "text": {"max_characters": 25000}}
+                    json={"ids": result_ids, "text": {"max_characters": EXA_MAX_CHARACTERS}}
                 )
                 contents_resp.raise_for_status()
 
@@ -1187,13 +1192,12 @@ class ResearchAgent:
                 # Gap 27: Filter non-English results
                 elite_articles = _filter_non_english_results(elite_articles, "backfill_niche")
 
-                if DEBUG_MODE:
-                    print(f"[BACKFILL-NICHE] Found {len(elite_articles)} niche-filtered backfill articles")
+                logger.debug(f"[BACKFILL-NICHE] Found {len(elite_articles)} niche-filtered backfill articles")
 
                 return elite_articles
 
             except Exception as e:
-                print(f"[BACKFILL-NICHE] Exa API Error: {e}")
+                logger.error(f"[BACKFILL-NICHE] Exa API Error: {e}")
                 return []
 
     # ------------------------------------------------------------------
@@ -1203,7 +1207,7 @@ class ResearchAgent:
     async def exa_scout_search(
         self,
         query: str,
-        num_results: int = 10,
+        num_results: int = EXA_NUM_RESULTS,
         include_domains: list[str] | None = None,
         exclude_domains: list[str] | None = None,
         start_published_date: str | None = None
@@ -1219,7 +1223,7 @@ class ResearchAgent:
             exclude_domains: Exclude these domains (e.g., ['medium.com', 'blogspot.com'])
             start_published_date: ISO date (YYYY-MM-DD) for recency filter
         """
-        from ..settings import EXA_API_KEY, DEBUG_MODE
+        from ..settings import EXA_API_KEY
         if not EXA_API_KEY:
             return [{"error": "EXA_API_KEY not configured"}]
 
@@ -1239,7 +1243,7 @@ class ResearchAgent:
         if start_published_date:
             payload["start_published_date"] = start_published_date
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
             try:
                 resp = await client.post("https://api.exa.ai/search", headers=headers, json=payload)
                 resp.raise_for_status()
@@ -1260,12 +1264,12 @@ class ResearchAgent:
                 # Gap 27: Filter non-English results
                 results = _filter_non_english_results(results, "scout")
 
-                if DEBUG_MODE:
+                if logger.isEnabledFor(logging.DEBUG):
                     filter_info = f" with filters: include={include_domains}, exclude={exclude_domains}, after={start_published_date}" if any([include_domains, exclude_domains, start_published_date]) else ""
-                    print(f"[DEBUG] exa_scout_search: Found {len(results)} results for '{query}'{filter_info}")
+                    logger.debug(f"[DEBUG] exa_scout_search: Found {len(results)} results for '{query}'{filter_info}")
                 return results
             except Exception as e:
-                print(f"Exa Scout Error: {e}")
+                logger.error(f"Exa Scout Error: {e}")
                 return [{"error": str(e)}]
 
     async def exa_extract_full_text(self, ids: list[str]) -> list[dict]:
@@ -1273,7 +1277,7 @@ class ResearchAgent:
         Native tool: Fetch full article body from Exa.ai by IDs.
         Truncates each article to 20,000 chars (~3,500 words).
         """
-        from ..settings import EXA_API_KEY, DEBUG_MODE
+        from ..settings import EXA_API_KEY
         if not EXA_API_KEY:
             return [{"error": "EXA_API_KEY not configured"}]
         if not ids:
@@ -1282,10 +1286,10 @@ class ResearchAgent:
         headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
         payload = {
             "ids": ids,
-            "text": {"max_characters": 25000}
+            "text": {"max_characters": EXA_MAX_CHARACTERS}
         }
         
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
             try:
                 resp = await client.post("https://api.exa.ai/contents", headers=headers, json=payload)
                 resp.raise_for_status()
@@ -1303,12 +1307,12 @@ class ResearchAgent:
                         "exa_score": None,  # /contents API has no score; caller must merge from search metadata
                     })
                 
-                if DEBUG_MODE:
+                if logger.isEnabledFor(logging.DEBUG):
                     total_chars = sum(len(a["content"]) for a in articles)
-                    print(f"[DEBUG] exa_extract_full_text: {len(articles)} articles, {total_chars} total chars")
+                    logger.debug(f"[DEBUG] exa_extract_full_text: {len(articles)} articles, {total_chars} total chars")
                 return articles
             except Exception as e:
-                print(f"Exa Extract Error: {e}")
+                logger.error(f"Exa Extract Error: {e}")
                 return [{"error": str(e)}]
 
     # ------------------------------------------------------------------
@@ -1327,7 +1331,7 @@ class ResearchAgent:
         Used to discover more credible sources from a verified seed URL.
         Cost: Same as regular search (~$0.007/search).
         """
-        from ..settings import EXA_API_KEY, DEBUG_MODE
+        from ..settings import EXA_API_KEY
         if not EXA_API_KEY:
             return [{"error": "EXA_API_KEY not configured"}]
 
@@ -1343,7 +1347,7 @@ class ResearchAgent:
         if start_published_date:
             payload["start_published_date"] = start_published_date
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
             try:
                 resp = await client.post("https://api.exa.ai/findSimilar", headers=headers, json=payload)
                 resp.raise_for_status()
@@ -1364,11 +1368,10 @@ class ResearchAgent:
                 # Gap 27: Filter non-English results
                 results = _filter_non_english_results(results, "find_similar")
 
-                if DEBUG_MODE:
-                    print(f"[DEBUG] exa_find_similar: Found {len(results)} similar articles for '{url}'")
+                logger.debug(f"[DEBUG] exa_find_similar: Found {len(results)} similar articles for '{url}'")
                 return results
             except Exception as e:
-                print(f"Exa FindSimilar Error: {e}")
+                logger.error(f"Exa FindSimilar Error: {e}")
                 return [{"error": str(e)}]
 
         return []  # Unreachable but satisfies type checker
@@ -1397,17 +1400,15 @@ class ResearchAgent:
 
         Cost: ~$0.003 per keyword (cached for 24h)
         """
-        from ..settings import DATAFORSEO_CONTENT_ANALYSIS_ENABLED, DEBUG_MODE
+        from ..settings import DATAFORSEO_CONTENT_ANALYSIS_ENABLED
 
         # Feature flag gate - 100% additive
         if not DATAFORSEO_CONTENT_ANALYSIS_ENABLED:
-            if DEBUG_MODE:
-                print("[DEBUG] Content Analysis disabled (feature flag off)")
+            logger.debug("[DEBUG] Content Analysis disabled (feature flag off)")
             return None
 
         try:
-            if DEBUG_MODE:
-                print(f"[DEBUG] Fetching Content Analysis patterns for '{keyword}'...")
+            logger.debug(f"[DEBUG] Fetching Content Analysis patterns for '{keyword}'...")
 
             # Call DataForSEO Content Analysis API via MCP session
             # Tool name: content_analysis_summary or similar (check MCP server docs)
@@ -1417,11 +1418,11 @@ class ResearchAgent:
                 "keyword": keyword,
                 "location_name": "United States",
                 "language_code": "en",
-                "depth": 10,  # Analyze top 10 SERP results
+                "depth": SERP_DEPTH,  # Analyze top N SERP results
             }
 
             # Execute via MCP session
-            result = await mcp_session.call_tool(tool_name, tool_args)
+            result = await mcp_call_with_retry(mcp_session, tool_name, tool_args)
 
             # Parse MCP response (defensive - supports multiple formats)
             result_text = None
@@ -1434,24 +1435,21 @@ class ResearchAgent:
                 result_text = result.text
 
             if not result_text:
-                if DEBUG_MODE:
-                    print("[DEBUG] Content Analysis: Empty response from MCP")
+                logger.debug("[DEBUG] Content Analysis: Empty response from MCP")
                 return None
 
             # Parse JSON response
             try:
                 data = json.loads(result_text)
             except json.JSONDecodeError:
-                if DEBUG_MODE:
-                    print(f"[DEBUG] Content Analysis: Failed to parse JSON: {result_text[:200]}")
+                logger.debug(f"[DEBUG] Content Analysis: Failed to parse JSON: {result_text[:200]}")
                 return None
 
             # Extract patterns from DataForSEO response
             # Expected structure: {tasks: [{result: [{content_analysis: {...}}]}]}
             tasks = data.get("tasks", [])
             if not tasks or not tasks[0].get("result"):
-                if DEBUG_MODE:
-                    print("[DEBUG] Content Analysis: No tasks/result in response")
+                logger.debug("[DEBUG] Content Analysis: No tasks/result in response")
                 return None
 
             analysis = tasks[0]["result"][0].get("content_analysis", {})
@@ -1470,15 +1468,13 @@ class ResearchAgent:
                 "top_topics": analysis.get("top_topics", [])[:5],  # Limit to top 5
             }
 
-            if DEBUG_MODE:
-                print(f"[DEBUG] Content Analysis patterns extracted: {patterns}")
+            logger.debug(f"[DEBUG] Content Analysis patterns extracted: {patterns}")
 
             return patterns
 
         except Exception as e:
             # Graceful degradation - log but don't fail the entire research pipeline
-            if DEBUG_MODE:
-                print(f"[DEBUG] Content Analysis failed (non-critical): {e}")
+            logger.debug(f"[DEBUG] Content Analysis failed (non-critical): {e}")
             return None
 
     # ------------------------------------------------------------------
@@ -1582,7 +1578,7 @@ class ResearchAgent:
                 return all_kws[:15]
 
         except Exception as e:
-            print(f"Entity Extraction Error: {e}")
+            logger.error(f"Entity Extraction Error: {e}")
             pass
 
         # Final fallback: empty list (no entities better than wrong entities)
@@ -1894,7 +1890,7 @@ class ResearchAgent:
             "max_tokens": 4000
         }
         
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=DEEPSEEK_REASONER_TIMEOUT) as client:
             resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
@@ -1950,7 +1946,7 @@ class ResearchAgent:
             "max_tokens": 500
         }
         
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
             try:
                 resp = await client.post(
                     DEEPSEEK_API_URL, headers=headers, json=payload
@@ -1959,7 +1955,7 @@ class ResearchAgent:
                 data = resp.json()
                 return data["choices"][0]["message"]["content"].strip()
             except Exception as e:
-                print(f"DeepSeek Error: {e}")
+                logger.error(f"DeepSeek Error: {e}")
                 return "Could not determine information gap due to an API error."
 
     # ------------------------------------------------------------------

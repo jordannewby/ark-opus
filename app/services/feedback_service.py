@@ -1,7 +1,10 @@
 import json
+import logging
 import httpx
-from ..settings import DEEPSEEK_API_KEY
+from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_TIMEOUT, RULE_CONSOLIDATION_THRESHOLD
 from ..models import UserStyleRule
+
+logger = logging.getLogger(__name__)
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
@@ -63,7 +66,7 @@ class FeedbackAgent:
                  "temperature": 0.2,
              }
 
-             async with httpx.AsyncClient(timeout=60) as client:
+             async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
                  resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
                  resp.raise_for_status()
                  content = resp.json()["choices"][0]["message"]["content"].strip()
@@ -101,7 +104,7 @@ class FeedbackAgent:
              return rules
 
         except Exception as e:
-             print(f"[FEEDBACK ERROR] DeepSeek Feedback Error: {e}")
+             logger.error(f"[FEEDBACK] DeepSeek Feedback Error: {e}")
              self.db.rollback()
              return []
 
@@ -110,7 +113,7 @@ class FeedbackAgent:
         Consolidates rules if the user has accumulated > 20 rules to prevent memory leaks and prompt bloat.
         """
         rules = self.db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).order_by(UserStyleRule.id.asc()).all()
-        if len(rules) <= 20:
+        if len(rules) <= RULE_CONSOLIDATION_THRESHOLD:
             return
 
         print(f"[FEEDBACK] Starting Style Pruning for '{profile_name}' ({len(rules)} rules)...")
@@ -140,7 +143,7 @@ class FeedbackAgent:
                  "temperature": 0.1,
              }
 
-             async with httpx.AsyncClient(timeout=60) as client:
+             async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
                  resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
                  resp.raise_for_status()
                  content = resp.json()["choices"][0]["message"]["content"].strip()
@@ -187,5 +190,5 @@ class FeedbackAgent:
              print(f"[FEEDBACK] Pruned {len(rules)} rules down to {len(new_rules)} optimized rules.")
 
         except Exception as e:
-             print(f"[FEEDBACK ERROR] Pruning Error: {e}")
+             logger.error(f"[FEEDBACK] Pruning Error: {e}")
              self.db.rollback()

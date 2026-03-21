@@ -4,6 +4,7 @@ window.addEventListener('error', (e) => {
     alert("UI Error: " + (e.message || "Unknown error occurred in console.js"));
 });
 let lastGeneratedMarkdown = "";
+let currentAbortController = null;
 
 const els = {
     keywordInput: document.getElementById('keyword-input'),
@@ -372,11 +373,16 @@ async function executeGeneration(userContext) {
 
     terminalLog("SYSTEM", `Compiling context and starting generation...`, "#22d3ee");
 
+    // Abort any in-flight generation before starting a new one
+    if (currentAbortController) currentAbortController.abort();
+    currentAbortController = new AbortController();
+
     try {
         const response = await fetch(`/generate/${encodeURIComponent(kw)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ niche: niche, context: userContext, profile_name: profile })
+            body: JSON.stringify({ niche: niche, context: userContext, profile_name: profile }),
+            signal: currentAbortController.signal,
         });
 
         if (!response.ok) throw new Error(`Server Error: ${response.status}`);
@@ -498,8 +504,13 @@ async function executeGeneration(userContext) {
         }
 
     } catch (err) {
-        terminalLog("ERROR", `Connection Failed: ${err.message}`, "#ef4444");
+        if (err.name === 'AbortError') {
+            terminalLog("SYSTEM", "Generation aborted — new request started.", "#facc15");
+        } else {
+            terminalLog("ERROR", `Connection Failed: ${err.message}`, "#ef4444");
+        }
     } finally {
+        currentAbortController = null;
         els.generateBtn.disabled = false;
         updateAgentUI(null);
     }
@@ -1010,6 +1021,31 @@ cartEls.mapBtn.addEventListener('click', async () => {
     }
 });
 
+function showConfirmModal(message, onConfirm) {
+    const overlay = document.getElementById('confirm-modal-overlay');
+    const panel = document.getElementById('confirm-modal-panel');
+    const msgEl = document.getElementById('confirm-modal-message');
+    const cancelBtn = document.getElementById('confirm-cancel-btn');
+    const okBtn = document.getElementById('confirm-ok-btn');
+
+    msgEl.textContent = message;
+    overlay.classList.remove('hidden');
+    setTimeout(() => { panel.classList.remove('scale-95', 'opacity-0'); panel.classList.add('scale-100', 'opacity-100'); }, 20);
+
+    function close() {
+        panel.classList.remove('scale-100', 'opacity-100');
+        panel.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => overlay.classList.add('hidden'), 300);
+        cancelBtn.removeEventListener('click', onCancel);
+        okBtn.removeEventListener('click', onOk);
+    }
+    function onCancel() { close(); }
+    function onOk() { close(); onConfirm(); }
+
+    cancelBtn.addEventListener('click', onCancel);
+    okBtn.addEventListener('click', onOk);
+}
+
 function attachSpokeListeners() {
     const btns = cartEls.results.querySelectorAll('.generate-spoke-btn');
     btns.forEach(btn => {
@@ -1017,15 +1053,11 @@ function attachSpokeListeners() {
             const kw = e.currentTarget.getAttribute('data-keyword');
             if (!kw) return;
 
-            if (!confirm(`Generate article for "${kw}"? This will start a new generation.`)) return;
-
-            // Pop main generation UI context
-            toggleCartographer(false);
-
-            els.keywordInput.value = kw;
-
-            // Auto trigger the pipeline
-            els.generateBtn.click();
+            showConfirmModal(`Generate article for "${kw}"? This will start a new generation.`, () => {
+                toggleCartographer(false);
+                els.keywordInput.value = kw;
+                els.generateBtn.click();
+            });
         });
     });
 }

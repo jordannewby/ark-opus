@@ -1,8 +1,11 @@
 from __future__ import annotations
 import json
+import logging
 import httpx
 from pathlib import Path
-from ..settings import DEEPSEEK_API_KEY
+from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_TIMEOUT
+
+logger = logging.getLogger(__name__)
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
@@ -74,7 +77,7 @@ class PsychologyAgent:
             "temperature": 0.7,
         }
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
             try:
                 resp = await client.post(
                     DEEPSEEK_API_URL, headers=headers, json=payload
@@ -94,7 +97,7 @@ class PsychologyAgent:
                 blueprint = json.loads(content.strip())
 
             except Exception as e:
-                print(f"DeepSeek Blueprint Generation Error: {e}")
+                logger.error(f"DeepSeek Blueprint Generation Error: {e}")
                 # Fallback empty blueprint on error
                 blueprint = {
                     "hook_strategy": "Fallback Hook",
