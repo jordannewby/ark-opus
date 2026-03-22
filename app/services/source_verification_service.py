@@ -1011,6 +1011,11 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
     all_new_citations = []
     all_facts_for_verification = []  # Collect facts for batch verification
 
+    # --- Concurrent Fact Extraction ---
+    extraction_tasks = []
+    valid_sources = []
+    import asyncio
+
     for source_row in verified_sources:
         if source_row.credibility_score < 45.0:
             continue
@@ -1022,8 +1027,22 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
             "url": source_row.url,
             "content": full_content,
         }
+        
+        valid_sources.append((source_row, full_content))
+        extraction_tasks.append(extract_facts_from_source(source_dict))
 
-        facts = await extract_facts_from_source(source_dict)
+    # Run DeepSeek reasoning for all sources concurrently (Fixes 30+ minute stall)
+    extracted_facts_results = []
+    if extraction_tasks:
+        logger.info(f"[FACTS] Starting concurrent fact extraction for {len(extraction_tasks)} sources...")
+        extracted_facts_results = await asyncio.gather(*extraction_tasks, return_exceptions=True)
+
+    for i, facts in enumerate(extracted_facts_results):
+        source_row, full_content = valid_sources[i]
+        
+        if isinstance(facts, Exception):
+            logger.error(f"[FACTS] DeepSeek extraction failed for {source_row.url}: {facts}")
+            continue
 
         for fact in facts:
             if fact.get("confidence", 0) < 0.6:

@@ -5,7 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Configure logging so INFO-level messages (scoring breakdowns, verified sources) are visible
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Ensure environment is loaded BEFORE importing services

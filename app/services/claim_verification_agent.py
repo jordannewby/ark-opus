@@ -802,9 +802,11 @@ def extract_article_claims(article_text: str) -> list[dict]:
         context_start = max(0, link_start - 300)
         context = article_text[context_start:link_start].strip()
 
-        # Find the most recent sentence containing the citation
-        sentences = re.split(r'(?<=[.!?])\s+', context)
-        claim_text = sentences[-1] if sentences else context[-200:]
+        # Find the most recent explicit sentence containing the citation
+        raw_sentences = re.split(r'(?<=[.!?])\s+', context)
+        valid_sentences = [s for s in raw_sentences if len(s.strip()) > 5]
+        
+        claim_text = valid_sentences[-1] if valid_sentences else context[-200:]
         claim_stripped = claim_text.strip()
 
         # Skip bare resource/reference links that aren't factual claims:
@@ -820,6 +822,11 @@ def extract_article_claims(article_text: str) -> list[dict]:
 
         # Check if claim contains quantitative data
         has_quant = bool(_QUANT_CLAIM_PATTERN.search(claim_stripped))
+
+        # If the LLM cited a narrative/summary sentence without statistics, ignore the citation.
+        # This prevents the verification loop from choking on "flavor text" citations.
+        if not has_quant:
+            continue
 
         claims.append({
             "claim_text": claim_stripped,
@@ -852,8 +859,13 @@ def detect_uncited_claims(article_text: str, cited_claims: list[dict]) -> list[d
         stripped = sentence.strip()
         if len(stripped) < 20:
             continue
-        # Skip headings, list markers
-        if stripped.startswith('#') or stripped.startswith('- ') or stripped.startswith('* '):
+        # Skip headings, list markers, and markdown tables
+        if stripped.startswith('#') or stripped.startswith('- ') or stripped.startswith('* ') or stripped.startswith('|'):
+            continue
+        if '|' in stripped and len(stripped.split('|')) > 2:
+            continue
+        # Skip gracefully if it looks like a malformed markdown link typo (e.g. LLM forgot opening bracket)
+        if '](http' in stripped:
             continue
         # Check if sentence has quantitative data
         if not _QUANT_CLAIM_PATTERN.search(stripped):
@@ -985,7 +997,20 @@ def cross_reference_claims(
                     matched_facts = facts
                     break
 
-        # NOTE: Bare domain-level matching intentionally removed (Gap 5 fix).
+        # Step 4: Domain fallback match (Allows LLM fallback to handle the truth check if URL is truncated)
+        if not matched_facts:
+            try:
+                from urllib.parse import urlparse
+                claim_domain = urlparse(claim_url).netloc.lower().replace("www.", "")
+                for url, facts in url_facts_map.items():
+                    fact_domain = urlparse(url).netloc.lower().replace("www.", "")
+                    if claim_domain == fact_domain and claim_domain != "":
+                        matched_facts = facts
+                        break
+            except Exception:
+                pass
+
+        # NOTE: Bare domain-level matching restored as LLM fallback gate properly handles hallucinated paths.
         if not matched_facts:
             fabricated_count += 1
             details.append({

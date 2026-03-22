@@ -256,19 +256,21 @@ class WriterService:
                 prompt_instructions += "   • DO NOT invent statistics, percentages, or dollar amounts\n"
                 prompt_instructions += "   • DO NOT use vague claims like 'many companies' or 'recent studies'\n"
                 prompt_instructions += "   • DO NOT cite sources not in the citation map above\n"
-                prompt_instructions += "   • DO NOT write facts without immediate inline citations\n\n"
+                prompt_instructions += "   • DO NOT write facts without immediate inline citations\n"
+                prompt_instructions += "   • NEVER place a citation on a narrative or summary sentence\n"
+                prompt_instructions += "   • ALWAYS place the citation BEFORE the period.\n\n"
 
                 prompt_instructions += "ACCEPTED CITATION FORMATS:\n"
-                prompt_instructions += "   1. Markdown links: [Source Name 2024](URL)  ← PREFERRED\n"
-                prompt_instructions += "   2. Parenthetical: (Source 2024)\n"
-                prompt_instructions += "   3. Footnotes: [1], [2], etc.\n\n"
+                prompt_instructions += "   1. Markdown links: [Source Name 2024](URL)  ← MANDATORY\n"
+                prompt_instructions += "   (Do not use footnotes or parentheticals. Every citation MUST be a clear Markdown link.)\n\n"
 
                 prompt_instructions += "EXAMPLES OF PROPER CITATION:\n"
                 prompt_instructions += "   [OK] 'According to [Gartner 2024](url), cloud adoption will reach 85% by 2026.'\n"
-                prompt_instructions += "   [OK] 'The average cost of a data breach is $4.35 million [IBM Report](url).'\n"
-                prompt_instructions += "   [OK] 'Healthcare faces 3x more attacks than other sectors (Verizon 2024).'\n"
-                prompt_instructions += "   [X] '67% of SMBs report security concerns.' -- NO CITATION!\n"
-                prompt_instructions += "   [X] 'Many companies are adopting AI.' -- VAGUE, NO DATA!\n\n"
+                prompt_instructions += "   [OK] 'The cost of a data breach is $4.35 million [IBM](url).'\n"
+                prompt_instructions += "   [OK] 'Healthcare faces 3x more attacks than other sectors [Verizon](url).'\n"
+                prompt_instructions += "   [X] 'Healthcare faces 3x more attacks. [Verizon](url)' -- BAD (Period is before citation!)\n"
+                prompt_instructions += "   [X] 'The numbers tell a shocking story [Verizon](url).' -- BAD (Citation on non-statistical narrative!)\n"
+                prompt_instructions += "   [X] '67% of SMBs report security concerns.' -- NO CITATION!\n\n"
 
                 prompt_instructions += "================================================\n"
 
@@ -361,7 +363,19 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                     "For example: 'landscape' -> 'space' or 'market', 'optimize' -> 'improve' or 'refine', "
                     "'robust' -> 'strong' or 'reliable', 'seamless' -> 'smooth' or 'easy', "
                     "'scalable' -> 'growable' or 'expandable'. "
-                    "Maintain word count (1500+ words) while fixing all other issues."
+                    "Maintain word count (1500+ words) while fixing all other issues.\n\n"
+                    "EMERGENCY SEO & STRUCTURE GUARDRAILS FOR REWRITES:\n"
+                    "You are in a feedback loop. DO NOT PANIC AND DELETE STRUCTURES.\n"
+                    "Even as you fix the citations or banned words, YOU ABSOLUTELY MUST:\n"
+                    "1. PRESERVE A MINIMUM OF 1500 WORDS. Rewrite/expand sections heavily if needed.\n"
+                    "2. PRESERVE AT LEAST 5 DISTINCT '## ' SECTIONS. Do not merge or delete them.\n"
+                    "3. PRESERVE AT LEAST 3 DISTINCT MARKDOWN LISTS OR TABLES.\n"
+                    "4. Include high-density information. Do NOT turn the article into a short summary.\n"
+                    "If you fix the feedback but fail these rules, the revision WILL FAIL.\n\n"
+                    "EMERGENCY FACTUAL GUARDRAILS:\n"
+                    "1. YOU ARE STRICTLY FORBIDDEN from inventing any percentage (%), dollar amount, or hard statistic.\n"
+                    "2. If a verification error tells you an 'uncited claim' or 'ungrounded citation' was found, you MUST REMOVE the fabricated statistic entirely. Do not try to re-cite it if it's not in your source map.\n"
+                    "3. Use qualitative language (e.g., 'a significant portion') instead of inventing a number if you lack the source data."
                 )
 
             full_content = ""
@@ -516,6 +530,12 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                 )
 
                                 if not xref_result["passed"]:
+                                    # SEVERE PENALTY: Never allow a hallucinatory draft to win best_attempt fallback
+                                    attempt_score -= 1000
+                                    if best_attempt and best_attempt.get("attempt") == attempt:
+                                        best_attempt["score"] = attempt_score
+
+                                if not xref_result["passed"]:
                                     v_feedback = format_claim_verification_feedback(xref_result)
                                     all_feedback_history.append(v_feedback)  # Gap 31
                                     if remaining_ambiguous > max_ambiguous:
@@ -523,10 +543,16 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                     yield {"type": "debug", "message": f"Claim Verification Failed (Iteration {attempt}):\n{v_feedback}"}
 
                                     if attempt == max_attempts:
-                                        yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                                        best_c = best_attempt["content"] if best_attempt else full_content
-                                        best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
-                                        yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
+                                        if best_attempt and best_attempt.get("score", 0) < 0:
+                                            yield {
+                                                "status": "error",
+                                                "message": "Generation aborted: The AI failed to produce a factually safe article after 5 attempts. All attempts contained severe uncited or hallucinated statistics.",
+                                            }
+                                        else:
+                                            yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
+                                            best_c = best_attempt["content"] if best_attempt else full_content
+                                            best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
+                                            yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
                                         return
 
                                     # Clear editor for next attempt
@@ -558,13 +584,23 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                 full_content, citation_map=citations_fb, min_citations=min_required
                             )
                             if not citation_result["passed"]:
+                                attempt_score -= 1000
+                                if best_attempt and best_attempt.get("attempt") == attempt:
+                                    best_attempt["score"] = attempt_score
+
                                 v_feedback = f"Citation Validation Failed (fallback v2, Iteration {attempt}). {citation_result['feedback']}"
                                 yield {"type": "debug", "message": v_feedback}
                                 if attempt == max_attempts:
-                                    yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                                    best_c = best_attempt["content"] if best_attempt else full_content
-                                    best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
-                                    yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
+                                    if best_attempt and best_attempt.get("score", 0) < 0:
+                                        yield {
+                                            "status": "error",
+                                            "message": "Generation aborted: The AI failed to produce a factually safe article after 5 attempts. All attempts contained severe uncited or hallucinated statistics.",
+                                        }
+                                    else:
+                                        yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
+                                        best_c = best_attempt["content"] if best_attempt else full_content
+                                        best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
+                                        yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
                                     return
                                 yield {"type": "control", "action": "retry_clear"}
                                 continue
@@ -795,15 +831,27 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                                 return
 
                         if attempt == max_attempts:
-                            yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                            best_c = best_attempt["content"] if best_attempt else full_content
-                            best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
-                            yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
+                            if best_attempt and best_attempt.get("score", 0) < 0:
+                                yield {
+                                    "status": "error",
+                                    "message": "Generation aborted: The AI failed to produce a factually safe article after 5 attempts. All attempts contained severe uncited or hallucinated statistics.",
+                                }
+                            else:
+                                yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
+                                best_c = best_attempt["content"] if best_attempt else full_content
+                                best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
+                                yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
                             return
 
                         # Clear editor for next attempt
                         yield {"type": "control", "action": "retry_clear"}
                 else:
+                    # If SEO failed, Claim Verification is skipped, rendering the draft fundamentally unchecked.
+                    # Apply a severe penalty to ensure this untested draft never overrides a factually verified best_effort draft.
+                    attempt_score -= 1000
+                    if best_attempt and best_attempt.get("attempt") == attempt:
+                        best_attempt["score"] = attempt_score
+
                     issues = []
                     if score['banned_words_used']:
                         issues.append(f"Banned words found: {', '.join(score['banned_words_found'])}")
@@ -826,10 +874,16 @@ THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
                     yield {"type": "debug", "message": f"Writer Iteration {attempt} failed: {v_feedback}"}
                     
                     if attempt == max_attempts:
-                        yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                        best_c = best_attempt["content"] if best_attempt else full_content
-                        best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
-                        yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
+                        if best_attempt and best_attempt.get("score", 0) < 0:
+                            yield {
+                                "status": "error",
+                                "message": "Generation aborted: The AI failed to produce a factually safe article after 5 attempts. All attempts contained severe uncited or hallucinated statistics.",
+                            }
+                        else:
+                            yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
+                            best_c = best_attempt["content"] if best_attempt else full_content
+                            best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
+                            yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
                         return
 
                     # Clear editor for next attempt
