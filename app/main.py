@@ -288,7 +288,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
     niche = payload.niche
     context = payload.context
 
-    print(f"[ARES] Starting unified generation for: {keyword} (niche: {niche})")
+    logger.info(f"[ARES] Starting unified generation for: {keyword} (niche: {niche})")
 
     async def event_generator():
         nonlocal db
@@ -484,6 +484,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             p3_start = time.time()
             writer_service = WriterService(db=db)
             article_content = ""
+            readability_scores = None
             run_id = research_data_dict.get("research_run_id")
             async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, normalize_niche(payload.niche), research_run_id=run_id, source_content_map=source_content_map):
                 if result.get("type") == "content":
@@ -512,7 +513,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     }
 
             if DEBUG_MODE:
-                yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 3 (Claude 3.5 Sonnet) completed in {round(time.time() - p3_start, 2)}s'})}\n\n"
+                yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 3 (Claude Sonnet 4) completed in {round(time.time() - p3_start, 2)}s'})}\n\n"
 
             # Save the generated article
             post = Post(
@@ -574,7 +575,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     db.commit()
                 db.refresh(post)
 
-            print(f"[ARES] Generation complete for: {keyword}")
+            logger.info(f"[ARES] Generation complete for: {keyword}")
             
             # Use model_dump or dictionary access to serialize the SQLAlchemy object safely
             # Since standard Post output might not be directly JSON serializable without a Pydantic model conversion

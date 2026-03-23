@@ -78,822 +78,98 @@ class WriterService:
 
     async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general", research_run_id: int | None = None, source_content_map: dict | None = None):
         """
-        Takes a blueprint JSON and streams a formatted Markdown article using Anthropic.
-        Enforces Information Gain, E-E-A-T, and Entity Density rules with an iterative SEO loop.
-        Includes citation map from verified sources if research_run_id provided.
+        Uses LangGraph Agentic RAG architecture to plan, retrieve, write, and edit the article section-by-section.
         """
-        import json # Explicitly import to prevent shadowing by local assignments later in the function
-        entities = blueprint.get("entities", [])
-        semantic_keywords = blueprint.get("semantic_keywords", [])
-        information_gap = blueprint.get("information_gap", "")
+        from .writer_agent_graph import app_graph, WriterState
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        all_citations = []
+        if research_run_id:
+            from ..models import FactCitation
+            citations = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+            verified_citations = [c for c in citations if getattr(c, 'is_verified', True)]
+            
+            def _usability_weight(c):
+                status = getattr(c, 'verification_status', 'not_checked') or 'not_checked'
+                if status in ("corroborated", "trusted"):
+                    tier_mult = 1.5
+                elif status == "not_checked":
+                    tier_mult = 0.6
+                elif status == "suspect":
+                    tier_mult = 0.4
+                else:
+                    tier_mult = 0.5
+                grounding_mult = 1.2 if getattr(c, 'is_grounded', True) else 0.8
+                return (c.composite_score or 0) * tier_mult * grounding_mult
 
-        # 1. Build Base Prompts
-        system_instructions = self.base_system_prompt + (
-            "\n\nMINIMUM 1,500 words (non-negotiable). Target 1,500-1,800 words for optimal SEO ranking and engagement. "
-            "Articles under 1,500 words WILL be rejected and you WILL have to rewrite. "
-            "Be highly comprehensive, but eliminate all rambling and fluff. Conclude naturally once the Information Gap is fully addressed."
-        )
-
-        prompt_instructions = (
-            "Write a 1,500-1,800 word blog post (HARD MINIMUM: 1,500 words) based on the following psychological blueprint:\n\n"
-            f"{json.dumps(blueprint, indent=2)}\n\n"
-            "MANDATORY:\n"
-            "- Deliver the 'Information Gap' hook in the first 150 words.\n"
-            "- Cite 'Authority Sources' using the Phase 1 Backlinks insight if applicable.\n"
-        )
-
-        if entities:
-            prompt_instructions += f"## SEO Entities to Weave Naturally:\n{', '.join(entities)}\n\n"
-
-        if semantic_keywords:
-            prompt_instructions += f"## Semantic Keywords to Include:\n{', '.join(semantic_keywords)}\n\n"
-
-        prompt_instructions += (
-            "CRITICAL WRITING CONSTRAINTS (Read Carefully):\n"
-            "1. NO AI FLUFF: Do NOT use ANY of these words: "
-            "'delve', 'tapestry', 'landscape', 'multifaceted', 'comprehensive', 'holistic', "
-            "'navigate', 'crucial', 'robust', 'seamless', 'synergy', 'leverage', 'scalable', "
-            "'foster', 'optimize', 'ecosystem', 'paradigm'. Using ANY of these words will cause "
-            "an automatic validation failure and forced rewrite.\n"
-            "2. NO CLICHES: Do NOT use 'In conclusion', 'Ultimately', 'In today's digital age', or 'game-changer'.\n"
-            "3. FORMATTING: The very first ## H2 MUST focus entirely on the 'Information Gap' as a pattern interrupt.\n"
-            "4. CADENCE: Max 2-3 sentences per paragraph. Short, punchy delivery. White space between every paragraph.\n"
-            "5. NO FAKE ASSETS: Do NOT reference specific templates, tools, downloads, checklists, frameworks, or products that do not actually exist. Do NOT promise deliverables the reader cannot access. Do NOT name fake templates like 'QuickBooks Integration Template' or 'Security Audit Checklist'. Instead, give actionable steps the reader can follow directly in the article.\n"
-            "6. NO FABRICATED DATA: Do NOT invent statistics, percentages, dollar amounts, study results, or benchmarks. Use ONLY facts and numbers that appear in the research brief provided above. If the research brief does not contain a specific stat, do NOT make one up. Say 'studies show' or 'research suggests' ONLY if the research brief contains the actual source. It is better to make a strong argument without numbers than to fabricate a stat that destroys reader trust.\n"
-        )
+            citations_sorted = sorted(verified_citations, key=_usability_weight, reverse=True)
+            for c in citations_sorted:
+                all_citations.append({
+                    "citation_anchor": c.citation_anchor,
+                    "source_url": c.source_url,
+                    "fact_text": c.fact_text
+                })
 
         # Inject Dynamic Human Style Rules
         from ..models import UserStyleRule
+        style_rules_text = ""
         style_rules = self.db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).all()
         if style_rules:
-            prompt_instructions += "\n--- HUMAN STYLE GUIDELINES LEARNED FROM PAST EDITS ---\n"
             for rule in style_rules:
-                prompt_instructions += f"- {rule.rule_description}\n"
-            prompt_instructions += "--------------------------------------------------------\n"
+                style_rules_text += f"- {rule.rule_description}\n"
 
-        # Inject WriterPlaybook (Readability Learning)
-        from ..models import WriterPlaybook
+        initial_state: WriterState = {
+            "blueprint": blueprint,
+            "profile_name": profile_name,
+            "niche": niche,
+            "all_citations": all_citations,
+            "style_rules": style_rules_text,
+            "sections_planned": [],
+            "current_section_idx": 0,
+            "draft_sections": [],
+            "current_section_citations": [],
+            "current_section_draft": "",
+            "section_feedback": "",
+            "section_retry_count": 0,
+            "final_article": "",
+            "yield_messages": []
+        }
+        
+        final_state = None
+        try:
+            async for output in app_graph.astream(initial_state):
+                for node_name, state_update in output.items():
+                    if "yield_messages" in state_update:
+                        for msg in state_update["yield_messages"]:
+                            yield msg
+                    final_state = state_update
+        except Exception as e:
+            error_msg = f"LangGraph Execution Error: {str(e)}"
+            logger.error(f"[Writer] {error_msg}")
+            yield {"status": "error", "message": error_msg}
+            return
 
-        normalized_niche = niche.strip().lower().replace(" ", "-") if niche else "general"
-        writer_playbook = self.db.query(WriterPlaybook).filter(
-            WriterPlaybook.profile_name == profile_name,
-            WriterPlaybook.niche == normalized_niche
-        ).first()
-
-        if writer_playbook:
-            playbook_data = json.loads(writer_playbook.playbook_json)
-            prompt_instructions += "\n--- READABILITY PLAYBOOK (LEARNED FROM PAST SUCCESSES) ---\n"
-            prompt_instructions += f"This niche typically achieves ARI: {playbook_data['avg_ari_baseline']} grade level.\n"
-            prompt_instructions += f"Target sentence length: {playbook_data['structure_template']['target_avg_sentence_length']} words.\n"
-
-            if playbook_data.get('effective_sentence_patterns'):
-                prompt_instructions += "\nEffective sentence patterns for this niche:\n"
-                for pattern in playbook_data['effective_sentence_patterns'][:3]:  # Top 3
-                    prompt_instructions += f"- {pattern['pattern']} (avg ARI: {pattern['avg_ari']})\n"
-
-            if playbook_data.get('preferred_word_swaps'):
-                prompt_instructions += "\nPreferred word simplifications:\n"
-                for complex_word, simple_words in list(playbook_data['preferred_word_swaps'].items())[:5]:
-                    prompt_instructions += f"- Instead of '{complex_word}', use: {', '.join(simple_words)}\n"
-
-            prompt_instructions += f"(Playbook version {playbook_data['version']}, based on {playbook_data['runs_distilled']} successful articles)\n"
-            prompt_instructions += "----------------------------------------------------------------\n"
-
-        # Inject Content Patterns from DataForSEO (Optional)
-        content_patterns = blueprint.get("content_patterns")
-        if content_patterns:
-            prompt_instructions += "\n--- SERP CONTENT PATTERNS (TOP 10 RESULTS ANALYSIS) ---\n"
-            prompt_instructions += f"The top-ranking articles for this keyword typically have:\n"
-
-            if content_patterns.get("avg_word_count"):
-                word_count = content_patterns["avg_word_count"]
-                prompt_instructions += f"- Average word count: {word_count:,} words (aim for similar depth)\n"
-
-            if content_patterns.get("avg_heading_count"):
-                h_counts = content_patterns["avg_heading_count"]
-                if isinstance(h_counts, dict):
-                    h2_count = h_counts.get("h2", 0)
-                    h3_count = h_counts.get("h3", 0)
-                    if h2_count > 0:
-                        prompt_instructions += f"- Average H2 headings: {h2_count} (structure your article similarly)\n"
-                    if h3_count > 0:
-                        prompt_instructions += f"- Average H3 headings: {h3_count} (add sub-sections as needed)\n"
-
-            if content_patterns.get("avg_list_count") and content_patterns["avg_list_count"] > 0:
-                list_count = content_patterns["avg_list_count"]
-                prompt_instructions += f"- Average lists: {list_count} (readers expect bulleted/numbered lists)\n"
-
-            if content_patterns.get("avg_table_count") and content_patterns["avg_table_count"] > 0:
-                table_count = content_patterns["avg_table_count"]
-                prompt_instructions += f"- Average tables: {table_count} (consider comparison tables if relevant)\n"
-
-            if content_patterns.get("content_types"):
-                types = content_patterns["content_types"]
-                if types:
-                    prompt_instructions += f"- Common content types: {', '.join(types[:3])} (match reader expectations)\n"
-
-            if content_patterns.get("top_topics"):
-                topics = content_patterns["top_topics"]
-                if topics:
-                    prompt_instructions += f"- Top related topics: {', '.join(topics[:5])}\n"
-
-            prompt_instructions += "\nUse these patterns as a guide for structure, not as strict requirements.\n"
-            prompt_instructions += "Your article should match the depth and format readers expect from top results.\n"
-            prompt_instructions += "------------------------------------------------------------\n"
-
-        # Inject Citation Map from Verified Sources
-        if research_run_id:
-            from ..models import FactCitation
-
-            citations = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
-
-            if citations:
-                # Filter out unverified facts and apply usability-tier weighting
-                verified_citations = [c for c in citations if getattr(c, 'is_verified', True)]
-
-                def _usability_weight(c):
-                    status = getattr(c, 'verification_status', 'not_checked') or 'not_checked'
-                    if status in ("corroborated", "trusted"):
-                        tier_mult = 1.5   # Premium: verified facts
-                    elif status == "not_checked":
-                        tier_mult = 0.6   # Discount: unchecked facts
-                    elif status == "suspect":
-                        tier_mult = 0.4   # Heavy discount: suspect source
-                    else:
-                        tier_mult = 0.5
-                    grounding_mult = 1.2 if getattr(c, 'is_grounded', True) else 0.8
-                    return (c.composite_score or 0) * tier_mult * grounding_mult
-
-                citations_sorted = sorted(verified_citations, key=_usability_weight, reverse=True)
-
-                prompt_instructions += "\n╔════════════════════════════════════════════════════════════════╗\n"
-                prompt_instructions += "║   CRITICAL CITATION REQUIREMENTS (NON-NEGOTIABLE)             ║\n"
-                prompt_instructions += "╚════════════════════════════════════════════════════════════════╝\n\n"
-
-                prompt_instructions += f"[!] You have access to {len(citations_sorted)} VERIFIED factual claims below.\n"
-                prompt_instructions += "[!] You MUST cite sources when making ANY factual claim.\n\n"
-
-                prompt_instructions += "═══ AVAILABLE CITATIONS (use exact markdown format) ═══\n\n"
-
-                for cite in citations_sorted:
-                    markdown_link = f"[{cite.citation_anchor}]({cite.source_url})"
-                    # Truncate fact to 100 chars for readability
-                    fact_preview = cite.fact_text
-                    prompt_instructions += f"  • {markdown_link} — {fact_preview}\n"
-
-                prompt_instructions += "\n═══════════════════════════════════════════════════\n\n"
-
-                prompt_instructions += "MANDATORY FORMAT:\n"
-                prompt_instructions += "   When you write a fact from the map, cite it IMMEDIATELY like this:\n"
-                prompt_instructions += '   "67% of SMBs experienced a cyberattack in 2023 [Verizon 2024](https://verizon.com/dbir)."\n\n'
-
-                prompt_instructions += "MINIMUM CITATION REQUIREMENTS:\n"
-                prompt_instructions += "   • If your article has 0-2 quantitative claims: Cite at least 3 sources\n"
-                prompt_instructions += "   • If your article has 3+ quantitative claims: Cite 1 source per claim\n"
-                prompt_instructions += "   • Distribute citations throughout the article (not all in one section)\n\n"
-
-                prompt_instructions += "STRICT PROHIBITIONS:\n"
-                prompt_instructions += "   • DO NOT invent statistics, percentages, or dollar amounts\n"
-                prompt_instructions += "   • DO NOT use vague claims like 'many companies' or 'recent studies'\n"
-                prompt_instructions += "   • DO NOT cite sources not in the citation map above\n"
-                prompt_instructions += "   • DO NOT write facts without immediate inline citations\n"
-                prompt_instructions += "   • NEVER place a citation on a narrative or summary sentence\n"
-                prompt_instructions += "   • ALWAYS place the citation BEFORE the period.\n\n"
-
-                prompt_instructions += "ACCEPTED CITATION FORMATS:\n"
-                prompt_instructions += "   1. Markdown links: [Source Name 2024](URL)  ← MANDATORY\n"
-                prompt_instructions += "   (Do not use footnotes or parentheticals. Every citation MUST be a clear Markdown link.)\n\n"
-
-                prompt_instructions += "EXAMPLES OF PROPER CITATION:\n"
-                prompt_instructions += "   [OK] 'According to [Gartner 2024](url), cloud adoption will reach 85% by 2026.'\n"
-                prompt_instructions += "   [OK] 'The cost of a data breach is $4.35 million [IBM](url).'\n"
-                prompt_instructions += "   [OK] 'Healthcare faces 3x more attacks than other sectors [Verizon](url).'\n"
-                prompt_instructions += "   [X] 'Healthcare faces 3x more attacks. [Verizon](url)' -- BAD (Period is before citation!)\n"
-                prompt_instructions += "   [X] 'The numbers tell a shocking story [Verizon](url).' -- BAD (Citation on non-statistical narrative!)\n"
-                prompt_instructions += "   [X] '67% of SMBs report security concerns.' -- NO CITATION!\n\n"
-
-                prompt_instructions += "================================================\n"
-
-                # Layer 3A: Topical mismatch warning
-                # If few citations actually match the keyword topic, warn writer to cite sparingly
-                kw_for_check = blueprint.get("keyword", "")
-                kw_tokens = set(kw_for_check.lower().replace("-", " ").split())
-                kw_tokens = {t for t in kw_tokens if len(t) >= 3}
-                if kw_tokens:
-                    on_topic_cites = 0
-                    for cite in citations_sorted:
-                        fact_lower = (cite.fact_text or "").lower()
-                        if sum(1 for t in kw_tokens if t in fact_lower) >= max(1, min(2, len(kw_tokens))):
-                            on_topic_cites += 1
-
-                    if on_topic_cites < 3:
-                        prompt_instructions += "\n*** TOPICAL MISMATCH WARNING ***\n"
-                        prompt_instructions += f"Only {on_topic_cites} of {len(citations_sorted)} available citations directly match the article topic.\n"
-                        prompt_instructions += "ADJUSTED CITATION RULES:\n"
-                        prompt_instructions += "  - Only cite facts that genuinely support your claims. Do NOT force-cite off-topic sources.\n"
-                        prompt_instructions += "  - Prefer 2-3 well-matched citations over 8 forced ones.\n"
-                        prompt_instructions += "  - Write authoritative prose WITHOUT citations when no matching source exists.\n"
-                        prompt_instructions += "  - It is acceptable to have sections with zero citations if the topic is not covered by available sources.\n"
-                        prompt_instructions += "***********************************\n"
-
-        # Pre-flight simplicity primer
-        prompt_instructions += """
-
----
-CRITICAL: 7TH-10TH GRADE READABILITY REQUIREMENT (ARI ≤10.0)
----
-This article will be scored for readability (ARI ≤10.0).
-If you fail this gate, you will be asked to rewrite up to 5 times.
-After 5 failures, the article is published as-is with a quality penalty.
-
-MANDATORY GATES YOU WILL BE TESTED AGAINST:
-1. ARI score ≤10.0 (Automated Readability Index)
-2. 80% of sentences MUST be 8-12 words (this is NOT a suggestion)
-3. Max 15% of sentences can exceed 15 words
-4. Average sentence length ≤12 words
-
-PRE-FLIGHT CHECKLIST (review BEFORE writing each sentence):
-1. Is this sentence 8-12 words? (Count as you write: "one, two, three...")
-2. Did I use a word from the "short alternatives" list below?
-3. Can I split this sentence at a comma into two shorter sentences?
-4. Am I explaining technical terms in simple language in the next sentence?
-5. Did I avoid business jargon (streamline, leverage, optimize, framework)?
-
-Write your first draft as if explaining to a busy small business owner who:
-- Skims headings and first sentences only
-- Skips complex jargon they don't understand
-- Values clear, actionable advice over impressive vocabulary
-- Has zero patience for filler or academic language
-
-THINK SIMPLE FROM THE START. Rewriting wastes tokens and time.
-"""
-
-        prompt_instructions += f"\n\n{READABILITY_DIRECTIVE}"
-        prompt_instructions += "\nFollow all system prompt guidelines strictly. Write directly in Markdown."
-
-        max_attempts = MAX_WRITER_ATTEMPTS
-        v_feedback = ""
-        all_feedback_history = []  # Gap 31: Accumulate feedback across iterations to prevent ping-pong
-        last_readability_scores = None  # Track for max-attempts fallback
-
-        # Gap 12 fix: Track best attempt across retries.
-        # On max-attempts or early-exit, return the best-scoring attempt, not the last.
-        best_attempt = None  # {"content": str, "readability": dict, "seo_passed": bool, "claims_passed": bool, "score": float}
-
-        for attempt in range(1, max_attempts + 1):
-            yield {"type": "debug", "message": f"Writer Iteration {attempt}: Starting draft generation..."}
+        final_text = final_state.get("final_article", "") if hasattr(final_state, "get") else ""
+        if not final_text:
+            yield {"status": "error", "message": "Failed to generate article using LangGraph."}
+            return
             
-            current_prompt = prompt_instructions
-            if v_feedback:
-                # Gap 31: Include accumulated feedback history (last 3 entries) so writer
-                # sees ALL constraints simultaneously, preventing ping-pong loops
-                feedback_block = ""
-                if len(all_feedback_history) > 1:
-                    # Show prior unresolved feedback so writer doesn't regress
-                    prior = all_feedback_history[-3:-1] if len(all_feedback_history) > 2 else all_feedback_history[:-1]
-                    feedback_block += "PRIOR UNRESOLVED ISSUES (do NOT regress on these):\n"
-                    for i, fb in enumerate(prior, 1):
-                        feedback_block += f"--- Issue {i} ---\n{fb}\n"
-                    feedback_block += "\nLATEST FEEDBACK:\n"
-                feedback_block += v_feedback
-                current_prompt += (
-                    f"\n\nCRITICAL FEEDBACK FROM PREVIOUS ATTEMPTS (MUST FIX ALL ISSUES SIMULTANEOUSLY):\n{feedback_block}\n"
-                    "IMPORTANT: Fix ALL issues at once. Do NOT fix one issue while breaking another. "
-                    "Replace each banned word with a specific alternative. "
-                    "For example: 'landscape' -> 'space' or 'market', 'optimize' -> 'improve' or 'refine', "
-                    "'robust' -> 'strong' or 'reliable', 'seamless' -> 'smooth' or 'easy', "
-                    "'scalable' -> 'growable' or 'expandable'. "
-                    "Maintain word count (1500+ words) while fixing all other issues.\n\n"
-                    "EMERGENCY SEO & STRUCTURE GUARDRAILS FOR REWRITES:\n"
-                    "You are in a feedback loop. DO NOT PANIC AND DELETE STRUCTURES.\n"
-                    "Even as you fix the citations or banned words, YOU ABSOLUTELY MUST:\n"
-                    "1. PRESERVE A MINIMUM OF 1500 WORDS. Rewrite/expand sections heavily if needed.\n"
-                    "2. PRESERVE AT LEAST 5 DISTINCT '## ' SECTIONS. Do not merge or delete them.\n"
-                    "3. PRESERVE AT LEAST 3 DISTINCT MARKDOWN LISTS OR TABLES.\n"
-                    "4. Include high-density information. Do NOT turn the article into a short summary.\n"
-                    "If you fix the feedback but fail these rules, the revision WILL FAIL.\n\n"
-                    "EMERGENCY FACTUAL GUARDRAILS:\n"
-                    "1. YOU ARE STRICTLY FORBIDDEN from inventing any percentage (%), dollar amount, or hard statistic.\n"
-                    "2. If a verification error tells you an 'uncited claim' or 'ungrounded citation' was found, you MUST REMOVE the fabricated statistic entirely. Do not try to re-cite it if it's not in your source map.\n"
-                    "3. Use qualitative language (e.g., 'a significant portion') instead of inventing a number if you lack the source data."
-                )
+        from .readability_service import verify_readability
+        read_result = verify_readability(final_text)
+        details = read_result.get("details", {})
 
-            full_content = ""
-            try:
-                # Lower temperature on retries for tighter readability compliance
-                retry_temperature = 0.7 if attempt <= 2 else 0.5
-
-                async with self.client.messages.stream(
-                    model=self.model_name,
-                    max_tokens=WRITER_MAX_TOKENS,
-                    system=system_instructions,
-                    messages=[{"role": "user", "content": current_prompt}],
-                    temperature=retry_temperature
-                ) as stream:
-                    async for text_delta in stream.text_stream:
-                        full_content += text_delta
-                        yield {"type": "content", "data": text_delta}
-
-                # 1b. Deterministic banned-word sanitization (LLM often slips)
-                full_content = self._sanitize_banned_words(full_content)
-
-                # 2. Perform SEO Validation
-                yield {"type": "debug", "message": f"Writer Iteration {attempt}: Validating draft quality..."}
-                score = self.verify_seo_score(full_content, information_gap)
-
-                # Gap 12: Score this attempt for best-of-N tracking
-                # Higher = better. SEO pass is worth 50pts, each sub-check adds points.
-                attempt_score = 0.0
-                if score["word_count_ok"]:
-                    attempt_score += 10
-                if score["h1_ok"]:
-                    attempt_score += 5
-                if score["h2_ok"]:
-                    attempt_score += 10
-                if score["lists_tables_ok"]:
-                    attempt_score += 5
-                if score["info_gain_ok"]:
-                    attempt_score += 10
-                if not score["banned_words_used"]:
-                    attempt_score += 10
-
-                # Gap 12: Update best_attempt if this is the best so far
-                if best_attempt is None or attempt_score > best_attempt["score"]:
-                    best_attempt = {
-                        "content": full_content,
-                        "readability": last_readability_scores,
-                        "score": attempt_score,
-                        "attempt": attempt,
-                    }
-
-                if score["passed"]:
-                    yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed SEO validation."}
-
-                    # --- Gate 3: Claim Cross-Referencing (replaces domain-counting Gate 2) ---
-                    # Gap 8 fix: Always verify citation URLs exist in FactCitation table,
-                    # not just for quantitative articles. Qualitative articles with fabricated
-                    # citation links were passing unchecked.
-                    if research_run_id:
-                        try:
-                            from .claim_verification_agent import (
-                                extract_article_claims,
-                                cross_reference_claims,
-                                verify_claim_with_llm,
-                                format_claim_verification_feedback,
-                                detect_uncited_claims,
-                            )
-
-                            # Step 1: Always extract claim+citation pairs from article
-                            article_claims = extract_article_claims(full_content)
-
-                            if article_claims:
-                                # Step 2: Cross-reference against verified FactCitations
-                                fact_citations = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
-                                # Only use verified facts for cross-referencing
-                                verified_facts = [fc for fc in fact_citations if getattr(fc, 'is_verified', True)]
-
-                                xref_result = cross_reference_claims(
-                                    article_claims=article_claims,
-                                    fact_citations=verified_facts,
-                                    source_content_map=source_content_map,
-                                )
-
-                                # Step 2B: Detect uncited factual claims
-                                uncited_claims = detect_uncited_claims(full_content, article_claims)
-                                if uncited_claims:
-                                    xref_result["uncited"] = uncited_claims
-                                    xref_result["uncited_count"] = len(uncited_claims)
-
-                                # Step 3: Resolve ambiguous claims with LLM
-                                # Raised cap to 10 to handle articles with many citations
-                                llm_calls = 0
-                                for amb in xref_result.get("ambiguous_claims", [])[:10]:
-                                    llm_result = await verify_claim_with_llm(
-                                        claim_text=amb["claim"]["claim_text"],
-                                        fact_candidates=amb["candidate_facts"],
-                                        source_snippet=(source_content_map or {}).get(amb["claim"]["citation_url"], "")[:LLM_SOURCE_CONTEXT_CHARS] if source_content_map else None,
-                                    )
-                                    llm_calls += 1
-                                    # Update detail status based on LLM result
-                                    for detail in xref_result["details"]:
-                                        if detail["claim_text"] == amb["claim"]["claim_text"][:200] and detail["status"] == "ambiguous":
-                                            if llm_result["supported"]:
-                                                detail["status"] = "verified"
-                                                xref_result["verified"] += 1
-                                            else:
-                                                # Gap 33: Use "ungrounded" not "fabricated" — URL exists but claim doesn't match
-                                                detail["status"] = "ungrounded"
-                                                detail["reason"] = "URL exists in citation map but LLM confirms claim is not supported by source facts"
-                                                # Preserve candidate_facts for feedback
-                                                detail["candidate_facts"] = detail.get("candidate_facts", [])
-                                                xref_result["ungrounded"] = xref_result.get("ungrounded", 0) + 1
-                                            xref_result["ambiguous"] -= 1
-                                            break
-
-                                # Recalculate pass after LLM resolution
-                                remaining_ambiguous = xref_result.get("ambiguous", 0)
-                                ungrounded_count = xref_result.get("ungrounded", 0)
-                                total_claims = xref_result.get("total_claims", 1)
-                                # Allow up to 25% of claims to remain ambiguous (min 3)
-                                # Ambiguous means "source exists but match unclear" — not fabricated
-                                max_ambiguous = max(3, int(total_claims * 0.25))
-
-                                # Layer 2A: Assess topical coverage of FactCitations
-                                # When sources are off-topic (niche filter returned irrelevant results),
-                                # allow a small number of ungrounded claims instead of zero-tolerance
-                                kw_raw = blueprint.get("keyword", "")
-                                kw_toks = set(kw_raw.lower().replace("-", " ").split())
-                                kw_toks = {t for t in kw_toks if len(t) >= 3}
-                                on_topic_facts = 0
-                                if kw_toks:
-                                    for fc in verified_facts:
-                                        ft = (getattr(fc, 'fact_text', '') or '').lower()
-                                        if sum(1 for t in kw_toks if t in ft) >= max(1, min(2, len(kw_toks))):
-                                            on_topic_facts += 1
-
-                                low_topical_coverage = (len(kw_toks) > 0 and on_topic_facts < 3)
-
-                                # Layer 2B: Soften ungrounded tolerance for low-coverage scenarios
-                                if low_topical_coverage:
-                                    max_ungrounded = max(2, int(total_claims * 0.15))
-                                    yield {"type": "debug", "message": f"Low topical coverage ({on_topic_facts} on-topic facts). Allowing up to {max_ungrounded} ungrounded claims."}
-                                else:
-                                    max_ungrounded = 0  # Normal: zero-tolerance for ungrounded
-
-                                uncited_count = xref_result.get("uncited_count", 0)
-
-                                xref_result["passed"] = (
-                                    xref_result["fabricated"] == 0
-                                    and ungrounded_count <= max_ungrounded
-                                    and remaining_ambiguous <= max_ambiguous
-                                    and uncited_count <= MAX_UNCITED_CLAIMS
-                                )
-
-                                if not xref_result["passed"]:
-                                    # SEVERE PENALTY: Never allow a hallucinatory draft to win best_attempt fallback
-                                    attempt_score -= 1000
-                                    if best_attempt and best_attempt.get("attempt") == attempt:
-                                        best_attempt["score"] = attempt_score
-
-                                if not xref_result["passed"]:
-                                    v_feedback = format_claim_verification_feedback(xref_result)
-                                    all_feedback_history.append(v_feedback)  # Gap 31
-                                    if remaining_ambiguous > max_ambiguous:
-                                        v_feedback += f"\n\nADDITIONAL: {remaining_ambiguous} claims remain ambiguous after LLM verification (max allowed: {max_ambiguous}). Too many unresolvable claims indicate unreliable sourcing. Rewrite using only facts from the citation map."
-                                    yield {"type": "debug", "message": f"Claim Verification Failed (Iteration {attempt}):\n{v_feedback}"}
-
-                                    if attempt == max_attempts:
-                                        if best_attempt and best_attempt.get("score", 0) < 0:
-                                            yield {
-                                                "status": "error",
-                                                "message": "Generation aborted: The AI failed to produce a factually safe article after 5 attempts. All attempts contained severe uncited or hallucinated statistics.",
-                                            }
-                                        else:
-                                            yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                                            best_c = best_attempt["content"] if best_attempt else full_content
-                                            best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
-                                            yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
-                                        return
-
-                                    # Clear editor for next attempt
-                                    yield {"type": "control", "action": "retry_clear"}
-                                    continue
-
-                                yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed claim verification ({xref_result['verified']}/{xref_result['total_claims']} claims verified, {llm_calls} LLM calls, {remaining_ambiguous} ambiguous, {ungrounded_count} ungrounded, {uncited_count} uncited)."}
-                            else:
-                                yield {"type": "debug", "message": f"Writer Iteration {attempt}: No cited claims extracted (no markdown links found)."}
-
-                        except Exception as e:
-                            # Fallback to domain-counting v2 if claim verification fails
-                            logger.error(f"[CLAIM-GATE] Claim verification failed, falling back to v2: {e}")
-                            # Clear dirty session state so fallback queries don't fail too
-                            try:
-                                self.db.rollback()
-                            except Exception:
-                                pass
-
-                            citations_fb = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
-                            from .source_verification_service import extract_domain
-                            available_domains = len(set(
-                                extract_domain(c.source_url) for c in citations_fb
-                                if c.source_url and extract_domain(c.source_url)
-                            ))
-                            min_required = min(3, max(available_domains, 3))
-
-                            citation_result = self.verify_citation_requirements_v2(
-                                full_content, citation_map=citations_fb, min_citations=min_required
-                            )
-                            if not citation_result["passed"]:
-                                attempt_score -= 1000
-                                if best_attempt and best_attempt.get("attempt") == attempt:
-                                    best_attempt["score"] = attempt_score
-
-                                v_feedback = f"Citation Validation Failed (fallback v2, Iteration {attempt}). {citation_result['feedback']}"
-                                yield {"type": "debug", "message": v_feedback}
-                                if attempt == max_attempts:
-                                    if best_attempt and best_attempt.get("score", 0) < 0:
-                                        yield {
-                                            "status": "error",
-                                            "message": "Generation aborted: The AI failed to produce a factually safe article after 5 attempts. All attempts contained severe uncited or hallucinated statistics.",
-                                        }
-                                    else:
-                                        yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                                        best_c = best_attempt["content"] if best_attempt else full_content
-                                        best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
-                                        yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
-                                    return
-                                yield {"type": "control", "action": "retry_clear"}
-                                continue
-                            yield {"type": "debug", "message": f"Writer Iteration {attempt}: Passed citation validation (fallback v2)."}
-
-                    # --- Gate 2: Readability Validation ---
-                    # Build broad keyword list for readability masking
-                    # Includes semantic keywords + entities from research blueprint
-                    read_keywords = list(semantic_keywords) if semantic_keywords else []
-                    if entities:
-                        read_keywords.extend(entities)
-                    # Add common technical terms that are unavoidable in this niche
-                    # These inflate ARI but are NOT simplifiable — they're the subject matter
-                    NICHE_TERMS = [
-                        "security", "business", "software", "customer", "customers",
-                        "company", "companies", "technology", "platform", "digital",
-                        "strategy", "analysis", "employee", "employees", "solution",
-                        "solutions", "management", "operations", "performance",
-                        "enterprise", "interface", "revenue", "compliance",
-                        "automated", "automation", "intelligence", "artificial",
-                        "monitoring", "detection", "protection", "vulnerable",
-                        "organization", "organizations", "productivity",
-
-                        # B2B / SMB Specific additions
-                        "investment", "financial", "development", "marketing", "owner",
-                        "owners", "industry", "industries", "professional", "professionals",
-                        "experience", "experiences", "competitive", "competition",
-
-                        # Common business jargon that inflates ARI unfairly
-                        "streamline", "streamlined", "streamlining",
-                        "enhance", "enhanced", "enhancement",
-                        "framework", "frameworks",
-                        "methodology", "methodologies",
-                        "establish", "established", "establishing",
-                        "execute", "executed", "executing", "execution",
-                        "implement", "implemented", "implementing", "implementation",
-                        "facilitate", "facilitated", "facilitating",
-                        "infrastructure", "infrastructures",
-                        "capability", "capabilities",
-                        "operational",
-                        "strategic",
-
-                        # Cybersecurity / Bug Bounty terms
-                        "vulnerability", "vulnerabilities", "vulnerable",
-                        "exploitation", "exploiting", "exploited",
-                        "authentication", "authorization", "authenticated",
-                        "configuration", "misconfiguration", "configured",
-                        "credential", "credentials",
-                        "remediation", "mitigation", "mitigations",
-                        "reconnaissance", "enumeration",
-                        "penetration", "injection", "introspection",
-                        "containerized", "containerization",
-                        "encryption", "decryption", "encrypted",
-                        "exfiltration", "exfiltrate",
-                        "obfuscation", "obfuscated",
-                        "adversarial", "adversary", "adversaries",
-                        "endpoint", "endpoints",
-                        "certificate", "certificates",
-                        "permission", "permissions", "authorization",
-                        "privilege", "privileges", "privileged", "escalation",
-                        "malicious", "payload", "payloads",
-                        "server-side", "client-side",
-                        "environment", "environments",
-                        "application", "applications",
-                        "architecture", "architectural",
-                        "verification", "validation",
-                        "processing", "processor",
-                        "parameter", "parameters",
-                        "registration", "registered",
-                        "transaction", "transactions",
-                        "mechanism", "mechanisms",
-                        "identifier", "identifiers",
-                        "specification", "specifications",
-                        "documentation", "documented",
-                        "deployment", "deployments", "deployed",
-                        "repository", "repositories",
-                        "component", "components",
-                        "integration", "integrations", "integrated",
-                        "response", "responses",
-                        "concurrent", "concurrency",
-                        "synchronization", "asynchronous",
-                        "directory", "directories",
-                    ]
-                    read_keywords.extend(NICHE_TERMS)
-                    # Deduplicate while preserving order
-                    read_keywords = list(dict.fromkeys(read_keywords))
-                    read_result = verify_readability(full_content, target_grade=10.0, keywords=read_keywords)
-
-                    # DEBUG: Validate keyword masking effectiveness
-                    if read_keywords:
-                        logger.debug(f"[READABILITY] Masking {len(read_keywords)} keywords: {read_keywords[:10]}...")
-                        sample_text = full_content[:500]
-                        from app.services.readability_service import mask_keywords, strip_markdown
-                        sample_masked = mask_keywords(strip_markdown(sample_text), read_keywords)
-                        logger.debug(f"[READABILITY] Original: {sample_text[:100]}")
-                        logger.debug(f"[READABILITY] Masked: {sample_masked[:100]}")
-
-                    if read_result["pass"]:
-                        details = read_result["details"]
-                        yield {
-                            "type": "debug",
-                            "message": (
-                                f"Writer Iteration {attempt}: Readability PASS — "
-                                f"Grade {details['composite_grade']} "
-                                f"(ARI: {details['ari_grade']}, "
-                                f"CLI: {details['coleman_liau_grade']}, "
-                                f"FK: {details['flesch_kincaid_grade']})"
-                            )
-                        }
-
-                        # Gap 14: Lightweight blueprint compliance check (soft gate — warn only)
-                        outline = blueprint.get("outline_structure", [])
-                        if outline:
-                            article_h2s = [
-                                line.strip().lstrip('#').strip().lower()
-                                for line in full_content.split('\n')
-                                if re.match(r'^## (?!#)', line)
-                            ]
-                            blueprint_headings = []
-                            for item in outline:
-                                if isinstance(item, dict):
-                                    blueprint_headings.append((item.get("heading") or item.get("title") or "").lower())
-                                elif isinstance(item, str):
-                                    blueprint_headings.append(item.lower())
-
-                            matched_h2s = 0
-                            for bh in blueprint_headings:
-                                bh_words = set(re.findall(r'[a-zA-Z]{4,}', bh))
-                                if not bh_words:
-                                    continue
-                                for ah in article_h2s:
-                                    ah_words = set(re.findall(r'[a-zA-Z]{4,}', ah))
-                                    if len(bh_words & ah_words) >= 2:
-                                        matched_h2s += 1
-                                        break
-
-                            if matched_h2s < min(3, len(blueprint_headings)):
-                                yield {"type": "debug", "message": f"Blueprint compliance: {matched_h2s}/{len(blueprint_headings)} outline headings reflected in article H2s (soft warning)."}
-
-                        # Gap 14: Hook strategy compliance check (soft gate — warn only)
-                        hook_strategy = blueprint.get("hook_strategy", "")
-                        if hook_strategy and len(hook_strategy) > 5:
-                            hook_words = set(re.findall(r'[a-zA-Z]{4,}', hook_strategy.lower()))
-                            if hook_words:
-                                article_opening = full_content[:200].lower()
-                                opening_words = set(re.findall(r'[a-zA-Z]{4,}', article_opening))
-                                hook_overlap = hook_words & opening_words
-                                if len(hook_overlap) < 1:
-                                    yield {"type": "debug", "message": f"Blueprint compliance: Hook strategy not reflected in article opening (0/{len(hook_words)} hook words in first 200 chars). Hook: '{hook_strategy[:80]}' (soft warning)."}
-
-                        # Include readability scores for database tracking
-                        yield {
-                            "status": "success",
-                            "text": full_content,
-                            "readability_score": {
-                                "ari": details['ari_grade'],
-                                "fk": details['flesch_kincaid_grade'],
-                                "cli": details['coleman_liau_grade'],
-                                "avg_sentence_length": details['avg_sentence_length']
-                            }
-                        }
-                        return
-                    else:
-                        details = read_result["details"]
-                        last_readability_scores = {
-                            "ari": details['ari_grade'],
-                            "fk": details['flesch_kincaid_grade'],
-                            "cli": details['coleman_liau_grade'],
-                            "avg_sentence_length": details['avg_sentence_length'],
-                        }
-                        v_feedback = (
-                            f"Readability Validation Failed (Iteration {attempt}).\n"
-                            f"{read_result['feedback']}"
-                        )
-                        all_feedback_history.append(v_feedback)  # Gap 31
-                        yield {
-                            "type": "debug",
-                            "message": (
-                                f"Writer Iteration {attempt}: Readability FAIL — "
-                                f"Grade {details['composite_grade']} "
-                                f"(ARI: {details['ari_grade']}, "
-                                f"CLI: {details['coleman_liau_grade']}, "
-                                f"FK: {details['flesch_kincaid_grade']}) "
-                                f"| ARI Target: ≤10.0 "
-                                f"| Avg sentence: {details['avg_sentence_length']} words "
-                                f"| {details['complex_sentence_count']} complex sentences"
-                            )
-                        }
-
-                        # Gap 12: Update best_attempt with readability scores
-                        read_scores = {
-                            "ari": details['ari_grade'],
-                            "fk": details['flesch_kincaid_grade'],
-                            "cli": details['coleman_liau_grade'],
-                            "avg_sentence_length": details['avg_sentence_length'],
-                        }
-                        # Readability-failing attempts that passed SEO+claims score higher
-                        read_attempt_score = attempt_score + 50  # +50 for passing SEO
-                        if best_attempt is None or read_attempt_score > best_attempt["score"]:
-                            best_attempt = {
-                                "content": full_content,
-                                "readability": read_scores,
-                                "score": read_attempt_score,
-                                "attempt": attempt,
-                            }
-
-                        # Early exit detection for unsimplifiable jargon (after 3rd attempt)
-                        if attempt >= 3:
-                            if self.detect_unsimplifiable_jargon(full_content, read_keywords):
-                                yield {
-                                    "type": "debug",
-                                    "message": (
-                                        "Technical jargon detected (>30% density). "
-                                        "Content contains unavoidable domain-specific terms. "
-                                        "Accepting current readability level to preserve accuracy."
-                                    )
-                                }
-                                # Gap 12: Return best attempt, not current
-                                best_c = best_attempt["content"] if best_attempt else full_content
-                                best_r = best_attempt.get("readability", read_scores) if best_attempt else read_scores
-                                best_r["early_exit"] = "unsimplifiable_jargon"
-                                yield {
-                                    "status": "success",
-                                    "text": best_c,
-                                    "readability_score": best_r,
-                                    "quality_flag": "best_effort",
-                                }
-                                return
-
-                        if attempt == max_attempts:
-                            if best_attempt and best_attempt.get("score", 0) < 0:
-                                yield {
-                                    "status": "error",
-                                    "message": "Generation aborted: The AI failed to produce a factually safe article after 5 attempts. All attempts contained severe uncited or hallucinated statistics.",
-                                }
-                            else:
-                                yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                                best_c = best_attempt["content"] if best_attempt else full_content
-                                best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
-                                yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
-                            return
-
-                        # Clear editor for next attempt
-                        yield {"type": "control", "action": "retry_clear"}
-                else:
-                    # If SEO failed, Claim Verification is skipped, rendering the draft fundamentally unchecked.
-                    # Apply a severe penalty to ensure this untested draft never overrides a factually verified best_effort draft.
-                    attempt_score -= 1000
-                    if best_attempt and best_attempt.get("attempt") == attempt:
-                        best_attempt["score"] = attempt_score
-
-                    issues = []
-                    if score['banned_words_used']:
-                        issues.append(f"Banned words found: {', '.join(score['banned_words_found'])}")
-                    if not score['word_count_ok']:
-                        shortfall = 1500 - score['word_count']
-                        issues.append(f"Word count too low ({score['word_count']} words, need 1500+). Add ~{shortfall} more words: expand analysis sections, add practical examples, deeper explanations, or additional subsections. Do NOT add filler — add substantive content.")
-                    if not score['h1_ok']:
-                        issues.append(f"H1 heading issue (found {score['h1_count']}, need exactly 1). CRITICAL: Use '# ' (single hash) ONLY for the article title. Use '## ' (double hash) for ALL section headings. You have {score['h1_count']} lines starting with '# ' — convert all but the title to '## '")
-                    if not score['h2_ok']:
-                        issues.append(f"Not enough H2 headings (found {score['h2_count']}, need 5+). Add more '## Section Title' headings to break the article into 5+ distinct sections.")
-                    if not score['lists_tables_ok']:
-                        issues.append(f"Not enough list/table blocks (found {score['list_table_blocks']}, need 3+)")
-                    if not score['info_gain_ok']:
-                        issues.append(f"Information gain too low ({score['info_gain_density']} angles covered, need 2+). Address more angles from the information gap in your H2 sections.")
-                    v_feedback = (
-                        f"SEO Validation Failed (Iteration {attempt}).\n"
-                        + ("Issues:\n- " + "\n- ".join(issues) if issues else "Unknown validation failure")
-                    )
-                    all_feedback_history.append(v_feedback)  # Gap 31
-                    yield {"type": "debug", "message": f"Writer Iteration {attempt} failed: {v_feedback}"}
-                    
-                    if attempt == max_attempts:
-                        if best_attempt and best_attempt.get("score", 0) < 0:
-                            yield {
-                                "status": "error",
-                                "message": "Generation aborted: The AI failed to produce a factually safe article after 5 attempts. All attempts contained severe uncited or hallucinated statistics.",
-                            }
-                        else:
-                            yield {"type": "debug", "message": "Max attempts reached. Returning best effort draft."}
-                            best_c = best_attempt["content"] if best_attempt else full_content
-                            best_r = best_attempt.get("readability") if best_attempt else last_readability_scores
-                            yield {"status": "success", "text": best_c, "readability_score": best_r, "quality_flag": "best_effort"}
-                        return
-
-                    # Clear editor for next attempt
-                    yield {"type": "control", "action": "retry_clear"}
-
-            except Exception as e:
-                error_msg = f"Anthropic API Error: {str(e)}"
-                logger.error(f"[Writer] {error_msg}")
-                yield {"status": "error", "message": error_msg}
-                return
+        yield {
+            "status": "success", 
+            "text": final_text, 
+            "readability_score": {
+                "ari": details.get("ari_grade", 0),
+                "fk": details.get("flesch_kincaid_grade", 0),
+                "cli": details.get("coleman_liau_grade", 0),
+                "avg_sentence_length": details.get("avg_sentence_length", 0)
+            }, 
+            "quality_flag": "agentic_rag"
+        }
 
     @staticmethod
     def verify_seo_score(text: str, information_gap: str = "") -> dict:

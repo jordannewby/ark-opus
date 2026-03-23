@@ -1,7 +1,10 @@
 from datetime import datetime
+import logging
 from sqlalchemy.orm import Session
 from ..models import WriterRun, WriterPlaybook, Post
 import json
+
+logger = logging.getLogger(__name__)
 
 
 class WriterIntelService:
@@ -79,7 +82,7 @@ class WriterIntelService:
             run.is_distilled = True
 
         db.commit()
-        print(f"[WriterIntel] Distilled playbook for {profile_name}/{niche}: {len(quality_runs)} runs, version {existing.version + 1 if existing else 1}")
+        logger.info(f"[WriterIntel] Distilled playbook for {profile_name}/{niche}: {len(quality_runs)} runs, version {existing.version + 1 if existing else 1}")
 
     @staticmethod
     def _compute_heuristic_playbook(runs: list, db: Session):

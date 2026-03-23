@@ -46,6 +46,8 @@ EXA_EXCLUDE_DOMAINS = [
     "tumblr.com",          # Social blogging
     "wix.com",             # Website builder sites
     "weebly.com",          # Website builder sites
+    # Adware / redirect domains (verified by user)
+    "thebizaihub.com",     # Redirects all blog links to ads — adware
     # Corporate blog subdomains (content marketing dressed as education)
     "blog.hubspot.com",
     "blog.salesforce.com",

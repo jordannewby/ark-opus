@@ -1,7 +1,10 @@
+import logging
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -65,7 +68,7 @@ def migrate_posts_readability():
             ALTER TABLE posts
             ADD COLUMN readability_score JSONB DEFAULT NULL
         """))
-        print("[OK] Added readability_score column to posts table")
+        logger.info("[OK] Added readability_score column to posts table")
 
 def migrate_writer_learning():
     """One-time migration: Add writer_runs and writer_playbooks tables, and niche column to posts."""
@@ -80,7 +83,7 @@ def migrate_writer_learning():
         if 'niche' not in columns:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE posts ADD COLUMN niche VARCHAR(100) DEFAULT NULL"))
-                print("[OK] Added niche column to posts table")
+                logger.info("[OK] Added niche column to posts table")
 
     # Check if already migrated
     if 'writer_runs' in existing_tables and 'writer_playbooks' in existing_tables:
@@ -106,7 +109,7 @@ def migrate_writer_learning():
                     CONSTRAINT uix_writer_run UNIQUE (profile_name, niche, post_id)
                 )
             """))
-            print("[OK] Created writer_runs table")
+            logger.info("[OK] Created writer_runs table")
 
         if 'writer_playbooks' not in existing_tables:
             conn.execute(text("""
@@ -122,7 +125,7 @@ def migrate_writer_learning():
                     CONSTRAINT uix_writer_playbook UNIQUE (profile_name, niche)
                 )
             """))
-            print("[OK] Created writer_playbooks table")
+            logger.info("[OK] Created writer_playbooks table")
 
 def migrate_source_verification():
     """One-time migration: Add source verification tables (verified_sources, fact_citations)."""
@@ -163,7 +166,7 @@ def migrate_source_verification():
             """))
             conn.execute(text("CREATE INDEX idx_verified_sources_research_run_id ON verified_sources(research_run_id)"))
             conn.execute(text("CREATE INDEX idx_verified_sources_domain ON verified_sources(domain)"))
-            print("[OK] Created verified_sources table")
+            logger.info("[OK] Created verified_sources table")
 
         if 'fact_citations' not in existing_tables:
             conn.execute(text("""
@@ -182,7 +185,7 @@ def migrate_source_verification():
             """))
             conn.execute(text("CREATE INDEX idx_fact_citations_verified_source_id ON fact_citations(verified_source_id)"))
             conn.execute(text("CREATE INDEX idx_fact_citations_research_run_id ON fact_citations(research_run_id)"))
-            print("[OK] Created fact_citations table")
+            logger.info("[OK] Created fact_citations table")
 
 
 def migrate_composite_scoring():
@@ -207,7 +210,7 @@ def migrate_composite_scoring():
                 ALTER TABLE fact_citations
                 ADD COLUMN source_credibility FLOAT DEFAULT NULL
             """))
-            print("[OK] Added source_credibility column to fact_citations")
+            logger.info("[OK] Added source_credibility column to fact_citations")
 
         # Add composite_score column if missing
         if 'composite_score' not in columns:
@@ -215,7 +218,7 @@ def migrate_composite_scoring():
                 ALTER TABLE fact_citations
                 ADD COLUMN composite_score FLOAT DEFAULT NULL
             """))
-            print("[OK] Added composite_score column to fact_citations")
+            logger.info("[OK] Added composite_score column to fact_citations")
 
         # Backfill existing citations with composite scores
         conn.execute(text("""
@@ -226,7 +229,7 @@ def migrate_composite_scoring():
             WHERE fc.verified_source_id = vs.id
             AND fc.composite_score IS NULL
         """))
-        print("[OK] Backfilled composite scores for existing fact_citations")
+        logger.info("[OK] Backfilled composite scores for existing fact_citations")
 
 def migrate_fact_consensus():
     """One-time migration: Add consensus_count column to fact_citations."""
@@ -246,7 +249,7 @@ def migrate_fact_consensus():
             ALTER TABLE fact_citations
             ADD COLUMN consensus_count INTEGER DEFAULT 1
         """))
-        print("[OK] Added consensus_count column to fact_citations")
+        logger.info("[OK] Added consensus_count column to fact_citations")
 
 
 def migrate_domain_credibility_cache():
@@ -280,7 +283,7 @@ def migrate_domain_credibility_cache():
         conn.execute(text("""
             CREATE INDEX idx_domain_credibility_niche ON domain_credibility_cache(niche)
         """))
-        print("[OK] Created domain_credibility_cache table with indexes")
+        logger.info("[OK] Created domain_credibility_cache table with indexes")
 
 
 def migrate_fact_verification():
@@ -310,7 +313,7 @@ def migrate_fact_verification():
                 added.append(col_name)
 
     if added:
-        print(f"[OK] Added claim verification columns to fact_citations: {', '.join(added)}")
+        logger.info(f"[OK] Added claim verification columns to fact_citations: {', '.join(added)}")
 
 
 def migrate_style_rule_archive():
@@ -334,7 +337,7 @@ def migrate_style_rule_archive():
             )
         """))
         conn.execute(text("CREATE INDEX idx_style_archive_profile ON user_style_rule_archives(profile_name)"))
-        print("[OK] Created user_style_rule_archives table")
+        logger.info("[OK] Created user_style_rule_archives table")
 
 
 def get_db():

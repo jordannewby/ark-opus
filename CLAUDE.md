@@ -1,6 +1,6 @@
 # Ares Engine
 
-**Stack**: FastAPI + Neon PostgreSQL + DeepSeek-R1/V3 + Claude 3.5 Sonnet + Exa.ai + DataForSEO MCP
+**Stack**: FastAPI + Neon PostgreSQL + DeepSeek-R1/V3 + Claude Sonnet 4 + Exa.ai + DataForSEO MCP
 **Budget**: $10 max — prefer lightweight, serverless
 
 ## Key Paths
@@ -17,7 +17,7 @@
 - **Async mandatory** — all HTTP clients and generation calls must use async/await
 - **Pydantic-first** — validate at every agent boundary via `app/schemas.py`
 - **Multi-tenant** — all DB queries must filter by `profile_name`; cache uses composite key `(keyword, profile_name, niche)`
-- **DeepSeek API** — all LLM calls use DeepSeek via httpx (`deepseek-chat` for briefing/feedback/intel, `deepseek-reasoner` for research/verification/cartographer)
+- **LLM routing** — DeepSeek via httpx (`deepseek-chat` for briefing/feedback/intel, `deepseek-reasoner` for research/verification/cartographer); Anthropic Claude Sonnet 4 (`claude-sonnet-4-20250514`) for writer via `langchain-anthropic`
 - **SSL retry** — post-generation `db.commit()` in `event_generator()` uses `nonlocal db` + `OperationalError` catch to get fresh `SessionLocal()` if Neon drops connection
 - **No fake assets / no fabricated data** — writer prompt bans invented templates, tools, stats; must use only verified citation map facts
 - **Prompt files read-only** — never modify `app/services/prompts/*.md` without explicit approval

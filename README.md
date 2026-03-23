@@ -1,6 +1,6 @@
 # Ares Engine
 
-Ares Engine is a sophisticated, fully autonomous, asynchronous **Quad-Stack SEO Generation Pipeline**. It orchestrates multiple LLMs (DeepSeek R1/V3, Gemini 2.5 Pro/Flash) and external APIs (Exa.ai, DataForSEO MCP) to dynamically build deeply researched, psychologically persuasive, and mathematically vetted 2,000+ word Markdown articles.
+Ares Engine is a sophisticated, fully autonomous, asynchronous **Quad-Stack SEO Generation Pipeline**. It orchestrates multiple LLMs (DeepSeek R1/V3, Claude Sonnet 4) and external APIs (Exa.ai, DataForSEO MCP) to dynamically build deeply researched, psychologically persuasive, and mathematically vetted 2,000+ word Markdown articles.
 
 It features a zero-wait UI streaming intermediate execution steps via Server-Sent Events (SSE) and includes an interactive Human-in-the-Loop (HITL) self-learning feedback loop.
 
@@ -48,9 +48,8 @@ Because `.env` files hold sensitive passwords and API keys, Git intentionally ig
 
 Your `.env` file must contain at minimum:
 ```env
-# Google Gemini API Keys (Used for prose drafting and UI tasks)
-GEMINI_API_KEY="your-gemini-api-key-here"
-GEMINI_PSYCH_API_KEY="your-gemini-api-key-here"
+# Anthropic API Key (Used for Claude Sonnet 4 prose drafting)
+ANTHROPIC_API_KEY="your-anthropic-api-key-here"
 
 # DeepSeek API Key (Used for DeepSeek-R1 reasoning and DeepSeek-V3 blueprinting)
 DEEPSEEK_API_KEY="your-deepseek-api-key-here"
@@ -75,15 +74,15 @@ Then, open your web browser and navigate to the frontend console:
 The backend operates entirely inside FastAPI (`app/main.py`), utilizing the `/generate` endpoint to stream live updates back to the UI (`static/js/console.js`). The orchestration follows a strict chronological loop:
 
 1.  **Phase 0: Briefing (`app/services/briefing_agent.py`)**
-    *   Uses `gemini-2.5-flash` to ask 3 targeted clarifying questions before heavy research begins.
+    *   Uses DeepSeek V3 (`deepseek-chat`) to ask 3 targeted clarifying questions before heavy research begins.
 2.  **Phase 1: Data Logic (`app/services/research_service.py`)**
     *   DeepSeek-R1 (`deepseek-reasoner`) uses dynamic tool-decision logic to orchestrate the DataForSEO MCP and Exa.ai Neural Search via async requests, extracting the "Information Gap".
 3.  **Phase 2: Strategic Logic (`app/services/psychology_agent.py`)**
     *   DeepSeek-V3 (`deepseek-chat`) acts as the "Persuasion Architect," injecting the Information Gap into the PAS framework to return a structured JSON psychological blueprint.
 4.  **Phase 3: Prose Logic (`app/services/writer_service.py`)**
-    *   `gemini-2.5-pro` violently enforces a strict "Anti-AI" system prompt (`writer.md`), banning fluff words, strictly enforcing the "No Fabricated Data" constraint, and drafting the heavy-duty Markdown article.
+    *   Claude Sonnet 4 (`claude-sonnet-4-20250514` via Anthropic) enforces a strict "Anti-AI" system prompt (`writer.md`), banning fluff words, strictly enforcing the "No Fabricated Data" constraint, and drafting the heavy-duty Markdown article.
 5.  **Phase 6: Self-Correction Loop (`app/services/feedback_service.py`)**
-    *   When a human edits the generated Markdown in the UI, `gemini-2.5-flash` semantically diffs the original against the edit to extract permanent `UserStyleRule` entities to Neon PostgreSQL (scoped by `profile_name`), ensuring the AI converges on the user's exact writing style over time.
+    *   When a human edits the generated Markdown in the UI, DeepSeek V3 (`deepseek-chat`) semantically diffs the original against the edit to extract permanent `UserStyleRule` entities to Neon PostgreSQL (scoped by `profile_name`), ensuring the AI converges on the user's exact writing style over time.
 
 ## 🧹 Codebase Maintenance (March 2026)
 

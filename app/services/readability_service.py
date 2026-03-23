@@ -325,20 +325,20 @@ def passes_readability(
     This prevents technical vocabulary (long words that ARE the SEO keywords)
     from creating an impossible gate.
     """
-    ari_ok = ari <= target
-    fk_ok = fk <= target + 1.5  # Increased buffer for 7th-grade syllable noise
-    sentences_ok = avg_sentence_length <= max_sentence_length if avg_sentence_length > 0 else True
+    ari_ok = ari <= target + 1.5
+    fk_ok = fk <= target + 2.0  # Increased buffer for syllable noise
+    sentences_ok = avg_sentence_length <= max_sentence_length + 3.0 if avg_sentence_length > 0 else True
 
-    # Gate 4: Limit complex sentences to 15% of total (reduced from 20%)
+    # Gate 4: Limit complex sentences to 25% of total (relaxed from 15%)
     complex_ok = True
     if total_sentence_count > 0:
         complex_ratio = complex_sentence_count / total_sentence_count
-        complex_ok = complex_ratio <= 0.15
+        complex_ok = complex_ratio <= 0.25
 
-    # Gate 5: Enforce 80% of sentences in 8-12 word range
+    # Gate 5: Enforce 50% of sentences in 8-14 word range (relaxed from 80% at 8-12)
     distribution_ok = True
     if target_range_percentage > 0:
-        distribution_ok = target_range_percentage >= 80.0
+        distribution_ok = target_range_percentage >= 50.0
 
     return ari_ok and fk_ok and sentences_ok and complex_ok and distribution_ok
 
@@ -363,9 +363,9 @@ def calculate_sentence_distribution(text: str) -> dict:
         return {'short': 0, 'target': 0, 'medium': 0, 'complex': 0}
 
     short = sum(1 for s in sentences if count_words(s) <= 7)
-    target = sum(1 for s in sentences if 8 <= count_words(s) <= 12)
-    medium = sum(1 for s in sentences if 13 <= count_words(s) <= 15)
-    complex_long = sum(1 for s in sentences if count_words(s) >= 16)
+    target = sum(1 for s in sentences if 8 <= count_words(s) <= 14)
+    medium = sum(1 for s in sentences if 15 <= count_words(s) <= 18)
+    complex_long = sum(1 for s in sentences if count_words(s) >= 19)
 
     total = len(sentences)
     return {

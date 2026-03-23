@@ -40,7 +40,7 @@ class FeedbackAgent:
         """
         # If the texts are identical, don't waste API calls
         if original_text.strip() == edited_text.strip():
-            print("[FEEDBACK] Text matched original. No new style rules learned.")
+            logger.info("[FEEDBACK] Text matched original. No new style rules learned.")
             return []
 
         prompt_instructions = (
@@ -96,7 +96,7 @@ class FeedbackAgent:
 
              if rules:
                  self.db.commit()
-                 print(f"[FEEDBACK] Learned {len(rules)} new writing style rules!")
+                 logger.info(f"[FEEDBACK] Learned {len(rules)} new writing style rules!")
 
                  # Automatically trigger distillation if needed
                  await self.prune_style_rules(profile_name)
@@ -116,7 +116,7 @@ class FeedbackAgent:
         if len(rules) <= RULE_CONSOLIDATION_THRESHOLD:
             return
 
-        print(f"[FEEDBACK] Starting Style Pruning for '{profile_name}' ({len(rules)} rules)...")
+        logger.info(f"[FEEDBACK] Starting Style Pruning for '{profile_name}' ({len(rules)} rules)...")
         rule_texts = [r.rule_description for r in rules]
         blocks = "\n".join(f"{i+1}. {r}" for i, r in enumerate(rule_texts))
 
@@ -187,7 +187,7 @@ class FeedbackAgent:
                  self.db.add(new_rule)
 
              self.db.commit()
-             print(f"[FEEDBACK] Pruned {len(rules)} rules down to {len(new_rules)} optimized rules.")
+             logger.info(f"[FEEDBACK] Pruned {len(rules)} rules down to {len(new_rules)} optimized rules.")
 
         except Exception as e:
              logger.error(f"[FEEDBACK] Pruning Error: {e}")

@@ -35,7 +35,6 @@ You will receive a list of SEO Entities and Semantic Keywords. Weave these natur
 ---
 
 # BANNED WORDS & PHRASES (STRICTLY ENFORCED)
-# BANNED WORDS & PHRASES (STRICTLY ENFORCED)
 Never use any of these words or patterns:
 - tapestry, delve, landscape, multifaceted, comprehensive, holistic, navigate, crucial
 - "ultimate guide", "game-changer", "unlock the power", "dive into"
@@ -56,7 +55,17 @@ Never use any of these words or patterns:
 9. **No Mirroring.** Never start a section by repeating the H2/H3 title in the first sentence.
 10. **Kill the Padding.** If the intent is satisfied and the value is delivered, **stop writing.** Do not stretch content.
 
-# FORMATTING INSTRUCTIONS
+# NO FABRICATION (STRICTLY ENFORCED)
+You MUST NOT:
+- Invent any numbers, statistics, or percentages that are not in your provided citation map.
+- Fabricate case studies, anecdotes, or success stories about fictional people or companies.
+- Create fictional people, company names, or quotes (e.g., "Maria runs a boutique accounting firm").
+- Attribute statements to unnamed sources (e.g., "one business owner said").
+If you do not have a provided citation for a claim, DO NOT make the claim. Write only general advice and actionable guidance instead.
+
+# SOURCE ATTRIBUTION (STRICTLY ENFORCED)
+Do NOT name specific organizations (e.g., "McKinsey", "Gartner", "Harvard", "Forrester") in the text UNLESS the citation URL you are linking actually belongs to that organization's domain. If a fact mentions "McKinsey says X" but the source URL is a third-party blog, you MUST rephrase as "industry research shows X" or "according to [Blog Name](url)". Misattributing a claim to an organization while linking to an unrelated blog destroys reader trust.
+
 # FORMATTING INSTRUCTIONS
 - Use `#` for the article title (exactly one H1)
 - Use `##` for main sections (aim for 5-8 H2s following the blueprint outline)
