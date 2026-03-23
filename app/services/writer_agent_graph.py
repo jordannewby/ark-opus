@@ -352,6 +352,14 @@ async def editor_node(state: WriterState) -> dict:
                     uncited_stats.append(m.group())
         if uncited_stats:
             errors.append(f"You stated statistics without citations: {', '.join(uncited_stats[:3])}. Every statistic MUST have an inline [Source](URL) citation immediately adjacent, or be removed.")
+
+    # 6. Unverified entity check — detect hallucinated product/tool names
+    from .claim_verification_agent import detect_unverified_entities
+    citation_urls = [c['source_url'] for c in state['all_citations']]
+    citation_anchors = [c.get('citation_anchor', '') for c in state['all_citations']]
+    unverified = detect_unverified_entities(draft, citation_urls, citation_anchors)
+    if unverified:
+        errors.append(f"Unverified product/tool names not found in any citation source: {', '.join(unverified[:5])}. Remove these or replace with tools mentioned in your citation sources.")
         
     if errors and retries < 2:
         fb = "\n".join(errors)

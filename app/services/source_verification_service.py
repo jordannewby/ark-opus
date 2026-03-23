@@ -43,6 +43,121 @@ SOCIAL_MEDIA_DOMAINS = {
 }
 
 
+# --- Citation Laundering Detection ---
+
+# Maps named research organizations to their canonical domains.
+# When a fact says "Gartner reports X" but the source is nuconet.com,
+# the fact is flagged as laundered through an intermediary.
+KNOWN_RESEARCH_ORGS: dict[str, list[str]] = {
+    # Analyst firms
+    "gartner": ["gartner.com"],
+    "forrester": ["forrester.com"],
+    "idc": ["idc.com"],
+    "mckinsey": ["mckinsey.com"],
+    # Consulting / Big 4
+    "deloitte": ["deloitte.com"],
+    "pwc": ["pwc.com"],
+    "ey": ["ey.com"],
+    "kpmg": ["kpmg.com"],
+    "accenture": ["accenture.com"],
+    # Tech giants with research arms
+    "salesforce": ["salesforce.com"],
+    "ibm": ["ibm.com"],
+    "microsoft": ["microsoft.com"],
+    "google": ["google.com", "blog.google", "cloud.google.com", "deepmind.com"],
+    "cisco": ["cisco.com"],
+    "verizon": ["verizon.com", "verizonbusiness.com"],
+    "hp": ["hp.com", "hpe.com"],
+    "dell": ["dell.com"],
+    "oracle": ["oracle.com"],
+    "amazon": ["aws.amazon.com", "aboutamazon.com"],
+    "meta": ["meta.com", "ai.meta.com", "engineering.fb.com"],
+    # Cybersecurity vendors
+    "crowdstrike": ["crowdstrike.com"],
+    "palo alto": ["paloaltonetworks.com"],
+    "mandiant": ["mandiant.com"],
+    "rapid7": ["rapid7.com"],
+    "splunk": ["splunk.com"],
+    "sentinelone": ["sentinelone.com"],
+    "sophos": ["sophos.com"],
+    # Government / standards
+    "nist": ["nist.gov", "nvd.nist.gov"],
+    "cisa": ["cisa.gov"],
+    "fbi": ["fbi.gov"],
+    "sec": ["sec.gov"],
+    "ftc": ["ftc.gov"],
+    # Academic / research
+    "stanford": ["stanford.edu", "hai.stanford.edu"],
+    "mit": ["mit.edu"],
+    "carnegie mellon": ["cmu.edu"],
+    "harvard": ["harvard.edu"],
+    "oxford": ["oxford.ac.uk"],
+    # Industry-specific research
+    "ponemon": ["ponemon.org"],
+    "sans": ["sans.org"],
+    "owasp": ["owasp.org"],
+    "isaca": ["isaca.org"],
+    # HR / SMB research
+    "gusto": ["gusto.com"],
+    # News / media (with research divisions)
+    "pew": ["pewresearch.org"],
+    "gallup": ["gallup.com"],
+    "statista": ["statista.com"],
+    # US government agencies
+    "u.s. chamber": ["uschamber.com"],
+    "us chamber": ["uschamber.com"],
+    "chamber of commerce": ["uschamber.com"],
+}
+
+# Pre-compiled regex: match any known org name as a whole word (case-insensitive)
+_ORG_PATTERN = re.compile(
+    r'\b(' + '|'.join(re.escape(org) for org in sorted(KNOWN_RESEARCH_ORGS.keys(), key=len, reverse=True)) + r')\b',
+    re.IGNORECASE,
+)
+
+
+def detect_citation_laundering(fact_text: str, source_domain: str) -> dict:
+    """
+    Detect when a fact attributes a claim to a named research org but the
+    source domain doesn't belong to that org.
+
+    Example:
+        fact_text: "Gartner predicts 40% of SMBs will use AI agents"
+        source_domain: "nuconet.com"
+        → is_laundered=True, claimed_org="gartner"
+
+    Returns: {is_laundered: bool, claimed_org: str | None, source_domain: str}
+    """
+    matches = _ORG_PATTERN.findall(fact_text)
+    if not matches:
+        return {"is_laundered": False, "claimed_org": None, "source_domain": source_domain}
+
+    source_domain_lower = source_domain.lower()
+
+    for org_name in matches:
+        org_key = org_name.lower()
+        canonical_domains = KNOWN_RESEARCH_ORGS.get(org_key, [])
+        if not canonical_domains:
+            continue
+
+        # Check if source domain matches any canonical domain for this org
+        domain_match = False
+        for canon in canonical_domains:
+            if source_domain_lower == canon or source_domain_lower.endswith("." + canon):
+                domain_match = True
+                break
+
+        if not domain_match:
+            # The fact claims org X but the source is not org X's domain
+            return {
+                "is_laundered": True,
+                "claimed_org": org_key,
+                "source_domain": source_domain,
+            }
+
+    return {"is_laundered": False, "claimed_org": None, "source_domain": source_domain}
+
+
 # --- Helper Functions ---
 
 def extract_domain(url: str) -> str:
@@ -1071,6 +1186,30 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
                     verification_status = "suspect"     # Trusted source, bad fact
                 else:
                     verification_status = "ungrounded"  # Untrusted source, bad fact
+
+            # --- Fix 1: Citation Laundering Detection ---
+            # Catches facts like "Gartner reports 40%" sourced from nuconet.com
+            laundering = detect_citation_laundering(fact["fact_text"], source_row.domain)
+            if laundering["is_laundered"]:
+                is_verified = False
+                verification_status = "laundered"
+                composite = composite * 0.5  # Severe penalty
+                logger.warning(
+                    f"[LAUNDERING] Fact claims '{laundering['claimed_org']}' "
+                    f"but source is {source_row.domain}: "
+                    f"{fact['fact_text'][:80]}..."
+                )
+
+            # --- Fix 2: Statistical Authority Floor ---
+            # Tier 0 (unknown) blogs should not produce statistical citations
+            if tier_level == 0 and fact.get("fact_type") == "statistic" and verification_status not in ("laundered", "ungrounded", "suspect"):
+                is_verified = False
+                verification_status = "untrusted_source"
+                composite = composite * 0.6
+                logger.info(
+                    f"[AUTHORITY-FLOOR] Statistical claim from Tier 0 domain "
+                    f"{source_row.domain} demoted: {fact['fact_text'][:80]}..."
+                )
 
             citation = FactCitation(
                 verified_source_id=source_row.id,

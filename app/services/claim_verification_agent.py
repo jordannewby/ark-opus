@@ -783,6 +783,130 @@ _QUANT_CLAIM_PATTERN = re.compile(
 )
 
 
+def detect_unverified_entities(
+    draft_text: str,
+    citation_urls: list[str],
+    citation_anchors: list[str] | None = None,
+) -> list[str]:
+    """
+    Detect product/tool/brand names in writer draft that aren't backed by any citation source.
+    Catches hallucinated tools like "LoRA AI", "iTerm AI", "Caktus AI" that the writer
+    invents from training data.
+
+    Args:
+        draft_text: Section markdown from the writer
+        citation_urls: List of source_url values from the citation map
+        citation_anchors: Optional list of citation_anchor texts for name matching
+
+    Returns: List of unverified entity names (empty = all entities verified or no entities found)
+    """
+    # --- Step 1: Extract product/tool name candidates from draft ---
+    # Pattern: Capitalized word(s) followed by a tech product suffix
+    _PRODUCT_SUFFIXES = r'(?:AI|ML|Cloud|Pro|Plus|Enterprise|Suite|Platform|Studio|Labs?|Hub|Tools?|Software|Engine|API)'
+    # Match "Word AI", "Two Words AI", "Word-Word AI"
+    product_pattern = re.compile(
+        r'\b([A-Z][a-zA-Z]*(?:[\s\-][A-Z][a-zA-Z]*)*\s+' + _PRODUCT_SUFFIXES + r')\b'
+    )
+    # Also match standalone capitalized product names (e.g., "Zapier", "Perplexity", "Gencraft")
+    standalone_pattern = re.compile(
+        r'\b([A-Z][a-z]{2,}(?:\.ai|\.io|\.co)?)\b'
+    )
+
+    # Collect candidate product names
+    candidates = set()
+    for m in product_pattern.finditer(draft_text):
+        name = m.group(1).strip()
+        if len(name) >= 4:  # Skip very short matches
+            candidates.add(name)
+
+    for m in standalone_pattern.finditer(draft_text):
+        name = m.group(1).strip()
+        # Only keep standalone names that look like products (not common English words)
+        if len(name) >= 4 and name.lower() not in _COMMON_WORDS:
+            candidates.add(name)
+
+    if not candidates:
+        return []
+
+    # --- Step 2: Build known entities from citation sources ---
+    known_entities = set()
+
+    # Extract domain basenames from citation URLs (zapier.com → "zapier")
+    for url in citation_urls:
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc.lower().replace("www.", "")
+            basename = domain.split(".")[0]
+            if basename:
+                known_entities.add(basename.lower())
+                known_entities.add(domain.lower())
+        except Exception:
+            pass
+
+    # Extract names from citation anchors (e.g., "Salesforce 2024" → "salesforce")
+    if citation_anchors:
+        for anchor in citation_anchors:
+            words = re.findall(r'[A-Za-z]{3,}', anchor)
+            for w in words:
+                known_entities.add(w.lower())
+
+    # Also add all citation URL text as-is for broad matching
+    all_urls_text = " ".join(citation_urls).lower()
+
+    # --- Step 3: Check each candidate against known entities ---
+    unverified = []
+    for candidate in sorted(candidates):
+        candidate_lower = candidate.lower()
+        # Extract the core name (strip suffix like " AI", " Platform")
+        core_name = re.sub(r'\s+(' + _PRODUCT_SUFFIXES + r')$', '', candidate, flags=re.IGNORECASE).strip().lower()
+
+        # Check if core name or full name appears in known entities
+        is_known = (
+            core_name in known_entities
+            or candidate_lower in known_entities
+            or any(core_name in entity for entity in known_entities)
+            or core_name in all_urls_text
+        )
+
+        if not is_known:
+            unverified.append(candidate)
+
+    if unverified:
+        logger.info(f"[ENTITY-GATE] {len(unverified)} unverified entities: {unverified[:5]}")
+
+    return unverified
+
+
+# Common English words that should NOT be flagged as product names
+_COMMON_WORDS = frozenset({
+    "the", "this", "that", "these", "those", "what", "which", "where", "when",
+    "with", "from", "into", "onto", "over", "under", "above", "below", "between",
+    "through", "during", "before", "after", "about", "against", "along", "among",
+    "around", "behind", "beyond", "despite", "down", "except", "inside", "near",
+    "off", "outside", "past", "since", "toward", "upon", "within", "without",
+    "also", "just", "only", "even", "still", "already", "always", "never",
+    "often", "sometimes", "usually", "very", "really", "quite", "rather",
+    "here", "there", "then", "than", "both", "each", "every", "either",
+    "neither", "most", "much", "many", "more", "some", "such", "other",
+    # Common text words that get capitalized at sentence start
+    "companies", "businesses", "organizations", "enterprises", "teams",
+    "however", "therefore", "moreover", "furthermore", "meanwhile",
+    "according", "because", "although", "while", "since", "until",
+    "small", "medium", "large", "first", "second", "third", "next",
+    "best", "better", "most", "least", "last", "new", "old",
+    # Common section keywords
+    "introduction", "conclusion", "overview", "summary", "example",
+    "step", "steps", "guide", "tips", "ways", "reasons", "benefits",
+    # Generic tech terms (not specific products)
+    "artificial", "intelligence", "machine", "learning", "deep",
+    "automation", "analytics", "data", "digital", "technology",
+    "cybersecurity", "security", "network", "cloud", "server",
+    "marketing", "content", "customer", "business", "service",
+    "implementation", "integration", "optimization", "performance",
+    "research", "report", "study", "survey", "analysis", "finding",
+})
+
+
 def extract_article_claims(article_text: str) -> list[dict]:
     """
     Regex-only extraction of claim + adjacent citation URL pairs from article markdown.
