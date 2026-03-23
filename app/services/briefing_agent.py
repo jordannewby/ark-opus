@@ -17,11 +17,13 @@ class BriefingAgent:
         self.api_key = DEEPSEEK_API_KEY
         self.model_name = "deepseek-chat"
 
-    async def get_clarifying_questions(self, keyword: str) -> list[str]:
-        """Generates exactly 3 short, targeted questions based on the keyword."""
+    async def get_clarifying_questions(self, keyword: str, niche: str = "") -> list[str]:
+        """Generates exactly 3 short, targeted questions based on the keyword and niche."""
+        niche_context = f" in the '{niche}' niche" if niche else ""
         prompt = (
-            f"The user wants our autonomous SEO engine to write a comprehensive article about '{keyword}'.\n"
+            f"The user wants our autonomous SEO engine to write a comprehensive article about '{keyword}'{niche_context}.\n"
             "Ask exactly 3 short, highly targeted questions to clarify the intent, target audience, and primary goal.\n"
+            f"{'Tailor questions to the ' + niche + ' audience. ' if niche else ''}"
             "Examples: 'Are we targeting enterprise CTOs or junior devs?' or 'Is the primary goal lead generation or brand awareness?'\n"
             "Return ONLY a valid JSON array of 3 strings. Do not include markdown blocks like ```json."
         )

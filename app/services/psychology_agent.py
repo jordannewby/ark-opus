@@ -59,7 +59,15 @@ class PsychologyAgent:
             "Do NOT include markdown formatting like ```json or ```. Return ONLY the raw JSON object.\n"
             "Your outline_structure must use H2 headings (## prefix) for ALL main sections — "
             "the writer requires at least 5 H2 sections. Reserve H3 for sub-sections WITHIN an H2 only. "
-            "Structure headings based on the PAS flow (Problem, Agitation, Solution)."
+            "Structure headings based on the PAS flow (Problem, Agitation, Solution).\n\n"
+            "CRITICAL HEADING RULES:\n"
+            "1. Each heading must be 10 words or fewer.\n"
+            "2. Use simple, common words — no word may exceed 3 syllables.\n"
+            "3. Write headings for a 7th-grade reader. Be punchy and direct.\n"
+            "4. Do NOT use: delve, landscape, multifaceted, comprehensive, holistic, navigate, crucial, "
+            "robust, seamless, synergy, leverage, scalable, foster, optimize, ecosystem, paradigm.\n"
+            "GOOD: 'Why Most AI Plans Fail'\n"
+            "BAD: 'Understanding the Multifaceted Challenges of AI Implementation'\n"
         )
 
         headers = {

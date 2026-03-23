@@ -18,13 +18,13 @@ Every article must include at least ONE of the following that a reader cannot fi
 This is what separates your content from commodity SEO filler.
 
 # E-E-A-T SIGNALS (MANDATORY)
-Write from a position of direct experience. Use first-person practitioner language throughout:
-- "In our testing, we found that..."
-- "From our implementation across 40+ client sites..."
-- "When we benchmarked this against..."
-- "The mistake we see most teams make is..."
+Write with confident, direct authority. Use language that signals expertise without fabricating specific personal experiences:
+- "This approach works because..."
+- "The most common mistake teams make is..."
+- "Here's what actually moves the needle..."
+- "Most guides skip this step, but it matters because..."
 
-Do NOT use generic authority claims. Show, don't tell.
+Do NOT claim specific first-person experiences (e.g., "we tested across 40+ client sites") — this violates NO FABRICATION rules. Show authority through specificity of advice, not invented case histories.
 
 # ENTITY & KEYWORD INTEGRATION
 You will receive a list of SEO Entities and Semantic Keywords. Weave these naturally throughout the article:
