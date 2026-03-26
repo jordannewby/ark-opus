@@ -21,7 +21,7 @@ from collections import Counter
 
 import httpx
 
-from ..settings import DEEPSEEK_API_KEY, EXA_API_KEY, CLAIM_TEXT_SIMILARITY_THRESHOLD, LLM_SOURCE_CONTEXT_CHARS
+from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_REASONER_MODEL, EXA_API_KEY, CLAIM_TEXT_SIMILARITY_THRESHOLD, LLM_SOURCE_CONTEXT_CHARS
 from ..domain_tiers import TIER_1_DOMAINS, TIER_2_DOMAINS, get_domain_tier_score
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
@@ -123,138 +123,33 @@ def _compute_deterministic_ai_signals(content: str) -> dict:
     }
 
 
-async def detect_ai_generated_content(content: str) -> dict:
+def detect_ai_generated_content(content: str) -> dict:
     """
-    Single DeepSeek Reasoner call to evaluate 6 signals that distinguish
-    human writing from LLM output.
+    Deterministic AI content detection using 4 measurable signals.
+    No LLM call needed — deterministic signals are more reliable and free.
 
-    Returns: {ai_probability: 0.0-1.0, signals: dict, reasoning: str}
-    Cost: ~$0.00005 per call
+    Returns: {ai_probability: 0.0-1.0, signals: {}, deterministic_signals: dict, reasoning: str}
+    Cost: $0.00
     """
     if not content or len(content) < 200:
         return {"ai_probability": 0.3, "signals": {}, "deterministic_signals": {}, "reasoning": "Content too short to assess"}
 
-    # Compute deterministic signals first (free, instant)
     det_signals = _compute_deterministic_ai_signals(content)
-    det_human_score = det_signals["avg_human_score"]
+    ai_probability = round(1.0 - det_signals["avg_human_score"], 3)
 
-    try:
-        prompt = f"""You are an AI content detection specialist. Analyze this text for signals that distinguish human-written content from LLM-generated content.
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            f"[AI-DETECT] Deterministic: ttr={det_signals['ttr']}, var={det_signals['sentence_variance']}, "
+            f"hedge={det_signals['hedging']}, trans={det_signals['transitions']} | "
+            f"ai_prob={ai_probability:.2f}"
+        )
 
-TEXT (first 3000 chars):
-{content[:3000]}
-
-Score each signal 0.0-1.0 where 1.0 = strongly human, 0.0 = strongly AI-generated:
-
-1. lexical_diversity: Does vocabulary vary naturally? LLMs use unnaturally even vocabulary distributions.
-   1.0 = varied, idiosyncratic word choices | 0.0 = smooth, evenly distributed vocabulary
-
-2. sentence_rhythm: Do sentence lengths vary naturally? LLMs produce uniform sentence structures.
-   1.0 = irregular lengths, fragments, run-ons | 0.0 = uniform sentence lengths throughout
-
-3. hedging_patterns: Are hedging phrases natural or formulaic? LLMs insert "It's important to note..." at regular intervals.
-   1.0 = rare or contextual hedging | 0.0 = formulaic hedging every few paragraphs
-
-4. transition_formulaism: Are transitions natural? LLMs rely on "Furthermore... Moreover... Additionally..."
-   1.0 = varied, natural flow | 0.0 = template transition words throughout
-
-5. specificity_gradient: Are specifics distributed naturally? Humans front-load expertise; LLMs distribute evenly.
-   1.0 = uneven distribution of detail | 0.0 = evenly distributed specifics
-
-6. idiosyncrasy: Does the text have a unique voice? LLMs avoid informal patterns, fragments, asides.
-   1.0 = clear personal voice, quirks, opinions | 0.0 = generic, voiceless, perfectly formal
-
-Return JSON only:
-{{
-  "signals": {{
-    "lexical_diversity": 0.7,
-    "sentence_rhythm": 0.6,
-    "hedging_patterns": 0.8,
-    "transition_formulaism": 0.7,
-    "specificity_gradient": 0.5,
-    "idiosyncrasy": 0.6
-  }},
-  "ai_probability": 0.35,
-  "reasoning": "Brief explanation of key indicators"
-}}
-
-ai_probability = 1.0 - average(all signals). Only return JSON."""
-
-        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": "deepseek-reasoner",
-            "messages": [
-                {"role": "system", "content": "You output valid JSON ONLY."},
-                {"role": "user", "content": prompt}
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.3,
-        }
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
-            resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"].strip()
-
-        result = json.loads(text)
-        signals = result.get("signals", {})
-
-        # Validate: recalculate ai_probability from signals
-        if signals and len(signals) == 6:
-            avg_human = sum(signals.values()) / 6
-            calculated_ai_prob = round(1.0 - avg_human, 3)
-            reported_ai_prob = result.get("ai_probability", calculated_ai_prob)
-            # Use calculated if reported is way off
-            if abs(calculated_ai_prob - reported_ai_prob) > 0.15:
-                ai_probability = calculated_ai_prob
-            else:
-                ai_probability = reported_ai_prob
-        else:
-            ai_probability = result.get("ai_probability", 0.3)
-
-        # --- Merge deterministic and LLM signals ---
-        det_ai_prob = round(1.0 - det_human_score, 3)
-        delta = abs(ai_probability - det_ai_prob)
-
-        if delta <= 0.2:
-            # Agreement: trust LLM (more nuanced)
-            final_ai_prob = ai_probability
-        elif ai_probability < 0.5 and det_ai_prob >= 0.5 and delta > 0.3:
-            # LLM says human, deterministic says AI: average (don't let LLM override clear signals)
-            final_ai_prob = round((ai_probability + det_ai_prob) / 2, 3)
-        elif ai_probability >= 0.5 and det_ai_prob < 0.5 and delta > 0.3:
-            # LLM says AI, deterministic says human: trust deterministic (measurements > opinion)
-            final_ai_prob = det_ai_prob
-        else:
-            # Moderate disagreement: weighted average (60% LLM, 40% deterministic)
-            final_ai_prob = round(ai_probability * 0.6 + det_ai_prob * 0.4, 3)
-
-        ai_probability = final_ai_prob
-
-        if logger.isEnabledFor(logging.DEBUG):
-            sig_str = ", ".join(f"{k}={v}" for k, v in signals.items())
-            logger.debug(
-                f"[AI-DETECT] LLM signals: {sig_str} | "
-                f"Deterministic: ttr={det_signals['ttr']}, var={det_signals['sentence_variance']}, "
-                f"hedge={det_signals['hedging']}, trans={det_signals['transitions']} | "
-                f"merged ai_prob={ai_probability:.2f}"
-            )
-
-        return {
-            "ai_probability": round(ai_probability, 3),
-            "signals": signals,
-            "deterministic_signals": det_signals,
-            "reasoning": result.get("reasoning", ""),
-        }
-
-    except json.JSONDecodeError as e:
-        logger.error(f"[AI-DETECT] JSON parse error: {e}")
-        det_ai_prob = round(1.0 - det_human_score, 3)
-        return {"ai_probability": det_ai_prob, "signals": {}, "deterministic_signals": det_signals, "reasoning": "LLM failed, using deterministic only"}
-    except Exception as e:
-        logger.error(f"[AI-DETECT] Detection failed: {e}")
-        det_ai_prob = round(1.0 - det_human_score, 3)
-        return {"ai_probability": det_ai_prob, "signals": {}, "deterministic_signals": det_signals, "reasoning": f"LLM failed: {e}, using deterministic only"}
+    return {
+        "ai_probability": ai_probability,
+        "signals": {},
+        "deterministic_signals": det_signals,
+        "reasoning": "Deterministic signals only (TTR, sentence variance, hedging, transitions)",
+    }
 
 
 def compute_ai_detection_penalty(ai_result: dict, tier_level: int = 0) -> float:
@@ -346,8 +241,9 @@ def _build_verification_query(fact_text: str) -> str:
 def _prioritize_facts_for_verification(facts: list[dict], source_tiers: dict) -> list[tuple[int, dict]]:
     """
     Rank facts by verification priority:
-    1. Statistical claims from unknown/Tier 3-4 sources
-    2. Higher specificity (percentages > dollar amounts > general numbers)
+    1. Statistical claims from unknown/Tier 3-4 sources (highest)
+    2. Non-statistical claims from Tier 0 sources (expert quotes, case studies — need corroboration chance)
+    3. Higher specificity (percentages > dollar amounts > general numbers)
 
     Returns: [(original_index, fact_dict), ...] sorted by priority
     """
@@ -355,7 +251,6 @@ def _prioritize_facts_for_verification(facts: list[dict], source_tiers: dict) ->
 
     for i, fact in enumerate(facts):
         source_url = fact.get("source_url", "")
-        # Extract domain from URL
         try:
             from urllib.parse import urlparse
             domain = urlparse(source_url).netloc.lower().replace("www.", "")
@@ -365,20 +260,26 @@ def _prioritize_facts_for_verification(facts: list[dict], source_tiers: dict) ->
         tier = source_tiers.get(domain, 0)
 
         fact_text = fact.get("fact_text", "")
-        if not _is_statistical_claim(fact_text):
+        is_statistical = _is_statistical_claim(fact_text)
+
+        if not is_statistical and tier in (1, 2):
+            # Non-statistical facts from Tier 1-2 are auto-trusted via faithfulness
             continue
 
         # Priority score: percentages most specific, then dollar, then general
         priority = 0
-        if "%" in fact_text or "percent" in fact_text.lower():
-            priority = 3
-        elif "$" in fact_text:
-            priority = 2
+        if is_statistical:
+            if "%" in fact_text or "percent" in fact_text.lower():
+                priority = 3
+            elif "$" in fact_text:
+                priority = 2
+            else:
+                priority = 1
         else:
-            priority = 1
+            # Non-statistical Tier 0 facts: lower priority than stats but still queue them
+            priority = 0
 
         # Tier 1-2: deprioritize (faithfulness catches bad ones for free)
-        # but include so they can be Exa-checked if budget allows
         if tier in (1, 2):
             priority -= 10
 
@@ -801,6 +702,12 @@ def detect_unverified_entities(
     Returns: List of unverified entity names (empty = all entities verified or no entities found)
     """
     # --- Step 1: Extract product/tool name candidates from draft ---
+    # Pre-strip markdown structures that produce false positives:
+    # - Headings use Title Case by convention (not product names)
+    # - Link anchors/URLs are citation markup, not prose claims
+    scan_text = re.sub(r'^#{1,6}\s+.*$', '', draft_text, flags=re.MULTILINE)
+    scan_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', '', scan_text)
+
     # Pattern: Capitalized word(s) followed by a tech product suffix
     _PRODUCT_SUFFIXES = r'(?:AI|ML|Cloud|Pro|Plus|Enterprise|Suite|Platform|Studio|Labs?|Hub|Tools?|Software|Engine|API)'
     # Match "Word AI", "Two Words AI", "Word-Word AI"
@@ -814,12 +721,12 @@ def detect_unverified_entities(
 
     # Collect candidate product names
     candidates = set()
-    for m in product_pattern.finditer(draft_text):
+    for m in product_pattern.finditer(scan_text):
         name = m.group(1).strip()
         if len(name) >= 4:  # Skip very short matches
             candidates.add(name)
 
-    for m in standalone_pattern.finditer(draft_text):
+    for m in standalone_pattern.finditer(scan_text):
         name = m.group(1).strip()
         # Only keep standalone names that look like products (not common English words)
         if len(name) >= 4 and name.lower() not in _COMMON_WORDS:
@@ -868,7 +775,7 @@ def detect_unverified_entities(
             or core_name in all_urls_text
         )
 
-        if not is_known:
+        if not is_known and core_name not in _TECH_TERMS:
             unverified.append(candidate)
 
     if unverified:
@@ -876,6 +783,14 @@ def detect_unverified_entities(
 
     return unverified
 
+
+# Legitimate tech brands/terms that are NOT hallucinated products
+_TECH_TERMS = frozenset({
+    "anthropic", "openai", "chatgpt", "claude", "gemini", "deepseek",
+    "agentic", "generative", "multimodal", "transformer", "neural",
+    "copilot", "midjourney", "perplexity", "mistral", "llama", "meta",
+    "google", "microsoft", "amazon", "nvidia", "hugging", "huggingface",
+})
 
 # Common English words that should NOT be flagged as product names
 _COMMON_WORDS = frozenset({
@@ -904,6 +819,26 @@ _COMMON_WORDS = frozenset({
     "marketing", "content", "customer", "business", "service",
     "implementation", "integration", "optimization", "performance",
     "research", "report", "study", "survey", "analysis", "finding",
+    # Verbs (capitalized at sentence start, flagged as products)
+    "build", "keep", "adapt", "fix", "fail", "change", "create", "start",
+    "use", "make", "find", "take", "give", "tell", "work", "run", "try",
+    "apply", "follow", "include", "provide", "offer", "improve", "test",
+    "compare", "write", "read", "learn", "think", "know", "need", "want",
+    "help", "show", "call", "move", "turn", "play", "feel", "become",
+    "consider", "suggest", "require", "expect", "allow", "remain",
+    "reduce", "avoid", "imagine", "understand", "describe", "explain",
+    "generate", "produce", "develop", "design", "define", "measure",
+    # Nouns/adjectives that get sentence-start capitalized
+    "advice", "approach", "attempt", "anchor", "audit", "average",
+    "blank", "chain", "cleaner", "coding", "complex", "cost",
+    "editing", "everyone", "fast", "formula", "missing", "nearly",
+    "sounds", "standard", "common", "bad", "simple", "real", "full",
+    "long", "clear", "high", "low", "open", "free", "basic",
+    "human", "model", "prompt", "response", "output", "input",
+    "tool", "system", "process", "method", "result", "problem",
+    "solution", "answer", "question", "context", "pattern", "task",
+    "format", "style", "structure", "section", "paragraph", "sentence",
+    "word", "text", "image", "video", "code", "file",
 })
 
 
@@ -1275,7 +1210,7 @@ Only return JSON."""
 
         headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
         payload = {
-            "model": "deepseek-chat",
+            "model": DEEPSEEK_MODEL,
             "messages": [
                 {"role": "system", "content": "You output valid JSON ONLY."},
                 {"role": "user", "content": prompt}
@@ -1374,6 +1309,17 @@ def format_claim_verification_feedback(verification_result: dict) -> str:
             lines.append(f"     Fix: Add a [Source](URL) citation from the citation map, or remove the claim.")
         lines.append("")
 
+    # Attribution-URL mismatches
+    attr_mismatches = verification_result.get("attribution_mismatches", [])
+    if attr_mismatches:
+        lines.append("ATTRIBUTION-URL MISMATCHES (named org doesn't match citation domain - must fix):")
+        for i, m in enumerate(attr_mismatches, 1):
+            lines.append(f"  {i}. \"{m['claim_text']}\"")
+            lines.append(f"     Names: {m['named_org']}")
+            lines.append(f"     But links to: {m['citation_domain']} ({m['citation_url']})")
+            lines.append(f"     Fix: Either link to {m['named_org']}'s official domain, or remove the {m['named_org']} attribution.")
+        lines.append("")
+
     # Summary
     total = verification_result["total_claims"]
     verified = verification_result["verified"]
@@ -1381,11 +1327,12 @@ def format_claim_verification_feedback(verification_result: dict) -> str:
     amb = verification_result.get("ambiguous", 0)
     ung = verification_result.get("ungrounded", 0)
     unc = len(uncited)
+    mis = len(attr_mismatches)
 
-    lines.append(f"CLAIM VERIFICATION: {verified}/{total} verified, {fab} fabricated, {ung} ungrounded, {amb} ambiguous, {unc} uncited")
+    lines.append(f"CLAIM VERIFICATION: {verified}/{total} verified, {fab} fabricated, {ung} ungrounded, {amb} ambiguous, {unc} uncited, {mis} attribution mismatches")
 
-    if fab > 0 or ung > 0 or unc > 0:
-        lines.append("STATUS: FAILED - Fix all fabricated, ungrounded, and uncited claims before retry.")
+    if fab > 0 or ung > 0 or unc > 0 or mis > 0:
+        lines.append("STATUS: FAILED - Fix all fabricated, ungrounded, uncited, and misattributed claims before retry.")
     else:
         lines.append("STATUS: PASSED")
 

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
 
 from ..models import NichePlaybook, ResearchRun
-from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_TIMEOUT
+from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
@@ -173,7 +173,7 @@ class ResearchIntelService:
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": "deepseek-chat",
+                "model": DEEPSEEK_MODEL,
                 "messages": [
                     {"role": "system", "content": "You output valid JSON objects ONLY."},
                     {"role": "user", "content": prompt}

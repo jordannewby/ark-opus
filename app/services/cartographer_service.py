@@ -9,7 +9,7 @@ from ..models import ContentCampaign
 
 logger = logging.getLogger(__name__)
 from ..schemas import CampaignResponse, PillarKeyword, SpokeKeyword
-from ..settings import DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD, DEEPSEEK_API_KEY, CARTOGRAPHER_TIMEOUT
+from ..settings import DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD, DEEPSEEK_API_KEY, DEEPSEEK_REASONER_MODEL, CARTOGRAPHER_TIMEOUT
 
 
 class CartographerService:
@@ -167,7 +167,7 @@ Output ONLY a strict JSON object:
 {{"pillar": {{"keyword": "...", "kd": X, "vol": Y}}, "spokes": [{{"keyword": "...", "kd": X, "vol": Y, "intent": "Informational/Commercial", "angle": "Brief 1-sentence content angle"}}]}}"""
         
         payload = {
-            "model": "deepseek-reasoner",
+            "model": DEEPSEEK_REASONER_MODEL,
             "messages": [
                 {"role": "system", "content": "You are a precise JSON-generating SEO architect. You never output conversational text, only strict JSON."},
                 {"role": "user", "content": prompt}

@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from ..models import FactCitation, VerifiedSource
 from ..settings import (
-    DEEPSEEK_API_KEY, DEEPSEEK_TIMEOUT, DEEPSEEK_REASONER_TIMEOUT,
+    DEEPSEEK_API_KEY, DEEPSEEK_REASONER_MODEL, DEEPSEEK_TIMEOUT, DEEPSEEK_REASONER_TIMEOUT,
     SOURCE_CREDIBILITY_THRESHOLD, SOURCE_THRESHOLD_DECAY, MAX_VERIFICATION_ITERATIONS,
     BLOG_DOMAIN_PENALTY, BLOG_PATH_PENALTY, UNSOURCED_CLAIMS_PENALTY,
 )
@@ -116,19 +116,22 @@ _ORG_PATTERN = re.compile(
 )
 
 
-def detect_citation_laundering(fact_text: str, source_domain: str) -> dict:
+def detect_citation_laundering(fact_text: str, source_domain: str, citation_anchor: str = "") -> dict:
     """
     Detect when a fact attributes a claim to a named research org but the
-    source domain doesn't belong to that org.
+    source domain doesn't belong to that org.  Scans both fact_text AND
+    citation_anchor (e.g. "Gartner 2024") for org name mentions.
 
     Example:
-        fact_text: "Gartner predicts 40% of SMBs will use AI agents"
+        fact_text: "40% of SMBs will use AI agents"
+        citation_anchor: "Gartner 2024"
         source_domain: "nuconet.com"
         → is_laundered=True, claimed_org="gartner"
 
     Returns: {is_laundered: bool, claimed_org: str | None, source_domain: str}
     """
-    matches = _ORG_PATTERN.findall(fact_text)
+    combined_text = fact_text + (" " + citation_anchor if citation_anchor else "")
+    matches = _ORG_PATTERN.findall(combined_text)
     if not matches:
         return {"is_laundered": False, "claimed_org": None, "source_domain": source_domain}
 
@@ -522,7 +525,7 @@ Only return the JSON, no other text."""
 
         headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
         payload = {
-            "model": "deepseek-reasoner",
+            "model": DEEPSEEK_REASONER_MODEL,
             "messages": [
                 {"role": "system", "content": "You output valid JSON ONLY."},
                 {"role": "user", "content": prompt}
@@ -614,7 +617,7 @@ Only return the JSON, no other text."""
 
         headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
         payload = {
-            "model": "deepseek-reasoner",
+            "model": DEEPSEEK_REASONER_MODEL,
             "messages": [
                 {"role": "system", "content": "You output valid JSON ONLY."},
                 {"role": "user", "content": prompt}
@@ -682,6 +685,13 @@ async def calculate_credibility_score(
     - Topical Relevance (5 pts) - Exa search score
     - Spam Penalty (-10 pts) - DataForSEO spam score deduction
     """
+    # Early exit: blocked domains get zero score immediately
+    from ..domain_tiers import is_blocked_domain
+    source_domain = domain_metrics.get("domain", "")
+    if is_blocked_domain(source_domain):
+        logger.warning(f"[BLOCKED] {source_domain} is a known SEO farm / hijacked domain. Score: 0.0")
+        return 0.0
+
     score = 0.0
     breakdown = {}
 
@@ -960,6 +970,7 @@ Return a JSON object with a "facts" key containing an array:
       "fact_text": "Exact claim extracted verbatim (include numbers, percentages, names, years)",
       "fact_type": "statistic|benchmark|case_study|expert_quote",
       "citation_anchor": "How to reference this (e.g., 'Source Name 2024', 'Gartner 2024', 'Company Blog')",
+      "original_source": "Named study, report, or expert cited in the text (e.g., 'Gartner 2024 Report', 'Dr. Jane Smith'). Empty string if the text states the number without naming its origin.",
       "confidence": 0.9
     }}
   ]
@@ -972,7 +983,10 @@ CRITICAL RULES:
 - NEVER extract article metadata: publication dates, update dates, reading times ("X min read"), word counts, author names, or bylines
 - NEVER extract navigation text, headers, footers, or boilerplate content
 - Include the YEAR if mentioned in the claim
-- confidence: 0.6-1.0 based on how clearly stated and verifiable (be generous if fact is clear)
+- confidence scoring (be strict):
+  - 0.8-0.9: Fact cites a named study, report, organization, or expert by name
+  - 0.6-0.7: Fact states a specific number but does NOT name its origin
+  - 0.5: Fact is a round number or rule-of-thumb with no attribution (e.g., "most companies spend 10-15%")
 - Return {{"facts": []}} if no specific factual claims about the topic exist
 
 WHAT TO EXTRACT: Claims about the subject matter with specific numbers, percentages, dollar amounts, or attributable quotes.
@@ -982,7 +996,7 @@ Only return the JSON, no other text."""
 
         headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
         payload = {
-            "model": "deepseek-reasoner",
+            "model": DEEPSEEK_REASONER_MODEL,
             "messages": [
                 {"role": "system", "content": "You output valid JSON ONLY."},
                 {"role": "user", "content": prompt}
@@ -1046,7 +1060,7 @@ def _extract_key_terms(text: str) -> set[str]:
     return {w for w in words if w not in stopwords}
 
 
-def score_fact_consensus(all_citations: list) -> dict[int, int]:
+def score_fact_consensus(all_citations: list, source_tiers: dict | None = None) -> dict[int, dict]:
     """
     For each fact, count how many OTHER sources independently cite similar claims.
 
@@ -1056,17 +1070,22 @@ def score_fact_consensus(all_citations: list) -> dict[int, int]:
     3. Two facts are "similar" if they share 1+ number AND 2+ key terms
     4. Facts from the SAME source don't count as corroboration
 
-    Returns: {fact_citation.id: consensus_count}
+    Returns: {fact_citation.id: {"count": N, "has_authoritative": bool}}
     """
     if not all_citations:
         return {}
 
+    source_tiers = source_tiers or {}
+
     # Pre-compute number and term sets for each citation
     parsed = []
     for cite in all_citations:
+        domain = extract_domain(cite.source_url)
         parsed.append({
             "id": cite.id,
             "source_url": cite.source_url,
+            "domain": domain,
+            "tier": source_tiers.get(domain, 0),
             "numbers": _extract_numbers(cite.fact_text),
             "terms": _extract_key_terms(cite.fact_text),
         })
@@ -1074,6 +1093,7 @@ def score_fact_consensus(all_citations: list) -> dict[int, int]:
     consensus_map = {}
     for i, a in enumerate(parsed):
         count = 1  # Counts itself
+        has_authoritative = a["tier"] in (1, 2)
         for j, b in enumerate(parsed):
             if i == j:
                 continue
@@ -1085,7 +1105,9 @@ def score_fact_consensus(all_citations: list) -> dict[int, int]:
             shared_terms = a["terms"] & b["terms"]
             if len(shared_numbers) >= 1 and len(shared_terms) >= 2:
                 count += 1
-        consensus_map[a["id"]] = count
+                if b["tier"] in (1, 2):
+                    has_authoritative = True
+        consensus_map[a["id"]] = {"count": count, "has_authoritative": has_authoritative}
 
     return consensus_map
 
@@ -1177,7 +1199,11 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
                 is_verified = True
             else:
                 verification_status = "not_checked"
-                is_verified = True  # Default true, may be set False after Exa verification
+                # Tier 3-4: only auto-verify if faithfulness grounding is very high
+                is_verified = grounding["confidence_multiplier"] >= 0.9
+                # Unattributed statistical claims from non-authoritative sources stay unverified
+                if is_verified and not fact.get("original_source") and fact.get("fact_type") == "statistic":
+                    is_verified = False
 
             # Gap 1 fix: Veto ungrounded facts regardless of tier
             if grounding["grounding_method"] == "none":
@@ -1189,7 +1215,7 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
 
             # --- Fix 1: Citation Laundering Detection ---
             # Catches facts like "Gartner reports 40%" sourced from nuconet.com
-            laundering = detect_citation_laundering(fact["fact_text"], source_row.domain)
+            laundering = detect_citation_laundering(fact["fact_text"], source_row.domain, fact.get("citation_anchor", ""))
             if laundering["is_laundered"]:
                 is_verified = False
                 verification_status = "laundered"
@@ -1200,16 +1226,38 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
                     f"{fact['fact_text'][:80]}..."
                 )
 
-            # --- Fix 2: Statistical Authority Floor ---
-            # Tier 0 (unknown) blogs should not produce statistical citations
-            if tier_level == 0 and fact.get("fact_type") == "statistic" and verification_status not in ("laundered", "ungrounded", "suspect"):
+            # --- Fix 2: Tier 0 Authority Floor ---
+            # Unknown domains must prove their claims via independent corroboration.
+            # ALL fact types (stats, expert quotes, case studies, benchmarks) start untrusted.
+            # Exa verification can resurrect statistical claims if a Tier 1-2 source corroborates.
+            if tier_level == 0 and verification_status not in ("laundered", "ungrounded", "suspect"):
                 is_verified = False
                 verification_status = "untrusted_source"
                 composite = composite * 0.6
                 logger.info(
-                    f"[AUTHORITY-FLOOR] Statistical claim from Tier 0 domain "
+                    f"[AUTHORITY-FLOOR] {fact.get('fact_type', 'unknown')} from Tier 0 domain "
                     f"{source_row.domain} demoted: {fact['fact_text'][:80]}..."
                 )
+
+            # --- Fix 3: Known AI Hallucination Name Detection ---
+            # Claude habitually generates "Sarah Chen" as its default expert name
+            # across wildly different contexts. Flag expert quotes containing known
+            # AI-default personas as suspect (zero-cost regex check).
+            _AI_HALLUCINATION_NAMES = {
+                "sarah chen", "marcus webb", "james chen", "emily zhang",
+                "david kumar", "rachel torres", "michael chang",
+            }
+            combined_text = (fact["fact_text"] + " " + fact.get("citation_anchor", "")).lower()
+            for halluc_name in _AI_HALLUCINATION_NAMES:
+                if halluc_name in combined_text:
+                    is_verified = False
+                    verification_status = "suspect"
+                    composite = composite * 0.3
+                    logger.warning(
+                        f"[HALLUCINATION] Known AI-default name '{halluc_name}' in fact from "
+                        f"{source_row.domain}: {fact['fact_text'][:80]}..."
+                    )
+                    break
 
             citation = FactCitation(
                 verified_source_id=source_row.id,
@@ -1283,24 +1331,32 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
 
     # --- Cross-source consensus scoring ---
     if all_new_citations:
-        consensus_map = score_fact_consensus(all_new_citations)
+        consensus_map = score_fact_consensus(all_new_citations, source_tiers)
 
         boosted = 0
+        copypasta_flagged = 0
         for citation in all_new_citations:
-            count = consensus_map.get(citation.id, 1)
+            entry = consensus_map.get(citation.id, {"count": 1, "has_authoritative": False})
+            count = entry["count"]
+            has_auth = entry["has_authoritative"]
             citation.consensus_count = count
             # Adjust composite score based on consensus
-            if count >= 3:
+            if count >= 3 and has_auth:
                 citation.composite_score = min(100.0, citation.composite_score * 1.3)
                 boosted += 1
-            elif count >= 2:
+            elif count >= 2 and has_auth:
                 citation.composite_score = min(100.0, citation.composite_score * 1.15)
                 boosted += 1
+            elif count >= 3 and not has_auth:
+                # Suspected viral copypasta — multiple low-tier sources, no authoritative corroboration
+                copypasta_flagged += 1
             elif count == 1:
                 citation.composite_score = citation.composite_score * 0.85
 
         if boosted:
             logger.info(f"[CONSENSUS] {boosted}/{len(all_new_citations)} facts corroborated by multiple sources")
+        if copypasta_flagged:
+            logger.warning(f"[CONSENSUS] {copypasta_flagged} facts flagged as suspected viral copypasta (no Tier 1-2 corroboration)")
 
     db.commit()
     logger.info(f"[FACTS] Linked {len(all_new_citations)} facts to {len(verified_sources)} verified sources")
@@ -1456,21 +1512,22 @@ async def verify_sources(
         uncached_content = [elite_competitors[i].get("content", "") for i in uncached_indices]
         quality_tasks = [assess_content_quality(content) for content in uncached_content]
         integrity_tasks = [detect_content_integrity(content) for content in uncached_content]
-        ai_detect_tasks = [detect_ai_generated_content(content) for content in uncached_content]
+        # AI detection is now deterministic (no LLM call) — compute inline
+        ai_detect_results_uncached = [detect_ai_generated_content(content) for content in uncached_content]
 
-        total_tasks = len(quality_tasks) + len(integrity_tasks) + len(ai_detect_tasks)
-        logger.info(f"[VERIFY] Cache: {cache_hits} hits, {len(uncached_indices)} misses. Launching {total_tasks} DeepSeek calls (incl. AI detection)...")
-        all_results = await asyncio.gather(*quality_tasks, *integrity_tasks, *ai_detect_tasks, return_exceptions=True)
+        total_tasks = len(quality_tasks) + len(integrity_tasks)
+        logger.info(f"[VERIFY] Cache: {cache_hits} hits, {len(uncached_indices)} misses. Launching {total_tasks} DeepSeek calls + {len(ai_detect_results_uncached)} deterministic AI detections...")
+        all_results = await asyncio.gather(*quality_tasks, *integrity_tasks, return_exceptions=True)
 
         n = len(uncached_indices)
         # Assign results to uncached indices
         for idx, uncached_i in enumerate(uncached_indices):
             qr = all_results[idx]
             ir = all_results[n + idx]
-            ar = all_results[2 * n + idx]
+            ar = ai_detect_results_uncached[idx]
             quality_results[uncached_i] = qr if not isinstance(qr, Exception) else {"score": 0.5, "reasoning": "Error"}
             integrity_results[uncached_i] = ir if not isinstance(ir, Exception) else {"integrity_score": 0.5, "scores": {}, "flags": ["Error"]}
-            ai_detection_results[uncached_i] = ar if not isinstance(ar, Exception) else {"ai_probability": 0.3, "signals": {}, "reasoning": "Error"}
+            ai_detection_results[uncached_i] = ar
     else:
         logger.info(f"[VERIFY] Cache: {cache_hits} hits, 0 misses. No DeepSeek calls needed.")
 

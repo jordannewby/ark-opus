@@ -1,7 +1,7 @@
 import json
 import logging
 import httpx
-from ..settings import DEEPSEEK_API_KEY, BRIEFING_TIMEOUT
+from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, BRIEFING_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ class BriefingAgent:
             raise ValueError("DEEPSEEK_API_KEY environment variable is not set.")
 
         self.api_key = DEEPSEEK_API_KEY
-        self.model_name = "deepseek-chat"
+        self.model_name = DEEPSEEK_MODEL
 
     async def get_clarifying_questions(self, keyword: str, niche: str = "") -> list[str]:
         """Generates exactly 3 short, targeted questions based on the keyword and niche."""

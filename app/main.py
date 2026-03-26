@@ -515,6 +515,179 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             if DEBUG_MODE:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 3 (Claude Sonnet 4) completed in {round(time.time() - p3_start, 2)}s'})}\n\n"
 
+            # Phase 4: Post-Writer Claim Verification Gate
+            if article_content and research_run_id:
+                from .services.claim_verification_agent import (
+                    extract_article_claims,
+                    detect_uncited_claims,
+                    cross_reference_claims,
+                    verify_claim_with_llm,
+                    format_claim_verification_feedback,
+                )
+                from .settings import MAX_UNCITED_CLAIMS
+
+                yield f"data: {json.dumps({'event': 'claim_verification_start', 'message': 'Cross-referencing claims against verified facts...'})}\n\n"
+
+                article_claims = extract_article_claims(article_content)
+
+                # Attribution-URL mismatch detection: flag "Gartner says X" linked to random-blog.com
+                from .services.source_verification_service import KNOWN_RESEARCH_ORGS, extract_domain
+                import re as _re
+                _org_pattern = _re.compile(
+                    r'\b(' + '|'.join(_re.escape(org) for org in sorted(KNOWN_RESEARCH_ORGS.keys(), key=len, reverse=True)) + r')\b',
+                    _re.IGNORECASE,
+                )
+                attribution_mismatches = []
+                for claim in article_claims:
+                    matches = _org_pattern.findall(claim.get("claim_text", ""))
+                    if not matches:
+                        matches = _org_pattern.findall(claim.get("citation_anchor", ""))
+                    if matches:
+                        cite_domain = extract_domain(claim.get("citation_url", ""))
+                        for org_name in matches:
+                            org_key = org_name.lower()
+                            canonical_domains = KNOWN_RESEARCH_ORGS.get(org_key, [])
+                            if not canonical_domains:
+                                continue
+                            if not any(cite_domain == cd or cite_domain.endswith("." + cd) for cd in canonical_domains):
+                                attribution_mismatches.append({
+                                    "claim_text": claim["claim_text"][:120],
+                                    "named_org": org_key,
+                                    "citation_url": claim["citation_url"],
+                                    "citation_domain": cite_domain,
+                                })
+                                break
+
+                uncited_claims = detect_uncited_claims(article_content, article_claims)
+
+                # Fetch fact citations for this research run
+                run_fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+
+                xref_result = cross_reference_claims(
+                    article_claims, run_fact_citations, source_content_map
+                )
+
+                # Resolve ambiguous claims via LLM (max 2 calls)
+                ambiguous = xref_result.get("ambiguous_claims", [])
+                llm_resolved = 0
+                for amb in ambiguous[:2]:
+                    try:
+                        llm_verdict = await verify_claim_with_llm(
+                            amb["claim_text"],
+                            amb.get("candidate_facts", []),
+                            source_content_map.get(amb.get("source_url", ""), "")[:5000] if source_content_map else None,
+                        )
+                        if llm_verdict.get("supported"):
+                            xref_result["verified"] = xref_result.get("verified", 0) + 1
+                            xref_result["ambiguous"] = max(0, xref_result.get("ambiguous", 0) - 1)
+                            llm_resolved += 1
+                            # Update the detail entry
+                            for d in xref_result.get("details", []):
+                                if d.get("claim_text") == amb["claim_text"] and d.get("status") == "ambiguous":
+                                    d["status"] = "verified"
+                                    d["reason"] = f"LLM verified: {llm_verdict.get('reasoning', '')}"
+                                    break
+                    except Exception as e:
+                        logger.warning(f"[CLAIM-VERIFY] LLM verification failed: {e}")
+
+                # Add uncited claims and attribution mismatches to the result
+                xref_result["uncited"] = len(uncited_claims)
+                xref_result["uncited_details"] = uncited_claims
+                xref_result["attribution_mismatches"] = attribution_mismatches
+
+                fabricated = xref_result.get("fabricated", 0)
+                ungrounded = xref_result.get("ungrounded", 0)
+                uncited_count = len(uncited_claims)
+                mismatch_count = len(attribution_mismatches)
+                verified_count = xref_result.get("verified", 0)
+                total_claims = xref_result.get("total_claims", 0)
+
+                if mismatch_count:
+                    logger.warning(f"[CLAIM-VERIFY] {mismatch_count} attribution-URL mismatches: {[m['named_org'] + ' -> ' + m['citation_domain'] for m in attribution_mismatches[:3]]}")
+
+                yield f"data: {json.dumps({'event': 'claim_verification_complete', 'message': f'Claims: {verified_count}/{total_claims} verified, {fabricated} fabricated, {ungrounded} ungrounded, {uncited_count} uncited, {mismatch_count} attribution mismatches', 'verified': verified_count, 'fabricated': fabricated, 'ungrounded': ungrounded, 'uncited': uncited_count, 'mismatches': mismatch_count, 'total': total_claims})}\n\n"
+
+                # Gate: reject if fabricated citations, too many uncited claims, or attribution mismatches
+                claim_gate_failed = fabricated > 0 or uncited_count > MAX_UNCITED_CLAIMS or mismatch_count > 0
+                claim_retry_count = 0
+                max_claim_retries = 2
+
+                while claim_gate_failed and claim_retry_count < max_claim_retries:
+                    claim_retry_count += 1
+                    feedback = format_claim_verification_feedback(xref_result)
+                    logger.warning(f"[CLAIM-VERIFY] Gate failed (attempt {claim_retry_count}/{max_claim_retries}): {fabricated} fabricated, {uncited_count} uncited. Sending feedback to writer.")
+                    yield f"data: {json.dumps({'event': 'claim_verification_retry', 'message': f'Claim verification failed. Retrying writer (attempt {claim_retry_count}/{max_claim_retries})...'})}\n\n"
+
+                    # Re-run writer with claim feedback
+                    article_content = ""
+                    async for result in writer_service.produce_article(
+                        blueprint_dict, payload.profile_name, normalize_niche(payload.niche),
+                        research_run_id=run_id, source_content_map=source_content_map,
+                        claim_feedback=feedback,
+                    ):
+                        if result.get("type") == "content":
+                            yield f"data: {json.dumps({'event': 'content', 'data': result['data']})}\n\n"
+                        elif result.get("type") == "debug":
+                            yield f"data: {json.dumps({'event': 'debug', 'message': result['message']})}\n\n"
+                        elif result.get("type") == "control":
+                            yield f"data: {json.dumps({'event': 'control', 'action': result.get('action', '')})}\n\n"
+                        elif result.get("status") == "error":
+                            yield f"data: {json.dumps({'event': 'error', 'message': result['message']})}\n\n"
+                            return
+                        elif result.get("status") == "success":
+                            article_content = result["text"]
+                            readability_scores = result.get("readability_score")
+
+                    if not article_content:
+                        break
+
+                    # Re-verify
+                    article_claims = extract_article_claims(article_content)
+                    # Re-check attribution mismatches
+                    attribution_mismatches = []
+                    for claim in article_claims:
+                        matches = _org_pattern.findall(claim.get("claim_text", ""))
+                        if not matches:
+                            matches = _org_pattern.findall(claim.get("citation_anchor", ""))
+                        if matches:
+                            cite_domain = extract_domain(claim.get("citation_url", ""))
+                            for org_name in matches:
+                                org_key = org_name.lower()
+                                canonical_domains = KNOWN_RESEARCH_ORGS.get(org_key, [])
+                                if not canonical_domains:
+                                    continue
+                                if not any(cite_domain == cd or cite_domain.endswith("." + cd) for cd in canonical_domains):
+                                    attribution_mismatches.append({
+                                        "claim_text": claim["claim_text"][:120],
+                                        "named_org": org_key,
+                                        "citation_url": claim["citation_url"],
+                                        "citation_domain": cite_domain,
+                                    })
+                                    break
+
+                    uncited_claims = detect_uncited_claims(article_content, article_claims)
+                    xref_result = cross_reference_claims(
+                        article_claims, run_fact_citations, source_content_map
+                    )
+                    xref_result["uncited"] = len(uncited_claims)
+                    xref_result["uncited_details"] = uncited_claims
+                    xref_result["attribution_mismatches"] = attribution_mismatches
+
+                    fabricated = xref_result.get("fabricated", 0)
+                    ungrounded = xref_result.get("ungrounded", 0)
+                    uncited_count = len(uncited_claims)
+                    mismatch_count = len(attribution_mismatches)
+                    verified_count = xref_result.get("verified", 0)
+                    total_claims = xref_result.get("total_claims", 0)
+
+                    claim_gate_failed = fabricated > 0 or uncited_count > MAX_UNCITED_CLAIMS or mismatch_count > 0
+
+                    yield f"data: {json.dumps({'event': 'claim_verification_complete', 'message': f'Retry {claim_retry_count}: {verified_count}/{total_claims} verified, {fabricated} fabricated, {uncited_count} uncited, {mismatch_count} mismatches', 'verified': verified_count, 'fabricated': fabricated, 'ungrounded': ungrounded, 'uncited': uncited_count, 'mismatches': mismatch_count, 'total': total_claims})}\n\n"
+
+                if claim_gate_failed:
+                    logger.error(f"[CLAIM-VERIFY] Gate still failing after {max_claim_retries} retries. Proceeding with warnings.")
+                    yield f"data: {json.dumps({'event': 'claim_verification_warning', 'message': f'WARNING: Article has {fabricated} fabricated and {uncited_count} uncited claims after {max_claim_retries} retries. Review carefully.'})}\n\n"
+
             # Save the generated article
             post = Post(
                 title=keyword,

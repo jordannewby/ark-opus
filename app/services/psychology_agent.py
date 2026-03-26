@@ -3,7 +3,7 @@ import json
 import logging
 import httpx
 from pathlib import Path
-from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_TIMEOUT
+from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class PsychologyAgent:
             raise ValueError("DEEPSEEK_API_KEY environment variable is not set.")
         
         self.api_key = DEEPSEEK_API_KEY
-        self.model_name = "deepseek-chat"
+        self.model_name = DEEPSEEK_MODEL
         
         prompt_path = Path(__file__).parent / "prompts" / "persuasion.md"
         with open(prompt_path, "r", encoding="utf-8") as f:

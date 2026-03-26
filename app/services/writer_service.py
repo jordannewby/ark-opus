@@ -3,7 +3,7 @@ import logging
 import re
 from pathlib import Path
 from anthropic import AsyncAnthropic
-from ..settings import ANTHROPIC_API_KEY, MAX_WRITER_ATTEMPTS, WRITER_MAX_TOKENS, LLM_SOURCE_CONTEXT_CHARS, MAX_UNCITED_CLAIMS
+from ..settings import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_WRITER_ATTEMPTS, WRITER_MAX_TOKENS, LLM_SOURCE_CONTEXT_CHARS, MAX_UNCITED_CLAIMS
 from .readability_service import verify_readability, READABILITY_DIRECTIVE
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ class WriterService:
             raise ValueError("ANTHROPIC_API_KEY environment variable is not set.")
 
         self.client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        self.model_name = "claude-sonnet-4-20250514"
+        self.model_name = CLAUDE_MODEL
 
         # Load the strict writer system prompt
         prompt_path = Path(__file__).parent / "prompts" / "writer.md"
@@ -76,7 +76,7 @@ class WriterService:
             text = pattern.sub(_match_case, text)
         return text
 
-    async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general", research_run_id: int | None = None, source_content_map: dict | None = None):
+    async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general", research_run_id: int | None = None, source_content_map: dict | None = None, claim_feedback: str | None = None):
         """
         Uses LangGraph Agentic RAG architecture to plan, retrieve, write, and edit the article section-by-section.
         """
@@ -88,8 +88,19 @@ class WriterService:
         if research_run_id:
             from ..models import FactCitation
             citations = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
-            verified_citations = [c for c in citations if getattr(c, 'is_verified', True)]
-            
+            _QUANT_RE = re.compile(r'\d+%|\$\d|percent|\d+\.\d+')
+            verified_citations = []
+            for c in citations:
+                if not getattr(c, 'is_verified', True):
+                    continue
+                status = getattr(c, 'verification_status', 'not_checked') or 'not_checked'
+                fact_text = getattr(c, 'fact_text', '') or ''
+                # Quantitative claims (stats, percentages, dollar figures) require
+                # strong verification — "not_checked" is insufficient
+                if _QUANT_RE.search(fact_text) and status not in ("corroborated", "trusted"):
+                    continue
+                verified_citations.append(c)
+
             def _usability_weight(c):
                 status = getattr(c, 'verification_status', 'not_checked') or 'not_checked'
                 if status in ("corroborated", "trusted"):
@@ -118,6 +129,11 @@ class WriterService:
         if style_rules:
             for rule in style_rules:
                 style_rules_text += f"- {rule.rule_description}\n"
+
+        if claim_feedback:
+            style_rules_text += "\n\n=== CLAIM VERIFICATION FEEDBACK (MUST FIX) ===\n"
+            style_rules_text += claim_feedback
+            style_rules_text += "\n=== END CLAIM FEEDBACK ===\n"
 
         initial_state: WriterState = {
             "blueprint": blueprint,

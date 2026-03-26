@@ -50,6 +50,11 @@ SERP_DEPTH = 10
 LOCATION_CODE = 2840
 LANGUAGE_CODE = "en"
 
+# Model constants
+CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
+DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_REASONER_MODEL = "deepseek-reasoner"
+
 # Writer tuning
 MAX_WRITER_ATTEMPTS = 5
 WRITER_MAX_TOKENS = 8192

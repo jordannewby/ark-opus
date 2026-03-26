@@ -1,7 +1,7 @@
 import json
 import logging
 import httpx
-from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_TIMEOUT, RULE_CONSOLIDATION_THRESHOLD
+from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT, RULE_CONSOLIDATION_THRESHOLD
 from ..models import UserStyleRule
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ class FeedbackAgent:
             raise ValueError("DEEPSEEK_API_KEY environment variable is not set.")
 
         self.api_key = DEEPSEEK_API_KEY
-        self.model_name = "deepseek-chat"
+        self.model_name = DEEPSEEK_MODEL
 
         self.system_prompt = (
             "You are a master linguistic analyst and editor. Your job is to compare an original AI-generated text "

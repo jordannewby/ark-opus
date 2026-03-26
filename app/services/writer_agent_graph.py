@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from anthropic import AsyncAnthropic
 
 from .readability_service import verify_readability
-from ..settings import ANTHROPIC_API_KEY
+from ..settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
 import logging
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ class WriterState(TypedDict):
 
 def get_claude(temperature=0.7):
     return ChatAnthropic(
-        model_name="claude-sonnet-4-20250514", 
+        model_name=CLAUDE_MODEL,
         temperature=temperature, 
         api_key=ANTHROPIC_API_KEY,
         max_tokens=2048
@@ -262,7 +262,7 @@ Output ONLY the final Markdown section text."""
     # --- Call Claude with extended thinking ---
     try:
         response = await _anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
+            model=CLAUDE_MODEL,
             max_tokens=16000,
             thinking={
                 "type": "enabled",
@@ -335,23 +335,20 @@ async def editor_node(state: WriterState) -> dict:
         if not re.search(list_pattern, draft, re.MULTILINE):
             errors.append("You failed to include the required list format. Use '- item' or '1. item' Markdown syntax.")
 
-    # 5. Uncited claims check — detect fabricated statistics
-    # Find all percentage/number claims and check they're adjacent to a citation link
+    # 5. Uncited claims check — every paragraph containing a statistic must also contain a citation link
     stat_pattern = r'\b\d+(?:\.\d+)?\s*%'
-    stat_matches = list(re.finditer(stat_pattern, draft))
-    if stat_matches:
-        citation_link_pattern = r'\[[^\]]+\]\(https?://[^)]+\)'
-        uncited_stats = []
-        for m in stat_matches:
-            # Check if there's a citation link within 200 chars after the stat
-            after_stat = draft[m.start():min(len(draft), m.end() + 200)]
-            if not re.search(citation_link_pattern, after_stat):
-                # Also check 100 chars before (citation might precede the stat)
-                before_stat = draft[max(0, m.start() - 100):m.end()]
-                if not re.search(citation_link_pattern, before_stat):
-                    uncited_stats.append(m.group())
-        if uncited_stats:
-            errors.append(f"You stated statistics without citations: {', '.join(uncited_stats[:3])}. Every statistic MUST have an inline [Source](URL) citation immediately adjacent, or be removed.")
+    citation_link_pattern = r'\[[^\]]+\]\(https?://[^)]+\)'
+    uncited_stats = []
+    for para in draft.split('\n\n'):
+        para_stats = list(re.finditer(stat_pattern, para))
+        if para_stats and not re.search(citation_link_pattern, para):
+            for m in para_stats:
+                uncited_stats.append(m.group())
+    if uncited_stats:
+        errors.append(
+            f"You stated statistics without citations: {', '.join(uncited_stats[:3])}. "
+            f"Every statistic MUST have an inline [Source](URL) citation in the same paragraph, or be removed."
+        )
 
     # 6. Unverified entity check — detect hallucinated product/tool names
     from .claim_verification_agent import detect_unverified_entities

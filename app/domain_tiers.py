@@ -286,15 +286,49 @@ TIER_4_DOMAINS = {
 }
 
 
+# ========================
+# BLOCKED DOMAINS (score = 0, immediate rejection)
+# ========================
+# Known SEO content farms, hijacked domains, and AI-generated spam operations.
+# These domains passed source verification via well-written AI text, fake expert quotes,
+# and fabricated statistics. Block them at the domain level to prevent re-ingestion.
+
+BLOCKED_DOMAINS = {
+    "ucstrategies.com",       # Hijacked UC domain repurposed as AI clickbait farm
+    "blog.ucstrategies.com",  # Same operator, reversed pseudonym ("Morgan Alex" / "Alex Morgan")
+}
+
+
+def is_blocked_domain(domain: str) -> bool:
+    """Check if a domain is in the blocklist (exact or subdomain match)."""
+    domain = normalize_domain(domain)
+    if domain in BLOCKED_DOMAINS:
+        return True
+    # Subdomain match: "news.ucstrategies.com" matches "ucstrategies.com"
+    for blocked in BLOCKED_DOMAINS:
+        if not blocked.startswith(".") and domain.endswith("." + blocked):
+            return True
+    return False
+
+
 def normalize_domain(domain: str) -> str:
     """
     Normalize domain for matching.
 
     - Remove 'www.' prefix
+    - Strip port numbers (e.g. nist.gov:443 -> nist.gov)
     - Convert to lowercase
     - Strip whitespace
     """
+    from urllib.parse import urlparse
     domain = domain.strip().lower()
+    # Handle full URLs: extract hostname
+    if "://" in domain:
+        parsed = urlparse(domain)
+        domain = parsed.hostname or domain
+    # Strip port numbers (e.g. nist.gov:443)
+    if ":" in domain:
+        domain = domain.split(":")[0]
     if domain.startswith("www."):
         domain = domain[4:]
     return domain

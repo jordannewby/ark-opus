@@ -27,7 +27,7 @@ from mcp import ClientSession
 
 from ..models import ResearchCache, NichePlaybook, ResearchRun
 from ..settings import (
-    DEEPSEEK_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD,
+    DEEPSEEK_API_KEY, DEEPSEEK_REASONER_MODEL, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD,
     CACHE_TTL_HOURS, MAX_AGENTIC_ITERATIONS, EXA_NUM_RESULTS,
     EXA_MAX_CHARACTERS, EXA_TIMEOUT, SERP_DEPTH,
     LOCATION_CODE, LANGUAGE_CODE, DEEPSEEK_TIMEOUT, DEEPSEEK_REASONER_TIMEOUT,
@@ -1887,7 +1887,7 @@ class ResearchAgent:
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "deepseek-reasoner",
+            "model": DEEPSEEK_REASONER_MODEL,
             "messages": messages,
             "max_tokens": 4000
         }
@@ -1941,7 +1941,7 @@ class ResearchAgent:
             f"DATA:\n{text_context[:4000]}"
         )
         payload = {
-            "model": "deepseek-reasoner",
+            "model": DEEPSEEK_REASONER_MODEL,
             "messages": [
                 {"role": "user", "content": prompt}
             ],
