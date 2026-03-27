@@ -771,11 +771,55 @@ class ResearchAgent:
             practitioner_insights = info_gap.get("practitioner_insights", [])
             info_gap = info_gap.get("information_gap", str(info_gap))
 
-        # Step F: Optional Content Analysis (Additive Enhancement)
-        # Get aggregate content patterns from DataForSEO if feature flag enabled
+        # Step F: Analyze competitor pages with On-Page API
         content_patterns = None
-        if mcp_session:
-            content_patterns = await self.get_content_patterns_from_dataforseo(keyword, mcp_session)
+        try:
+            # Extract SERP URLs from MCP results
+            serp_urls = []
+            serp_data = mcp_results.get("serp")
+            if serp_data and hasattr(serp_data, "content"):
+                serp_json = json.loads(serp_data.content[0].text)
+                tasks = serp_json.get("tasks", [])
+                if tasks and tasks[0].get("result"):
+                    items = tasks[0]["result"][0].get("items", [])
+                    serp_urls = [item.get("url") for item in items[:10] if item.get("url")]
+
+            # Call On-Page Instant Pages API via MCP
+            if serp_urls and mcp_session:
+                onpage_result = await mcp_call_with_retry(
+                    mcp_session,
+                    "dataforseo_onpage_instant_pages",
+                    {"urls": serp_urls, "store_raw_html": True}
+                )
+
+                # Parse MCP response
+                if onpage_result and hasattr(onpage_result, "content"):
+                    onpage_json = json.loads(onpage_result.content[0].text)
+                    competitors = onpage_json.get("competitors", [])
+
+                    # Compute aggregate benchmarks
+                    if competitors:
+                        avg_word_count = sum(c.get("word_count", 0) for c in competitors) / len(competitors)
+                        avg_onpage_score = sum(c.get("onpage_score", 0) for c in competitors) / len(competitors)
+                        readability_scores = [
+                            c.get("readability", {}).get("flesch_kincaid", 0) or 0
+                            for c in competitors
+                            if c.get("readability", {}).get("flesch_kincaid")
+                        ]
+                        avg_readability = sum(readability_scores) / len(readability_scores) if readability_scores else None
+
+                        content_patterns = {
+                            "competitors_analyzed": len(competitors),
+                            "avg_word_count": round(avg_word_count),
+                            "avg_onpage_score": round(avg_onpage_score, 1),
+                            "avg_readability_fk": round(avg_readability, 1) if avg_readability else None,
+                            "competitors": competitors[:5]  # Keep top 5 for psychology agent
+                        }
+
+                        logger.debug(f"[DEBUG] On-Page analysis: {len(competitors)} competitors, avg score {avg_onpage_score:.1f}")
+
+        except Exception as e:
+            logger.debug(f"[DEBUG] On-Page API failed (non-critical): {e}")
 
         result = {
             "keyword": keyword,
@@ -1670,9 +1714,15 @@ class ResearchAgent:
 
     def _get_niche_playbook(self, niche: str, profile_name: str) -> str | None:
         """Retrieve the distilled playbook for this niche+workspace, formatted as prompt text."""
+        # Option 2 + 3: Only inject active, approved playbooks
         playbook_row = (
             self.db.query(NichePlaybook)
-            .filter(NichePlaybook.profile_name == profile_name, NichePlaybook.niche == niche)
+            .filter(
+                NichePlaybook.profile_name == profile_name,
+                NichePlaybook.niche == niche,
+                NichePlaybook.active == True,  # Option 2: rollback safety
+                NichePlaybook.approved_for_use == True  # Option 3: human review gate
+            )
             .first()
         )
         if playbook_row:

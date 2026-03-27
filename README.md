@@ -102,7 +102,7 @@ Ares Engine is an **AI-powered content generation platform** designed to produce
 
 **Trigger**: `/generate` endpoint start
 **Model**: DeepSeek-R1 (`deepseek-reasoner`) for agentic tool orchestration
-**Tools**: DataForSEO MCP (keyword ideas, live SERP, backlinks) + Exa.ai (neural search, full-text extraction)
+**Tools**: DataForSEO MCP (keyword ideas, live SERP, backlinks, on-page analysis) + Exa.ai (neural search, full-text extraction)
 
 **Process**:
 1. **Agentic Loop** (max 5 iterations): R1 autonomously decides which tools to use based on information gaps
@@ -113,8 +113,9 @@ Ares Engine is an **AI-powered content generation platform** designed to produce
 3. **Niche Filtering**: Maps 30+ niche aliases (e.g., "cybersecurity" → ["infosec", "appsec", "netsec"]) to 9 categories, filters Exa searches by domain credibility
 4. **Keyword Relevance Fallback**: If <3 relevant sources found after niche-filtered search, triggers unfiltered Exa + broad backfill
 5. **Metadata Preservation**: Stores `publishedDate` + `score` via `url_metadata_map` for Phase 1.5 scoring
-6. **MCP 429 Retry**: Exponential backoff (1s→2s→4s, max 3 retries) on DataForSEO rate-limits
-7. **Niche Playbook Injection**: If ≥10 prior runs exist for this niche, injects distilled playbook (~200 tokens) to guide tool selection
+6. **On-Page Competitor Analysis**: Analyzes top 10 SERP competitors via DataForSEO On-Page API for readability metrics, content quality scores (0-1 scale), on-page SEO scores (0-100), Core Web Vitals, and word count benchmarks
+7. **MCP 429 Retry**: Exponential backoff (1s→2s→4s, max 3 retries) on DataForSEO rate-limits
+8. **Niche Playbook Injection**: If ≥10 prior runs exist for this niche, injects distilled playbook (~200 tokens) to guide tool selection
 
 **Output**: Research dict with:
 - Competitive headers/subheaders from top-ranking pages
@@ -123,6 +124,7 @@ Ares Engine is an **AI-powered content generation platform** designed to produce
 - Backlink authority scores
 - KD (keyword difficulty) metrics
 - `elite_competitors` list (URLs of top sources for Phase 1.5)
+- `content_patterns` (competitor benchmarks: avg word count, on-page scores, readability metrics, top 5 competitor details)
 
 **Cost**: ~$0.08/article (DeepSeek-R1 reasoning tokens)
 
@@ -179,11 +181,12 @@ Ares Engine is an **AI-powered content generation platform** designed to produce
 
 **Process**:
 1. Receives research dict + verified facts from Phase 1/1.5
-2. Maps article structure to psychological triggers using **PAS (Problem-Agitation-Solution)**:
+2. **Injects competitor benchmarks** from On-Page analysis (avg word count, on-page scores, readability targets) for niche-specific adaptation
+3. Maps article structure to psychological triggers using **PAS (Problem-Agitation-Solution)**:
    - **Problem**: Identify pain points from research (e.g., "traditional perimeter security fails against lateral movement")
    - **Agitation**: Amplify consequences (e.g., "82% of breaches involve insider threats")
    - **Solution**: Position keyword as remedy (e.g., "zero trust microsegmentation eliminates implicit trust")
-3. Generates structured JSON blueprint with:
+4. Generates structured JSON blueprint with dynamic content length targets based on top-ranking competitors:
    - **Hook Strategy**: Opening angle (stat-driven, case-study-led, contrarian)
    - **Target Identity**: Reader persona (CISO, SOC analyst, compliance officer)
    - **Agitation Points**: 3-5 pain amplifiers with emotional triggers
@@ -427,7 +430,7 @@ On Gate 1-3 failure:
 | **Reasoning LLM** | DeepSeek-R1 (`deepseek-reasoner`) | Phase 1 research orchestration, Phase 1.5 verification, Phase -1 cartographer |
 | **Chat LLM** | DeepSeek-V3 (`deepseek-chat`) | Phase 0 briefing, Phase 2 psychology, Phase 6 feedback, intelligence distillation |
 | **Writer LLM** | Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) | Phase 3 article generation |
-| **Research Tools** | Exa.ai + DataForSEO MCP | Web search (neural + SERP) + SEO intelligence |
+| **Research Tools** | Exa.ai + DataForSEO MCP | Web search (neural + SERP) + SEO intelligence (keywords, backlinks, on-page analysis) |
 | **Streaming** | SSE (Server-Sent Events) | Real-time frontend updates |
 | **Frontend** | Vanilla JS + Tailwind CSS | Cyber-glassmorphism console UI |
 | **Container** | Uvicorn ASGI server | Async production runtime |
@@ -891,7 +894,7 @@ The frontend (`static/ares_console.html` + `static/js/console.js`) features a **
 | **Anthropic** | Writer phase prose generation | ~$0.05 | Yes | Claude Sonnet 4.5-20250929 |
 | **DeepSeek** | Research (R1), Psychology (V3), Feedback (V3), Verification (R1) | ~$0.08 | Yes | deepseek-chat (V3), deepseek-reasoner (R1) |
 | **Exa.ai** | Neural search source discovery | ~$0.01 | Yes | scout_search, extract_full_text |
-| **DataForSEO** | SERP/keywords/backlinks/on-page (via MCP) | ~$0.01 | Yes | SERP, Keyword Ideas, Backlinks |
+| **DataForSEO** | SERP/keywords/backlinks/on-page (via MCP) | ~$0.02 | Yes | SERP ($0.02), Keyword Ideas ($0.0001), Backlinks ($0.00), On-Page ($0.00125 for 10 competitors) |
 | **Neon PostgreSQL** | Database (serverless) | Free tier: 3GB storage, $7/month for more | Yes | PostgreSQL 15 |
 
 ### Budget Planning

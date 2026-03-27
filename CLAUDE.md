@@ -1,7 +1,7 @@
 # Ares Engine
 
-**Stack**: FastAPI + Neon PostgreSQL + DeepSeek-R1/V3 + Claude Sonnet 4 + Exa.ai + DataForSEO MCP
-**Budget**: $10 max — prefer lightweight, serverless
+**Stack**: FastAPI + Neon PostgreSQL + GLM-5 Thinking, DeepSeek V3 + Claude Sonnet 4.6 + Exa.ai + DataForSEO MCP
+**Budget**: $10-$20 max — prefer lightweight, serverless
 
 ## Key Paths
 - `app/main.py` — FastAPI endpoints: `/generate` (SSE), `/approve`, `/clarify`, `/rules`, `/workspaces`, `/campaigns`
@@ -43,4 +43,4 @@
 - Never remove `pool_pre_ping` or keepalive args from `database.py`
 
 ## Architecture
-Full pipeline (7 phases), agent logic, scoring algorithms, intelligence loops, and workspace system: `@docs/architecture.md`
+Only if told to read. Full pipeline (7 phases), agent logic, scoring algorithms, intelligence loops, and workspace system: `docs/architecture.md`

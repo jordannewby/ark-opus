@@ -19,7 +19,7 @@ import httpx
 logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
 
-from ..models import NichePlaybook, ResearchRun
+from ..models import NichePlaybook, ResearchRun, WriterRun
 from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
@@ -39,12 +39,16 @@ class ResearchIntelService:
 
     async def maybe_distill(self, niche: str, profile_name: str) -> bool:
         """Consolidate undistilled runs into a NichePlaybook if >= 10 have accumulated."""
+        # OPTION 1: Filter by approval status to prevent garbage-in-garbage-out
+        # Only distill from approved posts (WriterRun.human_approved == True)
         undistilled_count = (
             self.db.query(ResearchRun)
+            .join(WriterRun, ResearchRun.post_id == WriterRun.post_id)
             .filter(
                 ResearchRun.profile_name == profile_name,
                 ResearchRun.niche == niche,
                 ResearchRun.is_distilled == False,
+                WriterRun.human_approved == True,  # Critical: only learn from approved content
             )
             .count()
         )
@@ -53,10 +57,12 @@ class ResearchIntelService:
 
         runs = (
             self.db.query(ResearchRun)
+            .join(WriterRun, ResearchRun.post_id == WriterRun.post_id)
             .filter(
                 ResearchRun.profile_name == profile_name,
                 ResearchRun.niche == niche,
                 ResearchRun.is_distilled == False,
+                WriterRun.human_approved == True,  # Critical: only learn from approved content
             )
             .all()
         )
@@ -67,6 +73,10 @@ class ResearchIntelService:
         else:
             playbook = self._compute_heuristic_playbook(runs)
 
+        # Option 2: Version tracking for rollback capability
+        # UniqueConstraint ensures one playbook per (profile_name, niche)
+        # Version increments on each distillation; active=True by default
+        # To rollback: manually set active=False on problematic playbook
         existing = (
             self.db.query(NichePlaybook)
             .filter(NichePlaybook.profile_name == profile_name, NichePlaybook.niche == niche)
@@ -76,12 +86,14 @@ class ResearchIntelService:
             existing.playbook_json = json.dumps(playbook)
             existing.runs_distilled += len(runs)
             existing.version += 1
+            # active remains True (existing playbook stays active with new version)
         else:
             self.db.add(NichePlaybook(
                 profile_name=profile_name,
                 niche=niche,
                 playbook_json=json.dumps(playbook),
                 runs_distilled=len(runs),
+                # active defaults to True, version defaults to 1
             ))
 
         for r in runs:

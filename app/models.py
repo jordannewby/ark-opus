@@ -90,6 +90,8 @@ class NichePlaybook(Base):
     playbook_json: Mapped[str] = mapped_column(Text)
     runs_distilled: Mapped[int] = mapped_column(Integer, default=0)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    active: Mapped[bool] = mapped_column(default=True, server_default="true")  # Option 2: version rollback capability
+    approved_for_use: Mapped[bool] = mapped_column(default=False, server_default="false")  # Option 3: human review gate
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
 
@@ -134,6 +136,8 @@ class WriterPlaybook(Base):
     playbook_json: Mapped[str] = mapped_column(Text)
     runs_distilled: Mapped[int] = mapped_column(Integer, default=0)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    active: Mapped[bool] = mapped_column(default=True, server_default="true")  # Option 2: version rollback capability
+    approved_for_use: Mapped[bool] = mapped_column(default=False, server_default="false")  # Option 3: human review gate
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, onupdate=func.now())
 

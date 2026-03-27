@@ -37,11 +37,13 @@ class WriterIntelService:
         Distill writer playbook when ≥10 approved runs exist.
         Triggered after approval.
         """
-        # Count undistilled runs with quality scores
+        # OPTION 1: Filter by approval status to prevent garbage-in-garbage-out
+        # Count undistilled runs with quality scores AND explicit human approval
         undistilled_runs = db.query(WriterRun).filter(
             WriterRun.profile_name == profile_name,
             WriterRun.niche == niche,
             WriterRun.is_distilled == False,
+            WriterRun.human_approved == True,  # Critical: only learn from approved content
             WriterRun.readability_efficiency.isnot(None)
         ).all()
 
@@ -57,7 +59,10 @@ class WriterIntelService:
         # Compute heuristic playbook (no LLM cost for MVP)
         playbook_data = WriterIntelService._compute_heuristic_playbook(quality_runs, db)
 
-        # Upsert playbook
+        # Option 2: Version tracking for rollback capability
+        # UniqueConstraint ensures one playbook per (profile_name, niche)
+        # Version increments on each distillation; active=True by default
+        # To rollback: manually set active=False on problematic playbook
         existing = db.query(WriterPlaybook).filter(
             WriterPlaybook.profile_name == profile_name,
             WriterPlaybook.niche == niche
@@ -68,12 +73,14 @@ class WriterIntelService:
             existing.runs_distilled += len(quality_runs)
             existing.version += 1
             existing.updated_at = datetime.utcnow()
+            # active remains True (existing playbook stays active with new version)
         else:
             playbook = WriterPlaybook(
                 profile_name=profile_name,
                 niche=niche,
                 playbook_json=json.dumps(playbook_data),
                 runs_distilled=len(quality_runs)
+                # active defaults to True, version defaults to 1
             )
             db.add(playbook)
 

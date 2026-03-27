@@ -37,6 +37,37 @@ class PsychologyAgent:
             f"- Semantic Entities: {', '.join(research_data.get('semantic_entities', []))}\n"
         )
 
+        # Inject On-Page competitor benchmarks for niche-specific adaptation
+        content_patterns = research_data.get("content_patterns")
+        if content_patterns:
+            avg_word_count = content_patterns.get("avg_word_count", 0)
+            avg_score = content_patterns.get("avg_onpage_score", 0)
+            avg_fk = content_patterns.get("avg_readability_fk")
+
+            prompt_instructions += (
+                f"- Competitor Benchmarks (On-Page Analysis):\n"
+                f"  * Average word count: {avg_word_count} words\n"
+                f"  * Average on-page SEO score: {avg_score}/100\n"
+            )
+
+            if avg_fk:
+                prompt_instructions += f"  * Average Flesch-Kincaid grade level: {avg_fk}\n"
+
+            prompt_instructions += (
+                f"  * Top competitors analyzed: {content_patterns.get('competitors_analyzed', 0)}\n"
+                f"  * CRITICAL: Match or exceed {avg_word_count} words for competitive parity\n"
+            )
+
+            # Show top competitor metrics for quality targets
+            competitors = content_patterns.get("competitors", [])
+            if competitors:
+                top_competitor = competitors[0]
+                prompt_instructions += (
+                    f"  * Top-ranking page ({top_competitor.get('url', 'unknown')}):\n"
+                    f"    - Word count: {top_competitor.get('word_count', 0)}\n"
+                    f"    - On-page score: {top_competitor.get('onpage_score', 0)}/100\n"
+                )
+
         # Gap 15: Inject fact category distribution so blueprint designs around available evidence
         fact_cats = research_data.get("fact_categories")
         if fact_cats:
@@ -51,6 +82,16 @@ class PsychologyAgent:
                 prompt_instructions += "  * Case studies available -- leverage success/failure narratives\n"
             if fact_cats.get("has_expert_quotes"):
                 prompt_instructions += "  * Expert quotes available -- use authority-based persuasion\n"
+
+        # NEW: Dynamic word count target based on competitor benchmarks
+        content_patterns = research_data.get("content_patterns")
+        if content_patterns and content_patterns.get("avg_word_count"):
+            target_words = content_patterns["avg_word_count"]
+            prompt_instructions += (
+                f"\nCONTENT LENGTH TARGET: {target_words}+ words "
+                f"(based on top-ranking competitors). "
+                f"Ensure your outline supports this depth.\n"
+            )
 
         prompt_instructions += (
             "\nFULL RESEARCH JSON:\n"

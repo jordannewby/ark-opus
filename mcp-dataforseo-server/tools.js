@@ -41,6 +41,10 @@ export function registerTools(server, client) {
           result = await handleDomainRankOverview(client, args);
           break;
 
+        case "dataforseo_onpage_instant_pages":
+          result = await handleOnPageInstantPages(client, args);
+          break;
+
         default:
           throw new Error(`Unknown tool: ${toolName}`);
       }
@@ -172,6 +176,31 @@ export function registerTools(server, client) {
               }
             },
             required: ["targets"]
+          }
+        },
+        {
+          name: "dataforseo_onpage_instant_pages",
+          description: "Analyze competitor pages for SEO metrics: readability, content quality, performance, on-page score. Returns comprehensive competitor intelligence.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              urls: {
+                type: "array",
+                items: { type: "string" },
+                description: "List of competitor URLs to analyze (max 20 per request)"
+              },
+              enable_javascript: {
+                type: "boolean",
+                default: false,
+                description: "Execute JavaScript (10x cost multiplier)"
+              },
+              store_raw_html: {
+                type: "boolean",
+                default: true,
+                description: "Store HTML for later retrieval (free, enables H2 extraction)"
+              }
+            },
+            required: ["urls"]
           }
         }
       ]
@@ -315,4 +344,70 @@ function extractDomainMetrics(task, fallbackTarget) {
     etv: Math.round(metrics.etv || 0),
     total_keywords: metrics.count || 0,
   };
+}
+
+/**
+ * Tool 5: Analyze competitor pages with On-Page Instant Pages API
+ * Returns: readability scores, content quality, performance metrics, on-page score
+ * Cost: $0.000125/page base (+ multipliers for JavaScript/browser rendering)
+ */
+async function handleOnPageInstantPages(client, args) {
+  const { urls, enable_javascript = false, store_raw_html = true } = args;
+
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    throw new Error("urls parameter must be a non-empty array");
+  }
+
+  // Limit to 20 URLs (DataForSEO max per request)
+  const limitedUrls = urls.slice(0, 20);
+
+  // Build tasks array (one task per URL)
+  const tasks = limitedUrls.map(url => ({
+    url,
+    enable_javascript,
+    store_raw_html,
+    custom_user_agent: "Mozilla/5.0 (compatible; AresEngine/1.0; +https://example.com/bot)"
+  }));
+
+  const result = await client.post("/v3/on_page/instant_pages", tasks);
+
+  // Extract key metrics from response
+  const summaries = [];
+  const responseTasks = result.tasks || [];
+
+  for (let task of responseTasks) {
+    if (!task.result || !task.result[0]) {
+      summaries.push({
+        url: task.data?.url || "unknown",
+        error: task.status_message || "No result returned"
+      });
+      continue;
+    }
+
+    const pageData = task.result[0];
+    summaries.push({
+      url: pageData.url,
+      onpage_score: pageData.onpage_score || 0,
+      word_count: pageData.meta?.content?.plain_text_word_count || 0,
+      readability: {
+        flesch_kincaid: pageData.meta?.content?.automated_readability_index || null,
+        ari: pageData.meta?.content?.automated_readability_index || null
+      },
+      content_quality: {
+        title_consistency: pageData.meta?.content?.title_to_content_consistency || 0,
+        description_consistency: pageData.meta?.content?.description_to_content_consistency || 0
+      },
+      performance: {
+        lcp: pageData.page_timing?.largest_contentful_paint || null,
+        fid: pageData.page_timing?.first_input_delay || null,
+        cls: pageData.page_timing?.cumulative_layout_shift || null
+      },
+      technical_seo: {
+        broken_links: pageData.checks?.broken_links || false,
+        duplicate_meta: (pageData.meta?.duplicate_meta_tags || []).length > 0
+      }
+    });
+  }
+
+  return { competitors: summaries, total_analyzed: summaries.length };
 }
