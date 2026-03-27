@@ -1,6 +1,6 @@
 # Ares Engine
 
-Ares Engine is a sophisticated, fully autonomous, asynchronous **7-Phase AI Content Pipeline** that orchestrates multiple LLMs (DeepSeek-R1/V3, Claude Sonnet 4.5) and external APIs (Exa.ai, DataForSEO MCP) to dynamically build deeply researched, psychologically persuasive, and fact-verified 1,600+ word Markdown articles with citation-backed claims.
+Ares Engine is a sophisticated, fully autonomous, asynchronous **7-Phase AI Content Pipeline** that orchestrates multiple LLMs (GLM-5, DeepSeek-V3, Claude Sonnet 4.5) and external APIs (Exa.ai, DataForSEO MCP) to dynamically build deeply researched, psychologically persuasive, and fact-verified 1,600+ word Markdown articles with citation-backed claims.
 
 It features real-time UI streaming via Server-Sent Events (SSE), multi-gate validation (SEO, Citation, Readability), and self-improving intelligence loops that learn from user feedback to converge on your exact writing style over time.
 
@@ -29,7 +29,7 @@ It features real-time UI streaming via Server-Sent Events (SSE), multi-gate vali
 
 Ares Engine is an **AI-powered content generation platform** designed to produce SEO-optimized, fact-verified articles at scale. Unlike simple LLM wrappers, Ares orchestrates a sophisticated pipeline that:
 
-- **Researches** keywords using agentic tool orchestration (DeepSeek-R1 reasoning)
+- **Researches** keywords using agentic tool orchestration (GLM-5 Deep Thinking)
 - **Verifies** sources via 7-factor credibility scoring (domain authority, freshness, integrity)
 - **Extracts** verifiable facts with confidence scoring and citation mapping
 - **Strategizes** psychological frameworks (PAS - Problem-Agitation-Solution)
@@ -39,7 +39,7 @@ Ares Engine is an **AI-powered content generation platform** designed to produce
 
 ### Key Features
 
-- **Agentic Research**: DeepSeek-R1 autonomously decides which tools to use (DataForSEO, Exa.ai) across 5 iterative reasoning loops
+- **Agentic Research**: GLM-5 autonomously decides which tools to use (DataForSEO, Exa.ai) across 5 iterative reasoning loops
 - **Source Credibility System**: 4-tier domain classification (Government/Academic → Tech Giants → Industry Blogs → General) with 7-factor scoring algorithm
 - **Fact Verification**: Zero-tolerance for fabricated citations; cross-references every claim against verified source facts
 - **Multi-Gate Validation**: Articles must pass SEO metrics (1,500+ words, 5+ H2s), citation requirements, and readability standards (7th-10th grade ARI)
@@ -101,14 +101,14 @@ Ares Engine is an **AI-powered content generation platform** designed to produce
 ### Phase 1: Research Agent (Agentic Intelligence Gathering)
 
 **Trigger**: `/generate` endpoint start
-**Model**: DeepSeek-R1 (`deepseek-reasoner`) for agentic tool orchestration
+**Model**: GLM-5 (`glm-5`) for agentic tool orchestration via ZhipuAI API
 **Tools**: DataForSEO MCP (keyword ideas, live SERP, backlinks, on-page analysis) + Exa.ai (neural search, full-text extraction)
 
 **Process**:
-1. **Agentic Loop** (max 5 iterations): R1 autonomously decides which tools to use based on information gaps
+1. **Agentic Loop** (max 5 iterations): GLM-5 autonomously decides which tools to use based on information gaps
 2. **3-Step Sequencing**:
    - **Mandatory**: Keyword ideas + SERP data (always runs first)
-   - **Strategic**: Exa scout search → extract full text (R1 decides when to use)
+   - **Strategic**: Exa scout search → extract full text (GLM-5 decides when to use)
    - **Final**: Synthesize research dict with competitive intelligence
 3. **Niche Filtering**: Maps 30+ niche aliases (e.g., "cybersecurity" → ["infosec", "appsec", "netsec"]) to 9 categories, filters Exa searches by domain credibility
 4. **Keyword Relevance Fallback**: If <3 relevant sources found after niche-filtered search, triggers unfiltered Exa + broad backfill
@@ -126,14 +126,14 @@ Ares Engine is an **AI-powered content generation platform** designed to produce
 - `elite_competitors` list (URLs of top sources for Phase 1.5)
 - `content_patterns` (competitor benchmarks: avg word count, on-page scores, readability metrics, top 5 competitor details)
 
-**Cost**: ~$0.08/article (DeepSeek-R1 reasoning tokens)
+**Cost**: ~$0.08/article (GLM-5 reasoning tokens)
 
 ---
 
 ### Phase 1.5: Source Verification & Fact Extraction
 
 **Trigger**: Automatic if `elite_competitors` found in Phase 1
-**Model**: DeepSeek-R1 (`deepseek-reasoner`) for integrity/quality checks + fact extraction
+**Model**: GLM-5 (`glm-5`) for integrity/quality checks + fact extraction via ZhipuAI API
 **Tools**: DataForSEO MCP (domain authority), Exa.ai, cached domain credibility lists
 
 **Process**:
@@ -427,7 +427,7 @@ On Gate 1-3 failure:
 |-----------|-----------|---------|
 | **API Framework** | FastAPI 0.135.1 | REST endpoints + SSE streaming |
 | **Database** | Neon PostgreSQL + SQLAlchemy 2.0 | Multi-tenant ORM with connection pooling |
-| **Reasoning LLM** | DeepSeek-R1 (`deepseek-reasoner`) | Phase 1 research orchestration, Phase 1.5 verification, Phase -1 cartographer |
+| **Reasoning LLM** | GLM-5 (`glm-5`) / DeepSeek-R1 (`deepseek-reasoner`) | GLM-5: Phase 1 research, Phase 1.5 verification; DeepSeek-R1: Phase -1 cartographer |
 | **Chat LLM** | DeepSeek-V3 (`deepseek-chat`) | Phase 0 briefing, Phase 2 psychology, Phase 6 feedback, intelligence distillation |
 | **Writer LLM** | Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) | Phase 3 article generation |
 | **Research Tools** | Exa.ai + DataForSEO MCP | Web search (neural + SERP) + SEO intelligence (keywords, backlinks, on-page analysis) |
@@ -543,7 +543,12 @@ ANTHROPIC_API_KEY="sk-ant-api03-..."
 ```env
 DEEPSEEK_API_KEY="sk-..."
 ```
-**Required**: DeepSeek-R1 and DeepSeek-V3 for research, verification, psychology, feedback. Get yours at [platform.deepseek.com](https://platform.deepseek.com).
+**Required**: DeepSeek-V3 for cartographer, briefing, psychology, feedback. Get yours at [platform.deepseek.com](https://platform.deepseek.com).
+
+```env
+ZAI_API_KEY="sk-..."
+```
+**Required**: GLM-5 for research and source verification. Get yours at [open.bigmodel.cn](https://open.bigmodel.cn).
 
 ### Search & Intelligence APIs
 
@@ -582,6 +587,7 @@ The application uses centralized operational constants in `app/settings.py`. Key
 CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 DEEPSEEK_MODEL = "deepseek-chat"  # DeepSeek-V3
 DEEPSEEK_REASONER_MODEL = "deepseek-reasoner"  # DeepSeek-R1
+GLM5_MODEL = "glm-5"  # GLM-5 Deep Thinking
 ```
 
 ### Timeouts (seconds)
@@ -598,7 +604,7 @@ EXA_TIMEOUT = 30
 
 ```python
 CACHE_TTL_HOURS = 24                # Research cache expiration
-MAX_AGENTIC_ITERATIONS = 5          # Max DeepSeek-R1 reasoning loops
+MAX_AGENTIC_ITERATIONS = 5          # Max GLM-5 reasoning loops
 EXA_NUM_RESULTS = 10                # Results per Exa search
 EXA_MAX_CHARACTERS = 25000          # Max content per source extract
 SERP_DEPTH = 10                     # SERP results per query
@@ -892,7 +898,8 @@ The frontend (`static/ares_console.html` + `static/js/console.js`) features a **
 | Service | Purpose | Cost per Article | Required | Model/Version |
 |---------|---------|------------------|----------|---------------|
 | **Anthropic** | Writer phase prose generation | ~$0.05 | Yes | Claude Sonnet 4.5-20250929 |
-| **DeepSeek** | Research (R1), Psychology (V3), Feedback (V3), Verification (R1) | ~$0.08 | Yes | deepseek-chat (V3), deepseek-reasoner (R1) |
+| **GLM-5** | Research, Source verification | ~$0.06 | Yes | glm-5 via ZhipuAI API |
+| **DeepSeek** | Cartographer (R1), Briefing (V3), Psychology (V3), Feedback (V3) | ~$0.02 | Yes | deepseek-chat (V3), deepseek-reasoner (R1) |
 | **Exa.ai** | Neural search source discovery | ~$0.01 | Yes | scout_search, extract_full_text |
 | **DataForSEO** | SERP/keywords/backlinks/on-page (via MCP) | ~$0.02 | Yes | SERP ($0.02), Keyword Ideas ($0.0001), Backlinks ($0.00), On-Page ($0.00125 for 10 competitors) |
 | **Neon PostgreSQL** | Database (serverless) | Free tier: 3GB storage, $7/month for more | Yes | PostgreSQL 15 |
@@ -1073,6 +1080,6 @@ See commit history on `cleanup/complete-audit` branch.
 
 ---
 
-**Built with DeepSeek-R1/V3 + Claude Sonnet 4.5 + Exa.ai + DataForSEO**
+**Built with GLM-5 + DeepSeek-V3 + Claude Sonnet 4.5 + Exa.ai + DataForSEO**
 
 For questions or support, see GitHub issues: `https://github.com/jordannewby/ares-engine/issues`
