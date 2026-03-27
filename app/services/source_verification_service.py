@@ -28,6 +28,7 @@ from ..settings import (
     BLOG_DOMAIN_PENALTY, BLOG_PATH_PENALTY, UNSOURCED_CLAIMS_PENALTY,
 )
 from ..domain_tiers import get_domain_tier_score
+from ..glm_client import call_glm5_with_retry
 from .research_service import mcp_call_with_retry
 
 logger = logging.getLogger(__name__)
@@ -538,26 +539,23 @@ Only return the JSON, no other text."""
             "thinking": {"type": "enabled"}  # Enable deep thinking
         }
 
-        async with httpx.AsyncClient(timeout=GLM5_TIMEOUT) as client:
-            resp = await client.post(GLM5_API_URL, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        data = await call_glm5_with_retry(payload)
 
-            # Optional: log reasoning for quality audits
-            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
-            if reasoning:
-                logger.debug(f"[GLM-5 Quality Assessment]: {reasoning[:300]}...")
+        # Optional: log reasoning for quality audits
+        reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+        if reasoning:
+            logger.debug(f"[GLM-5 Quality Assessment]: {reasoning[:300]}...")
 
-            text = data["choices"][0]["message"]["content"].strip()
+        text = data["choices"][0]["message"]["content"].strip()
 
         # Parse JSON with error handling
         try:
             result = json.loads(text)
         except json.JSONDecodeError:
-            logger.error(f"[DEEPSEEK] Invalid JSON response: {text[:200]}")
+            logger.error(f"[GLM-5] Invalid JSON response: {text[:200]}")
             return {"score": 0.5, "reasoning": "JSON parse error"}
 
-        logger.info(f"[DEEPSEEK] Content quality score: {result.get('score', 0.5)}")
+        logger.info(f"[GLM-5] Content quality score: {result.get('score', 0.5)}")
 
         return {
             "score": result.get("score", 0.5),
@@ -642,22 +640,19 @@ Only return the JSON, no other text."""
             "thinking": {"type": "enabled"}  # Enable deep thinking
         }
 
-        async with httpx.AsyncClient(timeout=GLM5_TIMEOUT) as client:
-            resp = await client.post(GLM5_API_URL, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        data = await call_glm5_with_retry(payload)
 
-            # Optional: log reasoning for quality audits
-            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
-            if reasoning:
-                logger.debug(f"[GLM-5 Integrity Detection]: {reasoning[:300]}...")
+        # Optional: log reasoning for quality audits
+        reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+        if reasoning:
+            logger.debug(f"[GLM-5 Integrity Detection]: {reasoning[:300]}...")
 
-            text = data["choices"][0]["message"]["content"].strip()
+        text = data["choices"][0]["message"]["content"].strip()
 
         try:
             result = json.loads(text)
         except json.JSONDecodeError:
-            logger.error(f"[INTEGRITY] Invalid JSON response: {text[:200]}")
+            logger.error(f"[GLM-5] Invalid JSON response: {text[:200]}")
             return {"integrity_score": 0.5, "scores": {}, "flags": ["JSON parse error"]}
 
         integrity_score = result.get("integrity_score", 0.5)
@@ -1033,17 +1028,14 @@ Only return the JSON, no other text."""
             "thinking": {"type": "enabled"}  # Enable deep thinking
         }
 
-        async with httpx.AsyncClient(timeout=GLM5_TIMEOUT) as client:
-            resp = await client.post(GLM5_API_URL, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        data = await call_glm5_with_retry(payload)
 
-            # Optional: log reasoning for quality audits
-            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
-            if reasoning:
-                logger.debug(f"[GLM-5 Fact Extraction]: {reasoning[:300]}...")
+        # Optional: log reasoning for quality audits
+        reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+        if reasoning:
+            logger.debug(f"[GLM-5 Fact Extraction]: {reasoning[:300]}...")
 
-            text = data["choices"][0]["message"]["content"].strip()
+        text = data["choices"][0]["message"]["content"].strip()
 
         # Parse JSON with error handling
         try:
@@ -1054,10 +1046,10 @@ Only return the JSON, no other text."""
             elif isinstance(parsed, list):
                 facts = parsed
             else:
-                logger.warning(f"[DEEPSEEK] Expected list/dict, got {type(parsed)}")
+                logger.warning(f"[GLM-5] Expected list/dict, got {type(parsed)}")
                 facts = []
         except json.JSONDecodeError:
-            logger.error(f"[DEEPSEEK] Invalid JSON response for {source['url']}: {text[:200]}")
+            logger.error(f"[GLM-5] Invalid JSON response for {source['url']}: {text[:200]}")
             return []
 
         # Post-filter: strip metadata that LLMs sometimes extract despite prompt instructions
@@ -1067,15 +1059,15 @@ Only return the JSON, no other text."""
         )
         filtered = [f for f in facts if not _metadata_patterns.search(f.get("fact_text", ""))]
         if len(filtered) < len(facts):
-            logger.info(f"[DEEPSEEK] Filtered {len(facts) - len(filtered)} metadata entries from {source['url']}")
+            logger.info(f"[GLM-5] Filtered {len(facts) - len(filtered)} metadata entries from {source['url']}")
         facts = filtered
 
-        logger.info(f"[DEEPSEEK] Extracted {len(facts)} facts from {source['url']}")
+        logger.info(f"[GLM-5] Extracted {len(facts)} facts from {source['url']}")
 
         return facts
 
     except Exception as e:
-        logger.error(f"[DEEPSEEK] Fact extraction failed for {source['url']}: {e}")
+        logger.error(f"[GLM-5] Fact extraction failed for {source['url']}: {e}")
         return []
 
 

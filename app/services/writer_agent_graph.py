@@ -88,7 +88,14 @@ async def planner_node(state: WriterState) -> dict:
     
     llm = get_claude(0.2).with_structured_output(ArticleOutline)
     outline = await llm.ainvoke([SystemMessage(content=system), HumanMessage(content=prompt)])
-    
+
+    # Warn if planning with zero citations - writer will only be able to write general advice
+    if not state.get("all_citations"):
+        yield_msgs.append({
+            "type": "warning",
+            "message": "Graph: Planning with ZERO citations - writer will only be able to write general advice"
+        })
+
     yield_msgs.append({"type": "debug", "message": f"Graph: Planner mapped {len(outline.sections)} sections."})
     return {"sections_planned": outline.sections, "current_section_idx": 0, "draft_sections": [], "yield_messages": yield_msgs}
 

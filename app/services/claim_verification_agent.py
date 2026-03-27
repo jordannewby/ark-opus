@@ -730,6 +730,21 @@ def detect_unverified_entities(
         name = m.group(1).strip()
         # Only keep standalone names that look like products (not common English words)
         if len(name) >= 4 and name.lower() not in _COMMON_WORDS:
+            # Filter out sentence-starting capitalized words
+            # Look 15 chars before match position for sentence terminators
+            match_start = m.start(1)
+            context_start = max(0, match_start - 15)
+            preceding_context = scan_text[context_start:match_start]
+            if re.search(r'[\.\!\?]\s*$', preceding_context):
+                continue  # Skip - this is likely a sentence-start capitalization
+
+            # Single-word products should appear 2+ times OR be in citation anchors
+            if ' ' not in name and '-' not in name:  # Single word, no hyphens
+                count = len(re.findall(r'\b' + re.escape(name) + r'\b', scan_text))
+                in_citations = any(name.lower() in anchor.lower() for anchor in (citation_anchors or []))
+                if count < 2 and not in_citations:
+                    continue  # Skip - mentioned only once, not in citations = likely not a product
+
             candidates.add(name)
 
     if not candidates:
@@ -803,8 +818,12 @@ _COMMON_WORDS = frozenset({
     "often", "sometimes", "usually", "very", "really", "quite", "rather",
     "here", "there", "then", "than", "both", "each", "every", "either",
     "neither", "most", "much", "many", "more", "some", "such", "other",
+    # Pronouns and common subjects
+    "anyone", "everyone", "someone", "nobody",
+    # Business/professional nouns
+    "client", "clients", "employees", "firms", "users", "customers",
+    "vendors", "companies", "businesses", "organizations", "enterprises", "teams",
     # Common text words that get capitalized at sentence start
-    "companies", "businesses", "organizations", "enterprises", "teams",
     "however", "therefore", "moreover", "furthermore", "meanwhile",
     "according", "because", "although", "while", "since", "until",
     "small", "medium", "large", "first", "second", "third", "next",
@@ -819,7 +838,7 @@ _COMMON_WORDS = frozenset({
     "marketing", "content", "customer", "business", "service",
     "implementation", "integration", "optimization", "performance",
     "research", "report", "study", "survey", "analysis", "finding",
-    # Verbs (capitalized at sentence start, flagged as products)
+    # Action verbs (capitalized at sentence start, flagged as products)
     "build", "keep", "adapt", "fix", "fail", "change", "create", "start",
     "use", "make", "find", "take", "give", "tell", "work", "run", "try",
     "apply", "follow", "include", "provide", "offer", "improve", "test",
@@ -828,12 +847,20 @@ _COMMON_WORDS = frozenset({
     "consider", "suggest", "require", "expect", "allow", "remain",
     "reduce", "avoid", "imagine", "understand", "describe", "explain",
     "generate", "produce", "develop", "design", "define", "measure",
-    # Nouns/adjectives that get sentence-start capitalized
+    "review", "check", "ensure", "focus", "remember", "realize",
+    "document", "schedule", "complete", "block", "install", "prioritize",
+    # Adjectives/quantifiers
+    "several", "various", "numerous", "multiple", "different", "certain",
+    "specific", "particular", "overall", "entire", "lower", "recent",
+    # Nouns that appear in business/tech context
+    "threat", "threats", "recovery", "access", "credential", "confidential",
+    "financial", "restricted", "internal", "public", "classification",
     "advice", "approach", "attempt", "anchor", "audit", "average",
     "blank", "chain", "cleaner", "coding", "complex", "cost",
     "editing", "everyone", "fast", "formula", "missing", "nearly",
     "sounds", "standard", "common", "bad", "simple", "real", "full",
     "long", "clear", "high", "low", "open", "free", "basic",
+    "modern", "smart", "enabled", "assigned", "exposed",
     "human", "model", "prompt", "response", "output", "input",
     "tool", "system", "process", "method", "result", "problem",
     "solution", "answer", "question", "context", "pattern", "task",

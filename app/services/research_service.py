@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
 from mcp import ClientSession
 
+from ..glm_client import call_glm5_with_retry
 from ..models import ResearchCache, NichePlaybook, ResearchRun
 from ..settings import (
     ZAI_API_KEY, GLM5_MODEL, GLM5_API_URL, GLM5_MAX_TOKENS, GLM5_TEMPERATURE, GLM5_TIMEOUT,
@@ -1945,17 +1946,14 @@ class ResearchAgent:
             "thinking": {"type": "enabled"}  # Enable deep thinking mode
         }
 
-        async with httpx.AsyncClient(timeout=GLM5_TIMEOUT) as client:
-            resp = await client.post(GLM5_API_URL, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        data = await call_glm5_with_retry(payload)
 
-            # Log reasoning content for debugging (optional but useful)
-            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
-            if reasoning:
-                logger.debug(f"[GLM-5 Reasoning]: {reasoning[:500]}...")  # Log first 500 chars
+        # Log reasoning content for debugging (optional but useful)
+        reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+        if reasoning:
+            logger.debug(f"[GLM-5 Reasoning]: {reasoning[:500]}...")  # Log first 500 chars
 
-            return data["choices"][0]["message"]["content"]
+        return data["choices"][0]["message"]["content"]
 
     @staticmethod
     def _parse_r1_response(content: str) -> dict:
@@ -2008,17 +2006,12 @@ class ResearchAgent:
             "max_tokens": 500
         }
 
-        async with httpx.AsyncClient(timeout=GLM5_TIMEOUT) as client:
-            try:
-                resp = await client.post(
-                    GLM5_API_URL, headers=headers, json=payload
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                return data["choices"][0]["message"]["content"].strip()
-            except Exception as e:
-                logger.error(f"GLM-5 Error: {e}")
-                return "Could not determine information gap due to an API error."
+        try:
+            data = await call_glm5_with_retry(payload)
+            return data["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            logger.error(f"GLM-5 Error: {e}")
+            return "Could not determine information gap due to an API error."
 
     # ------------------------------------------------------------------
     # Cache Layer

@@ -452,7 +452,15 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 ]
 
                 # Gap 15: Enrich with fact category distribution for psychology agent
-                fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+                # SSL retry for read query (Neon connection may be stale)
+                try:
+                    fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+                except OperationalError:
+                    logger.warning("[SSL-RETRY] FactCitation query (psychology) failed, reconnecting")
+                    db.rollback()
+                    db.close()
+                    db = SessionLocal()
+                    fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
                 if fact_citations:
                     fact_type_counts = {}
                     for fc in fact_citations:
@@ -561,7 +569,15 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 uncited_claims = detect_uncited_claims(article_content, article_claims)
 
                 # Fetch fact citations for this research run
-                run_fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+                # SSL retry for read query (Neon connection may be stale after research phase)
+                try:
+                    run_fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+                except OperationalError:
+                    logger.warning("[SSL-RETRY] FactCitation query failed, reconnecting")
+                    db.rollback()
+                    db.close()
+                    db = SessionLocal()
+                    run_fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
 
                 xref_result = cross_reference_claims(
                     article_claims, run_fact_citations, source_content_map
@@ -731,7 +747,15 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             run_id = research_data_dict.get("research_run_id")
             if run_id:
                 post.research_run_id = run_id
-                research_run = db.get(ResearchRun, run_id)
+                # SSL retry for read query (Neon connection may be stale)
+                try:
+                    research_run = db.get(ResearchRun, run_id)
+                except OperationalError:
+                    logger.warning("[SSL-RETRY] ResearchRun query failed, reconnecting")
+                    db.rollback()
+                    db.close()
+                    db = SessionLocal()
+                    research_run = db.get(ResearchRun, run_id)
                 if research_run:
                     research_run.post_id = post.id
                 try:

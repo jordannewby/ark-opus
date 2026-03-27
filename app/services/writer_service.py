@@ -88,18 +88,60 @@ class WriterService:
         if research_run_id:
             from ..models import FactCitation
             citations = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+
+            logger.info(f"[CITATION-FILTER] Starting with {len(citations)} raw citations from research_run {research_run_id}")
+
             _QUANT_RE = re.compile(r'\d+%|\$\d|percent|\d+\.\d+')
             verified_citations = []
+
+            # Diagnostic counters
+            filtered_unverified = 0
+            filtered_quant_not_checked = 0
+            passed_quant_verified = 0
+            passed_non_quant = 0
+
             for c in citations:
                 if not getattr(c, 'is_verified', True):
+                    filtered_unverified += 1
                     continue
+
                 status = getattr(c, 'verification_status', 'not_checked') or 'not_checked'
                 fact_text = getattr(c, 'fact_text', '') or ''
+
                 # Quantitative claims (stats, percentages, dollar figures) require
                 # strong verification — "not_checked" is insufficient
-                if _QUANT_RE.search(fact_text) and status not in ("corroborated", "trusted"):
-                    continue
+                if _QUANT_RE.search(fact_text):
+                    if status not in ("corroborated", "trusted"):
+                        filtered_quant_not_checked += 1
+                        logger.debug(
+                            f"[CITATION-FILTER] Filtered quantitative citation (status={status}): "
+                            f"{fact_text[:80]}... from {c.source_url}"
+                        )
+                        continue
+                    else:
+                        passed_quant_verified += 1
+                else:
+                    passed_non_quant += 1
+
                 verified_citations.append(c)
+
+            logger.info(
+                f"[CITATION-FILTER] Results: "
+                f"{len(verified_citations)} passed, "
+                f"{filtered_unverified} filtered (is_verified=False), "
+                f"{filtered_quant_not_checked} filtered (quantitative + not verified), "
+                f"{passed_quant_verified} passed (quantitative + verified), "
+                f"{passed_non_quant} passed (non-quantitative)"
+            )
+
+            # If ALL citations were filtered due to verification, log critical warning
+            if citations and not verified_citations:
+                logger.critical(
+                    f"[CITATION-FILTER] ZERO citations passed! All {len(citations)} citations filtered. "
+                    f"This will cause writer to fail. Breakdown: "
+                    f"is_verified=False: {filtered_unverified}, "
+                    f"quantitative+not_checked: {filtered_quant_not_checked}"
+                )
 
             def _usability_weight(c):
                 status = getattr(c, 'verification_status', 'not_checked') or 'not_checked'

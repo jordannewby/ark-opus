@@ -64,6 +64,9 @@ GLM5_API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 GLM5_MAX_TOKENS = 4096
 GLM5_TEMPERATURE = 1.0
 GLM5_TIMEOUT = 120  # Reasoning tasks may take longer
+GLM5_MAX_RETRIES = 3
+GLM5_RETRY_BASE_DELAY = 1  # seconds, exponential backoff: 1s, 2s, 4s
+GLM5_CONCURRENCY_LIMIT = 2  # GLM-5 API allows max 2 simultaneous requests
 
 # Writer tuning
 MAX_WRITER_ATTEMPTS = 5
