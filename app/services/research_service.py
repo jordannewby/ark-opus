@@ -27,14 +27,15 @@ from mcp import ClientSession
 
 from ..models import ResearchCache, NichePlaybook, ResearchRun
 from ..settings import (
-    DEEPSEEK_API_KEY, DEEPSEEK_REASONER_MODEL, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD,
+    DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT,
+    ZAI_API_KEY, GLM5_MODEL, GLM5_API_URL, GLM5_MAX_TOKENS, GLM5_TEMPERATURE, GLM5_TIMEOUT,
+    DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD,
     CACHE_TTL_HOURS, MAX_AGENTIC_ITERATIONS, EXA_NUM_RESULTS,
     EXA_MAX_CHARACTERS, EXA_TIMEOUT, SERP_DEPTH,
-    LOCATION_CODE, LANGUAGE_CODE, DEEPSEEK_TIMEOUT, DEEPSEEK_REASONER_TIMEOUT,
+    LOCATION_CODE, LANGUAGE_CODE,
 )
 
 DATAFORSEO_API_URL = "https://api.dataforseo.com/v3"
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
 ALLOWED_TOOL_CATEGORIES = ["serp", "keyword", "backlink", "on_page"]
 
@@ -470,10 +471,10 @@ class ResearchAgent:
 
                     for loop_count in range(MAX_ITERATIONS):
                         iteration_count += 1
-                        logger.debug(f"\n[DEBUG] === R1 Agentic Loop: Iteration {loop_count + 1}/{MAX_ITERATIONS} ===")
-                        
-                        # Call DeepSeek-R1
-                        r1_response = await self._call_deepseek_r1(messages)
+                        logger.debug(f"\n[DEBUG] === GLM-5 Agentic Loop: Iteration {loop_count + 1}/{MAX_ITERATIONS} ===")
+
+                        # Call GLM-5 Deep Thinking
+                        r1_response = await self._call_glm5_thinking(messages)
 
                         # Show first 500 chars of R1's raw response to diagnose tool skipping
                         logger.debug(f"[DEBUG] R1 raw response (first 500 chars): {r1_response[:500]}")
@@ -628,7 +629,7 @@ class ResearchAgent:
                             f"CIRCUIT BREAKER: You have used {MAX_ITERATIONS} iterations. "
                             "You MUST return your final analysis NOW. Output JSON with an 'information_gap' key."
                         )})
-                        final_response = await self._call_deepseek_r1(messages)
+                        final_response = await self._call_glm5_thinking(messages)
                         final_parsed = self._parse_r1_response(final_response)
                         info_gap_from_loop = final_parsed.get("information_gap", final_response[:500])
                     
@@ -1877,25 +1878,35 @@ class ResearchAgent:
             )
         return prompt
 
-    async def _call_deepseek_r1(self, messages: list[dict]) -> str:
-        """Send messages to DeepSeek-R1 and return raw content string."""
-        if not DEEPSEEK_API_KEY:
-            raise ValueError("DeepSeek API key missing.")
-        
+    async def _call_glm5_thinking(self, messages: list[dict]) -> str:
+        """Send messages to GLM-5 Deep Thinking mode and return content."""
+        if not ZAI_API_KEY:
+            raise ValueError("ZAI_API_KEY is missing.")
+
         headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-            "Content-Type": "application/json"
+            "Authorization": f"Bearer {ZAI_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept-Language": "en-US,en"
         }
         payload = {
-            "model": DEEPSEEK_REASONER_MODEL,
+            "model": GLM5_MODEL,
             "messages": messages,
-            "max_tokens": 4000
+            "max_tokens": GLM5_MAX_TOKENS,
+            "temperature": GLM5_TEMPERATURE,
+            "thinking": {"type": "enabled"}  # Enable deep thinking mode
         }
-        
-        async with httpx.AsyncClient(timeout=DEEPSEEK_REASONER_TIMEOUT) as client:
-            resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
+
+        async with httpx.AsyncClient(timeout=GLM5_TIMEOUT) as client:
+            resp = await client.post(GLM5_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            data = resp.json()
+
+            # Log reasoning content for debugging (optional but useful)
+            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+            if reasoning:
+                logger.debug(f"[GLM-5 Reasoning]: {reasoning[:500]}...")  # Log first 500 chars
+
+            return data["choices"][0]["message"]["content"]
 
     @staticmethod
     def _parse_r1_response(content: str) -> dict:

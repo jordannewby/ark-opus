@@ -22,14 +22,13 @@ from sqlalchemy.orm import Session
 
 from ..models import FactCitation, VerifiedSource
 from ..settings import (
-    DEEPSEEK_API_KEY, DEEPSEEK_REASONER_MODEL, DEEPSEEK_TIMEOUT, DEEPSEEK_REASONER_TIMEOUT,
+    DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT,
+    ZAI_API_KEY, GLM5_MODEL, GLM5_API_URL, GLM5_MAX_TOKENS, GLM5_TEMPERATURE, GLM5_TIMEOUT,
     SOURCE_CREDIBILITY_THRESHOLD, SOURCE_THRESHOLD_DECAY, MAX_VERIFICATION_ITERATIONS,
     BLOG_DOMAIN_PENALTY, BLOG_PATH_PENALTY, UNSOURCED_CLAIMS_PENALTY,
 )
 from ..domain_tiers import get_domain_tier_score
 from .research_service import mcp_call_with_retry
-
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
 logger = logging.getLogger(__name__)
 
@@ -523,21 +522,33 @@ Return JSON:
 
 Only return the JSON, no other text."""
 
-        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {ZAI_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept-Language": "en-US,en"
+        }
         payload = {
-            "model": DEEPSEEK_REASONER_MODEL,
+            "model": GLM5_MODEL,
             "messages": [
                 {"role": "system", "content": "You output valid JSON ONLY."},
                 {"role": "user", "content": prompt}
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0.3,
+            "thinking": {"type": "enabled"}  # Enable deep thinking
         }
 
-        async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
-            resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
+        async with httpx.AsyncClient(timeout=GLM5_TIMEOUT) as client:
+            resp = await client.post(GLM5_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"].strip()
+            data = resp.json()
+
+            # Optional: log reasoning for quality audits
+            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+            if reasoning:
+                logger.debug(f"[GLM-5 Quality Assessment]: {reasoning[:300]}...")
+
+            text = data["choices"][0]["message"]["content"].strip()
 
         # Parse JSON with error handling
         try:
@@ -615,21 +626,33 @@ Return JSON:
 The integrity_score MUST be the average of all 5 dimension scores.
 Only return the JSON, no other text."""
 
-        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {ZAI_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept-Language": "en-US,en"
+        }
         payload = {
-            "model": DEEPSEEK_REASONER_MODEL,
+            "model": GLM5_MODEL,
             "messages": [
                 {"role": "system", "content": "You output valid JSON ONLY."},
                 {"role": "user", "content": prompt}
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0.3,
+            "thinking": {"type": "enabled"}  # Enable deep thinking
         }
 
-        async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
-            resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
+        async with httpx.AsyncClient(timeout=GLM5_TIMEOUT) as client:
+            resp = await client.post(GLM5_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"].strip()
+            data = resp.json()
+
+            # Optional: log reasoning for quality audits
+            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+            if reasoning:
+                logger.debug(f"[GLM-5 Integrity Detection]: {reasoning[:300]}...")
+
+            text = data["choices"][0]["message"]["content"].strip()
 
         try:
             result = json.loads(text)
@@ -994,21 +1017,33 @@ WHAT TO SKIP: Article metadata (dates, "X min read", author info), vague general
 
 Only return the JSON, no other text."""
 
-        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {ZAI_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept-Language": "en-US,en"
+        }
         payload = {
-            "model": DEEPSEEK_REASONER_MODEL,
+            "model": GLM5_MODEL,
             "messages": [
                 {"role": "system", "content": "You output valid JSON ONLY."},
                 {"role": "user", "content": prompt}
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0.3,
+            "thinking": {"type": "enabled"}  # Enable deep thinking
         }
 
-        async with httpx.AsyncClient(timeout=DEEPSEEK_REASONER_TIMEOUT) as client:
-            resp = await client.post(DEEPSEEK_API_URL, headers=headers, json=payload)
+        async with httpx.AsyncClient(timeout=GLM5_TIMEOUT) as client:
+            resp = await client.post(GLM5_API_URL, headers=headers, json=payload)
             resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"].strip()
+            data = resp.json()
+
+            # Optional: log reasoning for quality audits
+            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+            if reasoning:
+                logger.debug(f"[GLM-5 Fact Extraction]: {reasoning[:300]}...")
+
+            text = data["choices"][0]["message"]["content"].strip()
 
         # Parse JSON with error handling
         try:

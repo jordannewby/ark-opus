@@ -24,8 +24,11 @@ DATAFORSEO_LOGIN = get_clean_env("DATAFORSEO_LOGIN")
 DATAFORSEO_PASSWORD = get_clean_env("DATAFORSEO_PASSWORD")
 EXA_API_KEY = get_clean_env("EXA_API_KEY")
 ANTHROPIC_API_KEY = get_clean_env("ANTHROPIC_API_KEY")
+ZAI_API_KEY = get_clean_env("ZAI_API_KEY")
 if not DEEPSEEK_API_KEY:
     raise ValueError("DEEPSEEK_API_KEY is missing.")
+if not ZAI_API_KEY:
+    raise ValueError("ZAI_API_KEY is missing.")
 # Note: DATAFORSEO credentials still loaded for ResearchAgent (SERP tools)
 # Validation removed - source verification no longer requires DataForSEO
 if not EXA_API_KEY:
@@ -54,6 +57,13 @@ LANGUAGE_CODE = "en"
 CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_REASONER_MODEL = "deepseek-reasoner"
+
+# GLM-5 Deep Thinking
+GLM5_MODEL = "glm-5"
+GLM5_API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
+GLM5_MAX_TOKENS = 4096
+GLM5_TEMPERATURE = 1.0
+GLM5_TIMEOUT = 120  # Reasoning tasks may take longer
 
 # Writer tuning
 MAX_WRITER_ATTEMPTS = 5
