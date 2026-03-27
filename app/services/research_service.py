@@ -27,7 +27,6 @@ from mcp import ClientSession
 
 from ..models import ResearchCache, NichePlaybook, ResearchRun
 from ..settings import (
-    DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT,
     ZAI_API_KEY, GLM5_MODEL, GLM5_API_URL, GLM5_MAX_TOKENS, GLM5_TEMPERATURE, GLM5_TIMEOUT,
     DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD,
     CACHE_TTL_HOURS, MAX_AGENTIC_ITERATIONS, EXA_NUM_RESULTS,
@@ -1985,12 +1984,12 @@ class ResearchAgent:
             return {}
 
     async def _analyze_information_gap(self, keyword: str, text_context: str, user_context: str = "") -> str:
-        """Use deepseek-reasoner to find the expert angle Page 1 is currently ignoring."""
-        if not DEEPSEEK_API_KEY:
-            return "DeepSeek API key missing. Cannot generate information gap."
-            
+        """Use GLM-5 Deep Thinking to find the expert angle Page 1 is currently ignoring."""
+        if not ZAI_API_KEY:
+            return "GLM-5 API key missing. Cannot generate information gap."
+
         headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Authorization": f"Bearer {ZAI_API_KEY}",
             "Content-Type": "application/json"
         }
         prompt = (
@@ -2002,23 +2001,23 @@ class ResearchAgent:
             f"DATA:\n{text_context[:4000]}"
         )
         payload = {
-            "model": DEEPSEEK_REASONER_MODEL,
+            "model": GLM5_MODEL,
             "messages": [
                 {"role": "user", "content": prompt}
             ],
             "max_tokens": 500
         }
-        
-        async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
+
+        async with httpx.AsyncClient(timeout=GLM5_TIMEOUT) as client:
             try:
                 resp = await client.post(
-                    DEEPSEEK_API_URL, headers=headers, json=payload
+                    GLM5_API_URL, headers=headers, json=payload
                 )
                 resp.raise_for_status()
                 data = resp.json()
                 return data["choices"][0]["message"]["content"].strip()
             except Exception as e:
-                logger.error(f"DeepSeek Error: {e}")
+                logger.error(f"GLM-5 Error: {e}")
                 return "Could not determine information gap due to an API error."
 
     # ------------------------------------------------------------------

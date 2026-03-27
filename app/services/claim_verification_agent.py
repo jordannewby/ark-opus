@@ -21,7 +21,7 @@ from collections import Counter
 
 import httpx
 
-from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_REASONER_MODEL, EXA_API_KEY, CLAIM_TEXT_SIMILARITY_THRESHOLD, LLM_SOURCE_CONTEXT_CHARS
+from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, EXA_API_KEY, CLAIM_TEXT_SIMILARITY_THRESHOLD, LLM_SOURCE_CONTEXT_CHARS
 from ..domain_tiers import TIER_1_DOMAINS, TIER_2_DOMAINS, get_domain_tier_score
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"

@@ -17,7 +17,7 @@
 - **Async mandatory** — all HTTP clients and generation calls must use async/await
 - **Pydantic-first** — validate at every agent boundary via `app/schemas.py`
 - **Multi-tenant** — all DB queries must filter by `profile_name`; cache uses composite key `(keyword, profile_name, niche)`
-- **LLM routing** — DeepSeek via httpx (`deepseek-chat` for briefing/feedback/intel, `deepseek-reasoner` for research/verification/cartographer); Anthropic Claude Sonnet 4 (`claude-sonnet-4-20250514`) for writer via `langchain-anthropic`
+- **LLM routing** — GLM-5 via httpx (`glm-5` for research/verification); DeepSeek via httpx (`deepseek-chat` for briefing/feedback/intel, `deepseek-reasoner` for cartographer); Anthropic Claude Sonnet 4 (`claude-sonnet-4-20250514`) for writer via `langchain-anthropic`
 - **SSL retry** — post-generation `db.commit()` in `event_generator()` uses `nonlocal db` + `OperationalError` catch to get fresh `SessionLocal()` if Neon drops connection
 - **No fake assets / no fabricated data** — writer prompt bans invented templates, tools, stats; must use only verified citation map facts
 - **Prompt files read-only** — never modify `app/services/prompts/*.md` without explicit approval
