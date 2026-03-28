@@ -289,7 +289,7 @@ EXA_INCLUDE_DOMAINS = {
     ],
 }
 
-# Native Exa tools injected alongside MCP tools into DeepSeek-R1's tool array
+# Native Exa tools injected alongside MCP tools into GLM-5's tool array
 EXA_NATIVE_TOOLS = [
     {
         "name": "exa_scout_search",
@@ -385,7 +385,7 @@ async def mcp_call_with_retry(session, tool_name: str, arguments: dict, max_retr
 
 
 class ResearchAgent:
-    """Gathers SEO research data for a keyword using DataForSEO MCP Server and DeepSeek-R1."""
+    """Gathers SEO research data for a keyword using DataForSEO MCP Server and GLM-5."""
 
     def __init__(self, db: Session):
         self.db = db
@@ -408,7 +408,7 @@ class ResearchAgent:
             logger.debug(f"[DEBUG] Cache Hit! Returning data for {keyword}")
             return cached
         
-        # Step B: Exa discovery is now handled by R1 via native tools (Scout & Extract)
+        # Step B: Exa discovery is now handled by GLM-5via native tools (Scout & Extract)
         exa_results = []
         exa_score_map = {}  # Map URL -> {exa_score, published_date} from scout searches for later merge
 
@@ -442,7 +442,7 @@ class ResearchAgent:
                             "inputSchema": tool.inputSchema
                         })
                         
-                        # Aggressively strip webhook noise from the schema to prevent R1 cognitive overload
+                        # Aggressively strip webhook noise from the schema to prevent GLM-5cognitive overload
                         clean_schema = ResearchAgent._strip_webhook_noise(tool.inputSchema)
                         
                         simplified_tools.append({
@@ -459,7 +459,7 @@ class ResearchAgent:
                 
                 # ================================================================
                 # ITERATIVE AGENTIC TOOL LOOP (Scout & Extract Architecture)
-                # R1 selects tools, we execute, feed results back. Max 5 iterations.
+                # GLM-5selects tools, we execute, feed results back. Max 5 iterations.
                 # ================================================================
                 mcp_results = {}
                 info_gap_from_loop = None
@@ -479,29 +479,29 @@ class ResearchAgent:
                         logger.debug(f"\n[DEBUG] === GLM-5 Agentic Loop: Iteration {loop_count + 1}/{MAX_ITERATIONS} ===")
 
                         # Call GLM-5 Deep Thinking
-                        r1_response = await self._call_glm5_thinking(messages)
+                        glm_response = await self._call_glm5_thinking(messages)
 
-                        # Show first 500 chars of R1's raw response to diagnose tool skipping
-                        logger.debug(f"[DEBUG] R1 raw response (first 500 chars): {r1_response[:500]}")
+                        # Show first 500 chars of GLM-5's raw response to diagnose tool skipping
+                        logger.debug(f"[DEBUG] GLM-5raw response (first 500 chars): {glm_response[:500]}")
 
                         # Parse the response for tool_calls vs final analysis
-                        parsed = self._parse_r1_response(r1_response)
+                        parsed = self._parse_glm_response(glm_response)
                         tool_calls = parsed.get("tool_calls", [])
                         
-                        # If R1 returned an information_gap, it's done researching
+                        # If GLM-5returned an information_gap, it's done researching
                         if parsed.get("information_gap"):
                             # Capture full expanded research output (unique_angles, competitor_weaknesses, etc.)
                             if any(k in parsed for k in ["unique_angles", "competitor_weaknesses", "data_points", "practitioner_insights"]):
                                 info_gap_from_loop = parsed  # Full dict with all fields
                             else:
                                 info_gap_from_loop = parsed["information_gap"]  # Legacy string format
-                            logger.debug(f"[DEBUG] R1 produced Information Gap. Exiting loop.")
+                            logger.debug(f"[DEBUG] GLM-5produced Information Gap. Exiting loop.")
                             break
                         
-                        # If no tool_calls and no info_gap, R1 is confused — force final output
+                        # If no tool_calls and no info_gap, GLM-5is confused — force final output
                         if not tool_calls:
-                            logger.debug(f"[DEBUG] R1 returned no tool_calls and no info_gap. Forcing final output.")
-                            messages.append({"role": "assistant", "content": r1_response})
+                            logger.debug(f"[DEBUG] GLM-5returned no tool_calls and no info_gap. Forcing final output.")
+                            messages.append({"role": "assistant", "content": glm_response})
                             messages.append({"role": "user", "content": (
                                 "You did not request any tools or provide an information_gap. "
                                 "Please output your final analysis NOW using the data you have. "
@@ -509,8 +509,8 @@ class ResearchAgent:
                             )})
                             continue
                         
-                        # Append R1's response to history
-                        messages.append({"role": "assistant", "content": r1_response})
+                        # Append GLM-5's response to history
+                        messages.append({"role": "assistant", "content": glm_response})
                         
                         # Execute each tool call with three-way routing
                         tool_results_text = []
@@ -601,7 +601,7 @@ class ResearchAgent:
                                     elif "on_page" in t_name:
                                         mcp_results["on_page"] = res
                                     
-                                    # Feed truncated result back to R1
+                                    # Feed truncated result back to GLM-5
                                     res_text = res.content[0].text if res and res.content else "{}"
                                     tool_results_text.append(
                                         f"TOOL RESULT [{t_name}]:\n{res_text[:4000]}"
@@ -612,13 +612,13 @@ class ResearchAgent:
                                     )
                             else:
                                 # --- Route C: Hallucinated Tool ---
-                                logger.debug(f"[DEBUG-HALLUCINATION] R1 called non-existent tool: {t_name}")
+                                logger.debug(f"[DEBUG-HALLUCINATION] GLM-5called non-existent tool: {t_name}")
                                 tool_results_text.append(
                                     f"TOOL RESULT [{t_name}]: ERROR — Tool '{t_name}' does not exist. "
                                     f"Please evaluate your strategy and use only the provided tools."
                                 )
                         
-                        # Feed all tool results back to R1 for next iteration
+                        # Feed all tool results back to GLM-5for next iteration
                         combined_results = "\n\n".join(tool_results_text)
                         messages.append({"role": "user", "content": (
                             f"Here are the results from your requested tools:\n\n{combined_results}\n\n"
@@ -635,7 +635,7 @@ class ResearchAgent:
                             "You MUST return your final analysis NOW. Output JSON with an 'information_gap' key."
                         )})
                         final_response = await self._call_glm5_thinking(messages)
-                        final_parsed = self._parse_r1_response(final_response)
+                        final_parsed = self._parse_glm_response(final_response)
                         info_gap_from_loop = final_parsed.get("information_gap", final_response[:500])
                     
                 except Exception as e:
@@ -720,9 +720,9 @@ class ResearchAgent:
         long_tail_text = long_tail.content[0].text if long_tail and hasattr(long_tail, 'content') and long_tail.content else None
 
         # Step E: Use Information Gap from iterative loop, or fallback to dedicated analysis
-        # R1 now returns an expanded dict with multiple keys, not just a string
+        # GLM-5now returns an expanded dict with multiple keys, not just a string
         if info_gap_from_loop:
-            # Try to parse as JSON if it's a string (R1 sometimes returns stringified JSON)
+            # Try to parse as JSON if it's a string (GLM-5 sometimes returns stringified JSON)
             if isinstance(info_gap_from_loop, str):
                 try:
                     parsed_gap = json.loads(info_gap_from_loop)
@@ -744,7 +744,7 @@ class ResearchAgent:
             }))
             info_gap = await self._analyze_information_gap(keyword, compiled_text, user_context)
 
-        # Extract real on_page and backlink data from MCP results (if R1 gathered them)
+        # Extract real on_page and backlink data from MCP results (if GLM-5gathered them)
         on_page_data = mcp_results.get("on_page")
         on_page_text = on_page_data.content[0].text if on_page_data and hasattr(on_page_data, 'content') and on_page_data.content else None
         real_on_page = {}
@@ -763,13 +763,13 @@ class ResearchAgent:
             except Exception:
                 real_backlinks = {"raw": backlink_text[:2000]}
 
-        # Parse expanded info gap fields from R1's final output
+        # Parse expanded info gap fields from GLM-5's final output
         unique_angles = []
         competitor_weaknesses = []
         data_points = []
         practitioner_insights = []
         if isinstance(info_gap, dict):
-            # R1 returned the new expanded format
+            # GLM-5returned the new expanded format
             unique_angles = info_gap.get("unique_angles", [])
             competitor_weaknesses = info_gap.get("competitor_weaknesses", [])
             data_points = info_gap.get("data_points", [])
@@ -916,7 +916,7 @@ class ResearchAgent:
         Two-step Full-Text Audit via Exa.ai Neural Search:
         1. Search: Find top 5 elite articles via neural search
         2. Extract: Fetch full article text via get_contents(ids)
-        Returns truncated full-text for DeepSeek-R1 Information Gap analysis.
+        Returns truncated full-text for GLM-5 Information Gap analysis.
         """
         from ..settings import EXA_API_KEY
         if not EXA_API_KEY:
@@ -1000,7 +1000,7 @@ class ResearchAgent:
                 contents_resp.raise_for_status()
                 contents_data = contents_resp.json()
                 
-                # --- Step 3: Format & Truncate for DeepSeek-R1 context efficiency ---
+                # --- Step 3: Format & Truncate for GLM-5 context efficiency ---
                 elite_articles = []
                 for article in contents_data.get("results", []):
                     full_text = article.get("text", "")
@@ -1266,7 +1266,7 @@ class ResearchAgent:
     ) -> list[dict]:
         """
         Native tool: Lightweight Exa.ai neural search with quality filters.
-        Returns only id/title/url/snippet to keep R1 token usage low.
+        Returns only id/title/url/snippet to keep GLM-5token usage low.
 
         Args:
             query: Natural language search query
@@ -1866,7 +1866,7 @@ class ResearchAgent:
     # ------------------------------------------------------------------
 
     def _build_agentic_prompt(self, keyword: str, available_tools: list[dict], user_context: str = "", niche: str = "default", niche_intel: str | None = None) -> str:
-        """Build the initial system prompt for the iterative R1 agentic loop."""
+        """Build the initial system prompt for the iterative GLM-5agentic loop."""
         niche_hint = f" in the {niche} niche" if niche != "default" else ""
 
         # Build niche-specific Exa.ai domain filters via shared helper
@@ -1962,9 +1962,9 @@ class ResearchAgent:
         return data["choices"][0]["message"]["content"]
 
     @staticmethod
-    def _parse_r1_response(content: str) -> dict:
+    def _parse_glm_response(content: str) -> dict:
         """
-        Parse DeepSeek-R1's response into structured JSON.
+        Parse GLM-5's response into structured JSON.
         Handles <think> blocks, markdown code fences, and raw JSON.
         """
         # Strip <think> reasoning blocks
