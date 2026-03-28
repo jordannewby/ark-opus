@@ -1118,3 +1118,206 @@ window.addEventListener('resize', () => {
         }
     }
 });
+
+// ===========================================================================
+// Settings Panel
+// ===========================================================================
+const settingsEls = {
+    modal: document.getElementById('settings-modal'),
+    backdrop: document.getElementById('settings-backdrop'),
+    panel: document.getElementById('settings-panel'),
+    openBtn: document.getElementById('open-settings-btn'),
+    closeBtn: document.getElementById('close-settings-btn'),
+    container: document.getElementById('settings-container'),
+    saveBtn: document.getElementById('save-settings-btn'),
+    status: document.getElementById('settings-status'),
+};
+
+let settingsCache = {};       // Current merged settings from API
+let settingsConfigurable = {}; // Metadata (type, min, max, choices, label, tooltip)
+let settingsDirty = {};       // Only changed values
+
+function toggleSettings(show) {
+    if (!settingsEls.modal) return;
+    if (show) {
+        settingsEls.modal.classList.remove('hidden');
+        setTimeout(() => {
+            settingsEls.backdrop.classList.remove('opacity-0');
+            settingsEls.panel.classList.remove('translate-x-full');
+        }, 10);
+        loadSettings();
+    } else {
+        settingsEls.backdrop.classList.add('opacity-0');
+        settingsEls.panel.classList.add('translate-x-full');
+        setTimeout(() => settingsEls.modal.classList.add('hidden'), 500);
+    }
+}
+
+async function loadSettings() {
+    const container = settingsEls.container;
+    if (!container) return;
+    container.innerHTML = '<div class="text-slate-500 text-xs text-center mono-text animate-pulse py-10">Loading settings...</div>';
+
+    const profile = els.profileSelect ? els.profileSelect.value : 'default';
+    try {
+        const res = await fetch('/settings?profile_name=' + encodeURIComponent(profile));
+        const data = await res.json();
+        settingsCache = data.settings || {};
+        settingsConfigurable = data.configurable || {};
+        settingsDirty = {};
+        renderSettings();
+    } catch (e) {
+        container.innerHTML = '<div class="text-red-400/60 text-xs text-center p-10">Failed to load settings.</div>';
+    }
+}
+
+function renderSettings() {
+    const container = settingsEls.container;
+    if (!container) return;
+    container.innerHTML = '';
+
+    const keys = Object.keys(settingsConfigurable);
+    // Group: booleans first, then sliders, then dropdowns
+    const bools = keys.filter(k => settingsConfigurable[k].type === 'bool');
+    const sliders = keys.filter(k => settingsConfigurable[k].type !== 'bool' && !settingsConfigurable[k].choices);
+    const dropdowns = keys.filter(k => settingsConfigurable[k].choices);
+
+    const ordered = [...bools, ...sliders, ...dropdowns];
+
+    for (const key of ordered) {
+        const meta = settingsConfigurable[key];
+        const val = settingsDirty.hasOwnProperty(key) ? settingsDirty[key] : settingsCache[key];
+
+        const row = document.createElement('div');
+        row.className = 'setting-row';
+
+        const labelGroup = document.createElement('div');
+        labelGroup.className = 'setting-label-group';
+
+        const label = document.createElement('span');
+        label.className = 'setting-label';
+        label.textContent = meta.label || key;
+        labelGroup.appendChild(label);
+
+        if (meta.tooltip) {
+            const info = document.createElement('span');
+            info.className = 'info-tooltip';
+            info.setAttribute('data-tooltip', meta.tooltip);
+            info.textContent = '\u24D8';
+            labelGroup.appendChild(info);
+        }
+
+        row.appendChild(labelGroup);
+
+        if (meta.type === 'bool') {
+            const toggle = document.createElement('div');
+            toggle.className = 'toggle-switch' + (val ? ' active' : '');
+            toggle.addEventListener('click', () => {
+                const newVal = !toggle.classList.contains('active');
+                toggle.classList.toggle('active', newVal);
+                settingsDirty[key] = newVal;
+                updateSaveState();
+            });
+            row.appendChild(toggle);
+        } else if (meta.choices) {
+            const select = document.createElement('select');
+            select.className = 'setting-select';
+            for (const choice of meta.choices) {
+                const opt = document.createElement('option');
+                opt.value = choice;
+                opt.textContent = choice;
+                if (choice == val) opt.selected = true;
+                select.appendChild(opt);
+            }
+            select.addEventListener('change', () => {
+                settingsDirty[key] = meta.type === 'int' ? parseInt(select.value) : parseFloat(select.value);
+                updateSaveState();
+            });
+            row.appendChild(select);
+        } else {
+            // Slider
+            const sliderWrap = document.createElement('div');
+            sliderWrap.style.display = 'flex';
+            sliderWrap.style.alignItems = 'center';
+            sliderWrap.style.gap = '8px';
+
+            const slider = document.createElement('input');
+            slider.type = 'range';
+            slider.className = 'setting-slider';
+            slider.min = meta.min;
+            slider.max = meta.max;
+            slider.step = meta.type === 'float' ? '0.5' : '1';
+            slider.value = val;
+
+            const valLabel = document.createElement('span');
+            valLabel.className = 'text-xs mono-text text-[#8B8B93]';
+            valLabel.style.minWidth = '32px';
+            valLabel.style.textAlign = 'right';
+            valLabel.textContent = val;
+
+            slider.addEventListener('input', () => {
+                const newVal = meta.type === 'float' ? parseFloat(slider.value) : parseInt(slider.value);
+                valLabel.textContent = newVal;
+                settingsDirty[key] = newVal;
+                updateSaveState();
+            });
+
+            sliderWrap.appendChild(slider);
+            sliderWrap.appendChild(valLabel);
+            row.appendChild(sliderWrap);
+        }
+
+        container.appendChild(row);
+    }
+    updateSaveState();
+}
+
+function updateSaveState() {
+    const hasChanges = Object.keys(settingsDirty).length > 0;
+    if (settingsEls.saveBtn) {
+        settingsEls.saveBtn.disabled = !hasChanges;
+        settingsEls.saveBtn.style.opacity = hasChanges ? '1' : '0.4';
+    }
+    if (settingsEls.status) {
+        settingsEls.status.textContent = hasChanges ? 'Unsaved changes' : '';
+    }
+}
+
+async function saveSettings() {
+    if (Object.keys(settingsDirty).length === 0) return;
+    const profile = els.profileSelect ? els.profileSelect.value : 'default';
+
+    if (settingsEls.status) settingsEls.status.textContent = 'Saving...';
+    if (settingsEls.saveBtn) settingsEls.saveBtn.disabled = true;
+
+    try {
+        const res = await fetch('/settings?profile_name=' + encodeURIComponent(profile), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(settingsDirty),
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Save failed');
+        }
+        const data = await res.json();
+        settingsCache = data.settings || {};
+        settingsDirty = {};
+        renderSettings();
+        if (settingsEls.status) {
+            settingsEls.status.textContent = 'Saved';
+            setTimeout(() => { if (settingsEls.status) settingsEls.status.textContent = ''; }, 2000);
+        }
+    } catch (e) {
+        if (settingsEls.status) settingsEls.status.textContent = 'Error: ' + e.message;
+        if (settingsEls.saveBtn) {
+            settingsEls.saveBtn.disabled = false;
+            settingsEls.saveBtn.style.opacity = '1';
+        }
+    }
+}
+
+if (settingsEls.openBtn) settingsEls.openBtn.addEventListener('click', () => toggleSettings(true));
+if (settingsEls.closeBtn) settingsEls.closeBtn.addEventListener('click', () => toggleSettings(false));
+if (settingsEls.backdrop) settingsEls.backdrop.addEventListener('click', () => toggleSettings(false));
+if (settingsEls.saveBtn) settingsEls.saveBtn.addEventListener('click', saveSettings);

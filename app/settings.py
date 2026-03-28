@@ -80,14 +80,114 @@ MAX_VERIFICATION_ITERATIONS = 3
 # Claim verification
 MAX_EXA_FACT_CHECKS = 15
 MAX_LLM_VERIFICATIONS = 10
-CLAIM_TEXT_SIMILARITY_THRESHOLD = 0.2
+CLAIM_TEXT_SIMILARITY_THRESHOLD = 0.45
 LLM_SOURCE_CONTEXT_CHARS = 5000
 MAX_UNCITED_CLAIMS = 0
+CLAIM_NUMBER_CONTEXT_WORDS = 3  # Min shared context words for number matching (was 2)
+
+# Source rescue bonus
+RESCUE_SERP_TOP5_BONUS = 5.0     # Was 10 — halved to prevent SERP-only rescues
+RESCUE_SERP_TOP10_BONUS = 3.0    # Was 7
+RESCUE_SERP_TOP20_BONUS = 1.0    # Was 4
+RESCUE_MAX_BONUS = 10.0          # Was 15 — cap total rescue contribution
+RESCUE_MIN_SCORE = 38.0          # Was 35 — narrows the rescue eligibility window
 
 # Source credibility penalties
 BLOG_DOMAIN_PENALTY = 10.0        # pts deducted for blog.* subdomains
 BLOG_PATH_PENALTY = 5.0           # pts deducted for /blog/ in URL path
 UNSOURCED_CLAIMS_PENALTY = 15.0   # pts deducted for Tier 0 with claim_sourcing < 0.4
 
+# Database pool
+DB_POOL_RECYCLE = 240  # seconds — safely under Neon's 5-min idle timeout
+
+# Claim gate enforcement
+CLAIM_GATE_HARD_BLOCK = True  # Block article save when claim verification fails after retries
+VERIFY_QUALITATIVE_CLAIMS = True  # Verify qualitative claims (research shows, according to, etc.)
+
 # Feedback
 RULE_CONSOLIDATION_THRESHOLD = 20
+
+# ── User-Configurable Settings Registry ──────────────────────────────
+# Each entry defines type, default, bounds/choices, and UI metadata.
+# The GET /settings endpoint returns this so the frontend renders dynamically.
+CONFIGURABLE_SETTINGS = {
+    "claim_gate_hard_block": {
+        "type": "bool", "default": CLAIM_GATE_HARD_BLOCK,
+        "label": "Strict Fact-Check Mode",
+        "tooltip": "When ON, articles are blocked from saving if claim verification fails. Turn OFF to allow draft previews even with unverified claims.",
+    },
+    "verify_qualitative_claims": {
+        "type": "bool", "default": VERIFY_QUALITATIVE_CLAIMS,
+        "label": "Verify Soft Claims",
+        "tooltip": "Check qualitative claims like 'research shows' and 'according to experts.' Turn OFF for opinion or editorial content.",
+    },
+    "dataforseo_content_analysis_enabled": {
+        "type": "bool", "default": DATAFORSEO_CONTENT_ANALYSIS_ENABLED,
+        "label": "Content Analysis (DataForSEO)",
+        "tooltip": "Enable advanced content analysis during research. Adds depth but uses additional API credits.",
+    },
+    "debug_mode": {
+        "type": "bool", "default": DEBUG_MODE,
+        "label": "Debug Events",
+        "tooltip": "Show detailed engine events in the generation stream. Useful for troubleshooting but noisy for normal use.",
+    },
+    "source_credibility_threshold": {
+        "type": "float", "default": SOURCE_CREDIBILITY_THRESHOLD, "min": 35.0, "max": 75.0,
+        "label": "Source Trust Threshold",
+        "tooltip": "Minimum credibility score (out of 100) a source must reach. Higher = stricter, fewer citations. Lower = broader coverage.",
+    },
+    "exa_num_results": {
+        "type": "int", "default": EXA_NUM_RESULTS, "min": 5, "max": 25,
+        "label": "Research Depth",
+        "tooltip": "How many sources to pull per search. More = deeper research but slower and costs more.",
+    },
+    "max_agentic_iterations": {
+        "type": "int", "default": MAX_AGENTIC_ITERATIONS, "min": 2, "max": 10,
+        "label": "Research Rounds",
+        "tooltip": "Maximum research iterations before stopping. More rounds = more thorough but takes longer.",
+    },
+    "cache_ttl_hours": {
+        "type": "int", "default": CACHE_TTL_HOURS, "choices": [1, 6, 24, 72],
+        "label": "Cache Freshness",
+        "tooltip": "How long to reuse previous research before fetching new data. Shorter = always fresh. Longer = faster repeats.",
+    },
+    "writer_max_tokens": {
+        "type": "int", "default": WRITER_MAX_TOKENS, "choices": [4096, 8192, 12288, 16384],
+        "label": "Max Article Length",
+        "tooltip": "Upper limit on article length (in tokens). ~4096 = short post, ~16384 = long-form guide.",
+    },
+    "max_writer_attempts": {
+        "type": "int", "default": MAX_WRITER_ATTEMPTS, "min": 1, "max": 10,
+        "label": "Writer Retry Limit",
+        "tooltip": "How many times the writer retries if quality checks fail. More retries = better odds but costs more.",
+    },
+}
+
+
+def resolve_settings(profile_settings_row, configurable=CONFIGURABLE_SETTINGS) -> dict:
+    """
+    Merge DB overrides with hardcoded defaults.
+
+    Args:
+        profile_settings_row: A ProfileSettings ORM object (or None).
+        configurable: The CONFIGURABLE_SETTINGS registry.
+
+    Returns:
+        dict with all configurable keys resolved (DB override or default).
+    """
+    import json as _json
+    defaults = {k: v["default"] for k, v in configurable.items()}
+
+    if not profile_settings_row:
+        return defaults
+
+    try:
+        overrides = _json.loads(profile_settings_row.settings_json)
+    except (ValueError, TypeError):
+        return defaults
+
+    merged = dict(defaults)
+    for key, val in overrides.items():
+        if key in configurable:
+            merged[key] = val
+    return merged

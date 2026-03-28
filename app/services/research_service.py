@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
 from mcp import ClientSession
 
+from ..database import ensure_db_alive
 from ..glm_client import call_glm5_with_retry
 from ..models import ResearchCache, NichePlaybook, ResearchRun
 from ..settings import (
@@ -391,15 +392,19 @@ class ResearchAgent:
         if not DATAFORSEO_LOGIN or not DATAFORSEO_PASSWORD:
             raise ValueError("DataForSEO credentials missing from environment.")
 
-    async def research(self, keyword: str, niche: str = "default", user_context: str = "", profile_name: str = "default", mcp_session=None) -> dict:
+    async def research(self, keyword: str, niche: str = "default", user_context: str = "", profile_name: str = "default", mcp_session=None, settings_override: dict | None = None) -> dict:
         """Run full research pipeline for *keyword* via localized MCP server."""
         niche = niche.strip().lower().replace(" ", "-") if niche and niche != "default" else "default"
         cached = self._get_cached(keyword, profile_name, niche)
-        
+
         from ..settings import DEBUG_MODE
-        
+        _debug = settings_override.get("debug_mode", DEBUG_MODE) if settings_override else DEBUG_MODE
+        _exa_num = settings_override.get("exa_num_results", EXA_NUM_RESULTS) if settings_override else EXA_NUM_RESULTS
+        _max_iter = settings_override.get("max_agentic_iterations", MAX_AGENTIC_ITERATIONS) if settings_override else MAX_AGENTIC_ITERATIONS
+        _cache_ttl = settings_override.get("cache_ttl_hours", CACHE_TTL_HOURS) if settings_override else CACHE_TTL_HOURS
+
         # Bypass cache if DEBUG_MODE is True or if user provided customized context
-        if cached is not None and not user_context and not DEBUG_MODE:
+        if cached is not None and not user_context and not _debug:
             logger.debug(f"[DEBUG] Cache Hit! Returning data for {keyword}")
             return cached
         
@@ -458,7 +463,7 @@ class ResearchAgent:
                 # ================================================================
                 mcp_results = {}
                 info_gap_from_loop = None
-                MAX_ITERATIONS = MAX_AGENTIC_ITERATIONS
+                MAX_ITERATIONS = _max_iter
                 iteration_count = 0
 
                 niche_intel = self._get_niche_playbook(niche, profile_name)
@@ -521,7 +526,7 @@ class ResearchAgent:
                                         exa_queries_log.append(t_args.get("query", keyword))
                                         native_result = await self.exa_scout_search(
                                             query=t_args.get("query", keyword),
-                                            num_results=t_args.get("num_results", EXA_NUM_RESULTS),
+                                            num_results=t_args.get("num_results", _exa_num),
                                             include_domains=t_args.get("include_domains"),
                                             exclude_domains=t_args.get("exclude_domains", EXA_EXCLUDE_DOMAINS),
                                             start_published_date=t_args.get("start_published_date"),
@@ -1693,6 +1698,7 @@ class ResearchAgent:
             info_gap_text=info_gap[:500] if info_gap else None,
             competitor_count=competitor_count,
         )
+        self.db = ensure_db_alive(self.db)
         self.db.add(run)
         self.db.commit()
 
@@ -2043,6 +2049,7 @@ class ResearchAgent:
 
     def _save_cache(self, keyword: str, profile_name: str, niche: str, result: dict) -> None:
         """Upsert research result into the cache table."""
+        self.db = ensure_db_alive(self.db)
         row = (
             self.db.query(ResearchCache)
             .filter(
@@ -2063,7 +2070,7 @@ class ResearchAgent:
                 profile_name=profile_name,
                 niche=niche,
                 result_json=payload,
-                cache_ttl_hours=CACHE_TTL_HOURS,
+                cache_ttl_hours=_cache_ttl,
             )
             self.db.add(row)
 

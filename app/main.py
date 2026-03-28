@@ -20,15 +20,16 @@ from contextlib import asynccontextmanager, AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from sqlalchemy.exc import OperationalError, InvalidRequestError, PendingRollbackError
-from .database import Base, engine, get_db, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, migrate_domain_credibility_cache, migrate_fact_verification, migrate_style_rule_archive, SessionLocal
-from .models import Post, ResearchRun, UserStyleRule, Workspace, WriterRun, FactCitation
+from .database import Base, engine, get_db, ensure_db_alive, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, migrate_domain_credibility_cache, migrate_fact_verification, migrate_style_rule_archive, migrate_writer_verification_telemetry, migrate_profile_settings, SessionLocal
+from .models import Post, ProfileSettings, ResearchRun, UserStyleRule, Workspace, WriterRun, FactCitation
 from .schemas import (
     BlueprintResponse,
     GenerateFullResponse,
     PostCreate,
     PostResponse,
     PostUpdate,
+    ProfileSettingsUpdate,
+    ProfileSettingsResponse,
     ResearchResponse,
     StyleRuleCreate,
     StyleRuleResponse,
@@ -51,6 +52,8 @@ migrate_fact_consensus()
 migrate_domain_credibility_cache()
 migrate_fact_verification()
 migrate_style_rule_archive()
+migrate_writer_verification_telemetry()
+migrate_profile_settings()
 Base.metadata.create_all(bind=engine)
 
 def normalize_niche(niche: str | None) -> str:
@@ -277,16 +280,76 @@ async def clarify_intent(keyword: str):
     questions = await agent.get_clarifying_questions(keyword)
     return {"questions": questions}
 
+# --- Settings Endpoints ---
+
+@app.get("/settings", response_model=ProfileSettingsResponse)
+def get_settings(profile_name: str = "default", db: Session = Depends(get_db)):
+    from .settings import CONFIGURABLE_SETTINGS, resolve_settings
+    row = db.query(ProfileSettings).filter_by(profile_name=profile_name).first()
+    merged = resolve_settings(row)
+    return ProfileSettingsResponse(
+        profile_name=profile_name,
+        settings=merged,
+        configurable=CONFIGURABLE_SETTINGS,
+    )
+
+@app.put("/settings", response_model=ProfileSettingsResponse)
+def update_settings(payload: ProfileSettingsUpdate, profile_name: str = "default", db: Session = Depends(get_db)):
+    import json as _json
+    from .settings import CONFIGURABLE_SETTINGS, resolve_settings
+
+    # Validate bounds/choices
+    updates = payload.model_dump(exclude_none=True)
+    for key, val in updates.items():
+        meta = CONFIGURABLE_SETTINGS.get(key)
+        if not meta:
+            raise HTTPException(status_code=422, detail=f"Unknown setting: {key}")
+        if "choices" in meta and val not in meta["choices"]:
+            raise HTTPException(status_code=422, detail=f"{key} must be one of {meta['choices']}")
+        if "min" in meta and val < meta["min"]:
+            raise HTTPException(status_code=422, detail=f"{key} must be >= {meta['min']}")
+        if "max" in meta and val > meta["max"]:
+            raise HTTPException(status_code=422, detail=f"{key} must be <= {meta['max']}")
+
+    row = db.query(ProfileSettings).filter_by(profile_name=profile_name).first()
+    if row:
+        existing = {}
+        try:
+            existing = _json.loads(row.settings_json)
+        except (ValueError, TypeError):
+            pass
+        existing.update(updates)
+        row.settings_json = _json.dumps(existing)
+    else:
+        row = ProfileSettings(
+            profile_name=profile_name,
+            settings_json=_json.dumps(updates),
+        )
+        db.add(row)
+    db.commit()
+
+    merged = resolve_settings(row)
+    return ProfileSettingsResponse(
+        profile_name=profile_name,
+        settings=merged,
+        configurable=CONFIGURABLE_SETTINGS,
+    )
+
+
 @app.post("/generate/{keyword:path}")
 async def generate_article(keyword: str, payload: GeneratePayload, request: Request, db: Session = Depends(get_db)):
     from .services.psychology_agent import PsychologyAgent
     from .services.writer_service import WriterService
-    from .settings import DEBUG_MODE
+    from .settings import CONFIGURABLE_SETTINGS, resolve_settings
     import time
     import traceback
 
     niche = payload.niche
     context = payload.context
+
+    # Resolve per-profile runtime settings (DB overrides + defaults)
+    settings_row = db.query(ProfileSettings).filter_by(profile_name=payload.profile_name).first()
+    runtime = resolve_settings(settings_row)
 
     logger.info(f"[ARES] Starting unified generation for: {keyword} (niche: {niche})")
 
@@ -294,7 +357,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
         nonlocal db
         start_time = time.time()
         try:
-            if DEBUG_MODE:
+            if runtime["debug_mode"]:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Initializing Generation Sequence. Context: {bool(context)}'})}\n\n"
             # Phase 1
             yield f"data: {json.dumps({'event': 'phase1_start', 'message': 'Gathering intelligence and analyzing context...'})}\n\n"
@@ -307,18 +370,19 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                         niche=niche,
                         user_context=context,
                         profile_name=payload.profile_name,
-                        mcp_session=request.app.state.mcp_session
+                        mcp_session=request.app.state.mcp_session,
+                        settings_override=runtime,
                     ),
                     timeout=300
                 )
             except asyncio.TimeoutError:
                 yield f"data: {json.dumps({'event': 'error', 'message': 'Research phase timed out after 5 minutes. Try a more specific keyword or check your API connections.'})}\n\n"
                 return
-            if DEBUG_MODE:
+            if runtime["debug_mode"]:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1 (DeepSeek-R1 + MCP) completed in {round(time.time() - p1_start, 2)}s'})}\n\n"
             
             tools_used = research_data_dict.get("executed_tools", [])
-            if DEBUG_MODE and tools_used:
+            if runtime["debug_mode"] and tools_used:
                 tools_str = ", ".join(tools_used)
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'MCP Tools Executed: {tools_str}'})}\n\n"
 
@@ -342,12 +406,13 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     mcp_session=request.app.state.mcp_session,
                     keyword=keyword,
                     niche=niche,
+                    min_score_threshold=runtime["source_credibility_threshold"],
                 )
 
                 verified_sources = verification_result["verified_sources"]
                 rejected_sources = verification_result["rejected_sources"]
 
-                if DEBUG_MODE:
+                if runtime["debug_mode"]:
                     for i, source in enumerate(verified_sources):
                         yield f"data: {json.dumps({'event': 'source_verification', 'source_title': source.title, 'domain': source.domain, 'credibility_score': round(source.credibility_score, 1), 'progress': f'{i+1}/{len(elite_competitors)}'})}\n\n"
 
@@ -442,7 +507,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
 
                 yield f"data: {json.dumps({'event': 'phase1_5_complete', 'verified_count': len(verified_sources), 'rejected_count': len(rejected_sources), 'avg_credibility': round(avg_credibility, 1)})}\n\n"
 
-                if DEBUG_MODE:
+                if runtime["debug_mode"]:
                     yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1.5 (Source Verification) completed in {round(time.time() - p1_5_start, 2)}s. Avg credibility: {round(avg_credibility, 1)}/100'})}\n\n"
 
                 # Enrich research_result for downstream phases
@@ -452,15 +517,8 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 ]
 
                 # Gap 15: Enrich with fact category distribution for psychology agent
-                # SSL retry for read query (Neon connection may be stale)
-                try:
-                    fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
-                except OperationalError:
-                    logger.warning("[SSL-RETRY] FactCitation query (psychology) failed, reconnecting")
-                    db.rollback()
-                    db.close()
-                    db = SessionLocal()
-                    fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+                db = ensure_db_alive(db)
+                fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
                 if fact_citations:
                     fact_type_counts = {}
                     for fc in fact_citations:
@@ -475,7 +533,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                         "has_expert_quotes": fact_type_counts.get("expert_quote", 0) > 0,
                     }
             else:
-                if DEBUG_MODE:
+                if runtime["debug_mode"]:
                     yield f"data: {json.dumps({'event': 'debug', 'message': 'Phase 1.5 skipped: No elite competitors found in research'})}\n\n"
 
             # Phase 2
@@ -484,7 +542,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             psychology_agent = PsychologyAgent(db=db) 
             blueprint_dict = await psychology_agent.generate_blueprint(research_data_dict)
             yield f"data: {json.dumps({'event': 'phase2_complete', 'blueprint': blueprint_dict})}\n\n"
-            if DEBUG_MODE:
+            if runtime["debug_mode"]:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 2 (DeepSeek-V3) completed in {round(time.time() - p2_start, 2)}s'})}\n\n"
 
             # Phase 3
@@ -494,7 +552,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             article_content = ""
             readability_scores = None
             run_id = research_data_dict.get("research_run_id")
-            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, normalize_niche(payload.niche), research_run_id=run_id, source_content_map=source_content_map):
+            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, normalize_niche(payload.niche), research_run_id=run_id, source_content_map=source_content_map, settings_override=runtime):
                 if result.get("type") == "content":
                     yield f"data: {json.dumps({'event': 'content', 'data': result['data']})}\n\n"
                 elif result.get("type") == "debug":
@@ -520,10 +578,15 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                         "avg_sentence_length": fallback_read.avg_sentence_length,
                     }
 
-            if DEBUG_MODE:
+            if runtime["debug_mode"]:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 3 (Claude Sonnet 4) completed in {round(time.time() - p3_start, 2)}s'})}\n\n"
 
             # Phase 4: Post-Writer Claim Verification Gate
+            # Initialize claim verification variables for telemetry (may not run if no research)
+            xref_result = None
+            uncited_count = None
+            claim_gate_failed = None
+
             if article_content and research_run_id:
                 from .services.claim_verification_agent import (
                     extract_article_claims,
@@ -536,7 +599,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
 
                 yield f"data: {json.dumps({'event': 'claim_verification_start', 'message': 'Cross-referencing claims against verified facts...'})}\n\n"
 
-                article_claims = extract_article_claims(article_content)
+                article_claims = extract_article_claims(article_content, verify_qualitative=runtime["verify_qualitative_claims"])
 
                 # Attribution-URL mismatch detection: flag "Gartner says X" linked to random-blog.com
                 from .services.source_verification_service import KNOWN_RESEARCH_ORGS, extract_domain
@@ -566,18 +629,11 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                                 })
                                 break
 
-                uncited_claims = detect_uncited_claims(article_content, article_claims)
+                uncited_claims = detect_uncited_claims(article_content, article_claims, verify_qualitative=runtime["verify_qualitative_claims"])
 
                 # Fetch fact citations for this research run
-                # SSL retry for read query (Neon connection may be stale after research phase)
-                try:
-                    run_fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
-                except OperationalError:
-                    logger.warning("[SSL-RETRY] FactCitation query failed, reconnecting")
-                    db.rollback()
-                    db.close()
-                    db = SessionLocal()
-                    run_fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+                db = ensure_db_alive(db)
+                run_fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
 
                 xref_result = cross_reference_claims(
                     article_claims, run_fact_citations, source_content_map
@@ -639,7 +695,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     async for result in writer_service.produce_article(
                         blueprint_dict, payload.profile_name, normalize_niche(payload.niche),
                         research_run_id=run_id, source_content_map=source_content_map,
-                        claim_feedback=feedback,
+                        claim_feedback=feedback, settings_override=runtime,
                     ):
                         if result.get("type") == "content":
                             yield f"data: {json.dumps({'event': 'content', 'data': result['data']})}\n\n"
@@ -658,7 +714,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                         break
 
                     # Re-verify
-                    article_claims = extract_article_claims(article_content)
+                    article_claims = extract_article_claims(article_content, verify_qualitative=runtime["verify_qualitative_claims"])
                     # Re-check attribution mismatches
                     attribution_mismatches = []
                     for claim in article_claims:
@@ -681,7 +737,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                                     })
                                     break
 
-                    uncited_claims = detect_uncited_claims(article_content, article_claims)
+                    uncited_claims = detect_uncited_claims(article_content, article_claims, verify_qualitative=runtime["verify_qualitative_claims"])
                     xref_result = cross_reference_claims(
                         article_claims, run_fact_citations, source_content_map
                     )
@@ -701,8 +757,13 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     yield f"data: {json.dumps({'event': 'claim_verification_complete', 'message': f'Retry {claim_retry_count}: {verified_count}/{total_claims} verified, {fabricated} fabricated, {uncited_count} uncited, {mismatch_count} mismatches', 'verified': verified_count, 'fabricated': fabricated, 'ungrounded': ungrounded, 'uncited': uncited_count, 'mismatches': mismatch_count, 'total': total_claims})}\n\n"
 
                 if claim_gate_failed:
-                    logger.error(f"[CLAIM-VERIFY] Gate still failing after {max_claim_retries} retries. Proceeding with warnings.")
-                    yield f"data: {json.dumps({'event': 'claim_verification_warning', 'message': f'WARNING: Article has {fabricated} fabricated and {uncited_count} uncited claims after {max_claim_retries} retries. Review carefully.'})}\n\n"
+                    if runtime["claim_gate_hard_block"]:
+                        logger.error(f"[CLAIM-VERIFY] Gate still failing after {max_claim_retries} retries. BLOCKING article save.")
+                        yield f"data: {json.dumps({'event': 'error', 'message': f'Article rejected: claim verification failed after {max_claim_retries} retries. {fabricated} fabricated, {uncited_count} uncited, {mismatch_count} attribution mismatches. Article NOT saved.'})}\n\n"
+                        return
+                    else:
+                        logger.error(f"[CLAIM-VERIFY] Gate still failing after {max_claim_retries} retries. Proceeding with warnings.")
+                        yield f"data: {json.dumps({'event': 'claim_verification_warning', 'message': f'WARNING: Article has {fabricated} fabricated and {uncited_count} uncited claims after {max_claim_retries} retries. Review carefully.'})}\n\n"
 
             # Save the generated article
             post = Post(
@@ -718,15 +779,9 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 db.rollback()
             except Exception:
                 pass
+            db = ensure_db_alive(db)
             db.add(post)
-            try:
-                db.commit()
-            except (OperationalError, InvalidRequestError, PendingRollbackError):
-                db.rollback()
-                db.close()
-                db = SessionLocal()
-                post = db.merge(post)
-                db.commit()
+            db.commit()
             db.refresh(post)
 
             # Capture WriterRun telemetry for learning loop
@@ -738,7 +793,13 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     ari_score=readability_scores["ari"],
                     flesch_kincaid_score=readability_scores["fk"],
                     coleman_liau_score=readability_scores["cli"],
-                    avg_sentence_length=readability_scores["avg_sentence_length"]
+                    avg_sentence_length=readability_scores["avg_sentence_length"],
+                    # Claim verification telemetry
+                    claims_verified=xref_result.get("verified", 0) if xref_result else None,
+                    claims_fabricated=xref_result.get("fabricated", 0) if xref_result else None,
+                    claims_uncited=uncited_count if uncited_count is not None else None,
+                    claims_total=xref_result.get("total_claims", 0) if xref_result else None,
+                    claim_gate_passed=not claim_gate_failed if claim_gate_failed is not None else None,
                 )
                 db.add(writer_run)
                 db.commit()
@@ -746,30 +807,13 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             # Link Post ↔ ResearchRun for quality scoring feedback loop
             run_id = research_data_dict.get("research_run_id")
             if run_id:
+                db = ensure_db_alive(db)
+                post = db.merge(post)
                 post.research_run_id = run_id
-                # SSL retry for read query (Neon connection may be stale)
-                try:
-                    research_run = db.get(ResearchRun, run_id)
-                except OperationalError:
-                    logger.warning("[SSL-RETRY] ResearchRun query failed, reconnecting")
-                    db.rollback()
-                    db.close()
-                    db = SessionLocal()
-                    research_run = db.get(ResearchRun, run_id)
+                research_run = db.get(ResearchRun, run_id)
                 if research_run:
                     research_run.post_id = post.id
-                try:
-                    db.commit()
-                except OperationalError:
-                    db.rollback()
-                    db.close()
-                    db = SessionLocal()
-                    post = db.merge(post)
-                    research_run = db.get(ResearchRun, run_id) if run_id else None
-                    if research_run:
-                        research_run.post_id = post.id
-                    post.research_run_id = run_id
-                    db.commit()
+                db.commit()
                 db.refresh(post)
 
             logger.info(f"[ARES] Generation complete for: {keyword}")
@@ -779,7 +823,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             from .schemas import PostResponse
             post_schema = PostResponse.model_validate(post).model_dump(mode='json')
             
-            if DEBUG_MODE:
+            if runtime["debug_mode"]:
                 total_time = round(time.time() - start_time, 2)
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Total Engine Execution Time: {total_time}s'})}\n\n"
 
@@ -792,7 +836,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             
         except Exception as e:
             error_msg = str(e)
-            if DEBUG_MODE:
+            if runtime["debug_mode"]:
                 tb = traceback.format_exc()
                 logger.error(f"[CRITICAL ERROR TRACEBACK]\n{tb}")
                 error_msg = f"{str(e)} | Check backend terminal for full traceback."

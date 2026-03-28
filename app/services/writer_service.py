@@ -3,6 +3,7 @@ import logging
 import re
 from pathlib import Path
 from anthropic import AsyncAnthropic
+from ..database import ensure_db_alive
 from ..settings import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_WRITER_ATTEMPTS, WRITER_MAX_TOKENS, LLM_SOURCE_CONTEXT_CHARS, MAX_UNCITED_CLAIMS
 from .readability_service import verify_readability
 
@@ -76,7 +77,7 @@ class WriterService:
             text = pattern.sub(_match_case, text)
         return text
 
-    async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general", research_run_id: int | None = None, source_content_map: dict | None = None, claim_feedback: str | None = None):
+    async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general", research_run_id: int | None = None, source_content_map: dict | None = None, claim_feedback: str | None = None, settings_override: dict | None = None):
         """
         Uses LangGraph Agentic RAG architecture to plan, retrieve, write, and edit the article section-by-section.
         """
@@ -87,6 +88,7 @@ class WriterService:
         all_citations = []
         if research_run_id:
             from ..models import FactCitation
+            self.db = ensure_db_alive(self.db)
             citations = self.db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
 
             logger.info(f"[CITATION-FILTER] Starting with {len(citations)} raw citations from research_run {research_run_id}")
@@ -161,12 +163,15 @@ class WriterService:
                 all_citations.append({
                     "citation_anchor": c.citation_anchor,
                     "source_url": c.source_url,
-                    "fact_text": c.fact_text
+                    "fact_text": c.fact_text,
+                    "confidence": round(c.confidence_score, 2) if c.confidence_score else 0.0,
+                    "verification_status": getattr(c, 'verification_status', 'not_checked') or 'not_checked',
                 })
 
         # Inject Dynamic Human Style Rules
         from ..models import UserStyleRule
         style_rules_text = ""
+        self.db = ensure_db_alive(self.db)
         style_rules = self.db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).all()
         if style_rules:
             for rule in style_rules:

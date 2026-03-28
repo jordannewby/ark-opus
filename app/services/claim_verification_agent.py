@@ -21,7 +21,7 @@ from collections import Counter
 
 import httpx
 
-from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, EXA_API_KEY, CLAIM_TEXT_SIMILARITY_THRESHOLD, LLM_SOURCE_CONTEXT_CHARS
+from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, EXA_API_KEY, CLAIM_TEXT_SIMILARITY_THRESHOLD, LLM_SOURCE_CONTEXT_CHARS, CLAIM_NUMBER_CONTEXT_WORDS, VERIFY_QUALITATIVE_CLAIMS
 from ..domain_tiers import TIER_1_DOMAINS, TIER_2_DOMAINS, get_domain_tier_score
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
@@ -683,6 +683,14 @@ _QUANT_CLAIM_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+# Patterns for qualitative factual claims that need verification
+_QUALITATIVE_CLAIM_PATTERNS = [
+    re.compile(r'\b(?:research|study|studies|survey|report|analysis)\b.{0,30}\b(?:shows?|finds?|found|reveals?|indicates?|suggests?|demonstrates?)\b', re.IGNORECASE),
+    re.compile(r'\b(?:according to|as reported by|cited by)\b', re.IGNORECASE),
+    re.compile(r'\b(?:won|awarded|recognized|named|ranked|certified)\b', re.IGNORECASE),
+    re.compile(r'\b(?:launched|acquired|partnered|merged|invested|raised|announced)\b', re.IGNORECASE),
+]
+
 
 def detect_unverified_entities(
     draft_text: str,
@@ -869,7 +877,7 @@ _COMMON_WORDS = frozenset({
 })
 
 
-def extract_article_claims(article_text: str) -> list[dict]:
+def extract_article_claims(article_text: str, verify_qualitative: bool | None = None) -> list[dict]:
     """
     Regex-only extraction of claim + adjacent citation URL pairs from article markdown.
     $0.00 cost.
@@ -909,9 +917,14 @@ def extract_article_claims(article_text: str) -> list[dict]:
         # Check if claim contains quantitative data
         has_quant = bool(_QUANT_CLAIM_PATTERN.search(claim_stripped))
 
-        # If the LLM cited a narrative/summary sentence without statistics, ignore the citation.
-        # This prevents the verification loop from choking on "flavor text" citations.
-        if not has_quant:
+        # Check for qualitative factual claims (research shows, according to, etc.)
+        _verify_qual = verify_qualitative if verify_qualitative is not None else VERIFY_QUALITATIVE_CLAIMS
+        has_qualitative = _verify_qual and any(
+            p.search(claim_stripped) for p in _QUALITATIVE_CLAIM_PATTERNS
+        )
+
+        # Skip pure flavor-text citations that have no verifiable factual content
+        if not has_quant and not has_qualitative:
             continue
 
         claims.append({
@@ -919,6 +932,7 @@ def extract_article_claims(article_text: str) -> list[dict]:
             "citation_url": url.strip(),
             "citation_anchor": anchor.strip(),
             "has_quantitative_claim": has_quant,
+            "claim_type": "quantitative" if has_quant else "qualitative",
         })
 
     if logger.isEnabledFor(logging.DEBUG):
@@ -928,7 +942,7 @@ def extract_article_claims(article_text: str) -> list[dict]:
     return claims
 
 
-def detect_uncited_claims(article_text: str, cited_claims: list[dict]) -> list[dict]:
+def detect_uncited_claims(article_text: str, cited_claims: list[dict], verify_qualitative: bool | None = None) -> list[dict]:
     """
     Find factual claims (stats, percentages, dollar amounts) that lack citations.
     Returns: [{claim_text, reason}]
@@ -953,8 +967,11 @@ def detect_uncited_claims(article_text: str, cited_claims: list[dict]) -> list[d
         # Skip gracefully if it looks like a malformed markdown link typo (e.g. LLM forgot opening bracket)
         if '](http' in stripped:
             continue
-        # Check if sentence has quantitative data
-        if not _QUANT_CLAIM_PATTERN.search(stripped):
+        # Check if sentence has quantitative data or qualitative factual claims
+        has_quant = bool(_QUANT_CLAIM_PATTERN.search(stripped))
+        _verify_qual = verify_qualitative if verify_qualitative is not None else VERIFY_QUALITATIVE_CLAIMS
+        has_qual = _verify_qual and any(p.search(stripped) for p in _QUALITATIVE_CLAIM_PATTERNS)
+        if not has_quant and not has_qual:
             continue
         # Check if this sentence already has a citation (markdown link)
         if _CITATION_LINK_PATTERN.search(stripped):
@@ -965,7 +982,7 @@ def detect_uncited_claims(article_text: str, cited_claims: list[dict]) -> list[d
 
         uncited.append({
             "claim_text": stripped[:200],
-            "reason": "Factual claim with statistic/percentage/dollar amount but no citation",
+            "reason": "Factual claim (quantitative or qualitative) without citation",
         })
 
     if uncited:
@@ -1019,7 +1036,7 @@ def _numbers_match(claim_text: str, fact_text: str) -> bool:
         fact_context = _context_words_near_number(fact_text, n)
         shared_context = claim_context & fact_context
 
-        if len(shared_context) >= 2:
+        if len(shared_context) >= CLAIM_NUMBER_CONTEXT_WORDS:
             return True
 
     return False
@@ -1083,7 +1100,8 @@ def cross_reference_claims(
                     matched_facts = facts
                     break
 
-        # Step 4: Domain fallback match (Allows LLM fallback to handle the truth check if URL is truncated)
+        # Step 4: Domain fallback match — forces LLM verification (no fast-path heuristics)
+        domain_fallback = False
         if not matched_facts:
             try:
                 from urllib.parse import urlparse
@@ -1092,11 +1110,12 @@ def cross_reference_claims(
                     fact_domain = urlparse(url).netloc.lower().replace("www.", "")
                     if claim_domain == fact_domain and claim_domain != "":
                         matched_facts = facts
+                        domain_fallback = True
+                        logger.debug(f"[CLAIM-XREF] Domain fallback: '{claim_text[:50]}...' matched {url} via domain-only")
                         break
             except Exception:
                 pass
 
-        # NOTE: Bare domain-level matching restored as LLM fallback gate properly handles hallucinated paths.
         if not matched_facts:
             fabricated_count += 1
             details.append({
@@ -1109,21 +1128,31 @@ def cross_reference_claims(
             logger.debug(f"[CLAIM-XREF] FABRICATED: '{claim_text[:60]}...' cites {claim_url} (no URL match)")
             continue
 
-        # Try number-matching first
+        # Domain-fallback claims skip heuristics — go straight to LLM verification
+        if domain_fallback:
+            ambiguous_claims.append({
+                "claim": claim,
+                "candidate_facts": matched_facts,
+            })
+            logger.debug(f"[CLAIM-XREF] Domain-fallback claim forced to LLM verification: '{claim_text[:50]}...'")
+            continue
+
+        # Try number-matching first (only for quantitative claims with exact/normalized/path-prefix URL matches)
         matched = False
-        for fc in matched_facts:
-            if _numbers_match(claim_text, fc.fact_text):
-                verified_count += 1
-                details.append({
-                    "claim_text": claim_text[:200],
-                    "status": "verified",
-                    "matched_fact": fc.fact_text[:200],
-                    "source_url": claim_url,
-                    "reason": "Number match with verified fact",
-                })
-                matched = True
-                logger.debug(f"[CLAIM-XREF] Claim '{claim_text[:50]}...' matched FactCitation #{fc.id} via number_anchor")
-                break
+        if claim.get("claim_type") == "quantitative":
+            for fc in matched_facts:
+                if _numbers_match(claim_text, fc.fact_text):
+                    verified_count += 1
+                    details.append({
+                        "claim_text": claim_text[:200],
+                        "status": "verified",
+                        "matched_fact": fc.fact_text[:200],
+                        "source_url": claim_url,
+                        "reason": "Number match with verified fact",
+                    })
+                    matched = True
+                    logger.debug(f"[CLAIM-XREF] Claim '{claim_text[:50]}...' matched FactCitation #{fc.id} via number_anchor")
+                    break
 
         if not matched:
             # No number match — try text similarity
@@ -1220,12 +1249,15 @@ ARTICLE CLAIM: "{claim_text}"
 VERIFIED FACTS FROM SOURCE:
 {fact_list}
 {context}
-IMPORTANT: The writer paraphrases facts in its own tone. Accept the claim as SUPPORTED if:
-- The core fact, statistic, or percentage is present in any verified fact (even if worded differently)
-- The claim is a reasonable summary or restatement of information in the verified facts or source context
-- Numbers expressed differently still count (e.g., "67%" vs "nearly seven in ten", "4,500" vs "thousands")
+IMPORTANT: Accept the claim as SUPPORTED ONLY if:
+- The specific fact, statistic, or finding is explicitly present in a verified fact or source context
+- Numbers must match precisely (e.g., "67%" vs "nearly seven in ten" is OK, but "67%" vs "about 70%" is NOT)
+- The subject and predicate must match the source (e.g., "CTOs said X" must NOT be accepted if source says "developers said X")
 
-Mark as UNSUPPORTED only if the claim introduces a fact, number, or statistic NOT found anywhere in the verified facts or source context.
+Mark as UNSUPPORTED if:
+- The claim introduces ANY fact, number, entity, or attribution NOT found in the verified facts or source context
+- The claim changes the subject, scope, or conclusion of a source fact
+- The claim rounds or approximates numbers beyond what the source states
 
 Return JSON:
 {{

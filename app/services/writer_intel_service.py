@@ -1,6 +1,8 @@
 from datetime import datetime
 import logging
 from sqlalchemy.orm import Session
+from sqlalchemy import or_ as db_or
+from ..database import ensure_db_alive
 from ..models import WriterRun, WriterPlaybook, Post
 import json
 
@@ -17,6 +19,7 @@ class WriterIntelService:
         Formula: (10.0 - ari_score) / 10.0
         Higher score = closer to 7th-grade target.
         """
+        db = ensure_db_alive(db)
         writer_run = db.query(WriterRun).filter(WriterRun.post_id == post_id).first()
         if not writer_run:
             return  # No telemetry captured for this post
@@ -44,7 +47,9 @@ class WriterIntelService:
             WriterRun.niche == niche,
             WriterRun.is_distilled == False,
             WriterRun.human_approved == True,  # Critical: only learn from approved content
-            WriterRun.readability_efficiency.isnot(None)
+            WriterRun.readability_efficiency.isnot(None),
+            # Only learn from articles that passed claim verification (or predate it)
+            db_or(WriterRun.claim_gate_passed == True, WriterRun.claim_gate_passed.is_(None)),
         ).all()
 
         if len(undistilled_runs) < 10:
@@ -88,6 +93,7 @@ class WriterIntelService:
         for run in quality_runs:
             run.is_distilled = True
 
+        db = ensure_db_alive(db)
         db.commit()
         logger.info(f"[WriterIntel] Distilled playbook for {profile_name}/{niche}: {len(quality_runs)} runs, version {existing.version + 1 if existing else 1}")
 

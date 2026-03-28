@@ -120,6 +120,13 @@ class WriterRun(Base):
     human_approved: Mapped[bool] = mapped_column(default=False, server_default="false")
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # Claim verification telemetry
+    claims_verified: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    claims_fabricated: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    claims_uncited: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    claims_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    claim_gate_passed: Mapped[bool | None] = mapped_column(nullable=True)
+
     # Distillation state
     is_distilled: Mapped[bool] = mapped_column(default=False, server_default="false")
 
@@ -229,6 +236,15 @@ class FactCitation(Base):
     corroboration_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ProfileSettings(Base):
+    __tablename__ = "profile_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}", server_default="{}")
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=None, onupdate=func.now())
 
 
 class DomainCredibilityCache(Base):

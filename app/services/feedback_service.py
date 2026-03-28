@@ -1,6 +1,7 @@
 import json
 import logging
 import httpx
+from ..database import ensure_db_alive
 from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT, RULE_CONSOLIDATION_THRESHOLD
 from ..models import UserStyleRule
 
@@ -90,6 +91,7 @@ class FeedbackAgent:
                  rules = []
 
              # Save to DB
+             self.db = ensure_db_alive(self.db)
              for rule_text in rules:
                  new_rule = UserStyleRule(rule_description=rule_text, profile_name=profile_name)
                  self.db.add(new_rule)
@@ -176,6 +178,7 @@ class FeedbackAgent:
                  rule_descriptions_json=json.dumps(rule_texts),
                  pruned_to_count=len(new_rules),
              )
+             self.db = ensure_db_alive(self.db)
              self.db.add(archive)
 
              # Safe pruning: only delete old rules AFTER new ones are validated

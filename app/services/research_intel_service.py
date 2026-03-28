@@ -19,6 +19,7 @@ import httpx
 logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
 
+from ..database import ensure_db_alive
 from ..models import NichePlaybook, ResearchRun, WriterRun
 from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT
 
@@ -32,6 +33,7 @@ class ResearchIntelService:
     def score_research_run(self, post_id: int, original: str, edited: str) -> None:
         """Compute edit-distance quality score and persist to the linked ResearchRun."""
         quality = round(SequenceMatcher(None, original.strip(), edited.strip()).ratio(), 3)
+        self.db = ensure_db_alive(self.db)
         run = self.db.query(ResearchRun).filter(ResearchRun.post_id == post_id).first()
         if run:
             run.quality_score = quality
@@ -98,6 +100,7 @@ class ResearchIntelService:
 
         for r in runs:
             r.is_distilled = True
+        self.db = ensure_db_alive(self.db)
         self.db.commit()
         return True
 

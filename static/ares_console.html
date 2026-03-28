@@ -179,6 +179,122 @@
             color: var(--accent);
         }
 
+        .info-tooltip {
+            position: relative;
+            cursor: help;
+            color: rgba(148, 163, 184, 0.6);
+            font-size: 0.8rem;
+            margin-left: 6px;
+        }
+        .info-tooltip:hover { color: rgba(148, 163, 184, 1); }
+        .info-tooltip:hover::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(15, 23, 42, 0.95);
+            color: #e2e8f0;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            line-height: 1.4;
+            width: max-content;
+            max-width: 260px;
+            white-space: normal;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        .setting-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: all 0.2s;
+        }
+        .setting-row:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.08);
+        }
+        .setting-label-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .setting-label {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: #e2e8f0;
+        }
+
+        /* Toggle switch */
+        .toggle-switch {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            cursor: pointer;
+            transition: background 0.3s;
+            flex-shrink: 0;
+        }
+        .toggle-switch.active {
+            background: #3b82f6;
+        }
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 20px;
+            height: 20px;
+            background: white;
+            border-radius: 50%;
+            transition: transform 0.3s;
+        }
+        .toggle-switch.active::after {
+            transform: translateX(20px);
+        }
+
+        /* Slider */
+        .setting-slider {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 120px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            outline: none;
+        }
+        .setting-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #3b82f6;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        /* Dropdown */
+        .setting-select {
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.5rem;
+            color: #e2e8f0;
+            padding: 0.35rem 0.75rem;
+            font-size: 0.8rem;
+            cursor: pointer;
+            outline: none;
+        }
+        .setting-select:focus {
+            border-color: #3b82f6;
+        }
+
         #score-circle {
             stroke: url(#blue-purple-gradient);
         }
@@ -572,6 +688,18 @@
                             </path>
                         </svg>
                     </button>
+                    <button id="open-settings-btn" class="sidebar-btn flex items-center justify-between group">
+                        <span>Settings</span>
+                        <svg aria-hidden="true" class="w-4 h-4 text-[#8B8B93] group-hover:text-[#8b5cf6] transition-colors" fill="none"
+                            stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                            </path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z">
+                            </path>
+                        </svg>
+                    </button>
                 </div>
             </div>
 
@@ -722,6 +850,35 @@
             </div>
 
             <div id="rules-container" class="flex-1 overflow-y-auto space-y-4 pr-2"></div>
+        </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div id="settings-modal" class="fixed inset-0 z-[85] flex hidden">
+        <div id="settings-backdrop"
+            class="absolute inset-0 bg-black/70 backdrop-blur-md opacity-0 transition-opacity duration-500"></div>
+        <div id="settings-panel"
+            class="relative w-full md:w-[480px] ml-auto h-full bg-[#0F0F11] transform translate-x-full transition-transform duration-500 flex flex-col shadow-2xl p-8 md:p-10 border-l border-white/5">
+            <div class="flex items-center justify-between mb-2">
+                <h2 class="text-2xl font-semibold text-white">Settings</h2>
+                <button id="close-settings-btn"
+                    class="text-slate-500 hover:text-[#3b82f6] bg-white/5 hover:bg-white/10 rounded-full p-2 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
+                        </path>
+                    </svg>
+                </button>
+            </div>
+            <p class="text-[#8B8B93] text-sm mb-8 pr-6">Configure how the engine researches, writes, and verifies content. Changes take effect on the next generation.</p>
+
+            <div id="settings-container" class="flex-1 overflow-y-auto space-y-5 pr-2">
+                <!-- Dynamically populated from GET /settings -->
+            </div>
+
+            <div class="mt-6 pt-6 border-t border-white/5 flex items-center justify-between">
+                <span id="settings-status" class="text-xs text-[#8B8B93] mono-text"></span>
+                <button id="save-settings-btn" class="btn-sleek py-2.5 px-8">Save</button>
+            </div>
         </div>
     </div>
 

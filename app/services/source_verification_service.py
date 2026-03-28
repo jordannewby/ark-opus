@@ -26,8 +26,11 @@ from ..settings import (
     ZAI_API_KEY, GLM5_MODEL, GLM5_API_URL, GLM5_MAX_TOKENS, GLM5_TEMPERATURE, GLM5_TIMEOUT,
     SOURCE_CREDIBILITY_THRESHOLD, SOURCE_THRESHOLD_DECAY, MAX_VERIFICATION_ITERATIONS,
     BLOG_DOMAIN_PENALTY, BLOG_PATH_PENALTY, UNSOURCED_CLAIMS_PENALTY,
+    RESCUE_SERP_TOP5_BONUS, RESCUE_SERP_TOP10_BONUS, RESCUE_SERP_TOP20_BONUS,
+    RESCUE_MAX_BONUS, RESCUE_MIN_SCORE,
 )
 from ..domain_tiers import get_domain_tier_score
+from ..database import ensure_db_alive
 from ..glm_client import call_glm5_with_retry
 from .research_service import mcp_call_with_retry
 
@@ -553,19 +556,19 @@ Only return the JSON, no other text."""
             result = json.loads(text)
         except json.JSONDecodeError:
             logger.error(f"[GLM-5] Invalid JSON response: {text[:200]}")
-            return {"score": 0.5, "reasoning": "JSON parse error"}
+            return {"score": 0.0, "reasoning": "JSON parse error"}
 
-        logger.info(f"[GLM-5] Content quality score: {result.get('score', 0.5)}")
+        logger.info(f"[GLM-5] Content quality score: {result.get('score', 0.0)}")
 
         return {
-            "score": result.get("score", 0.5),
+            "score": result.get("score", 0.0),
             "reasoning": result.get("reasoning", ""),
         }
 
     except Exception as e:
         logger.error(f"[DEEPSEEK] Content quality assessment failed: {e}")
-        # Fallback: neutral score
-        return {"score": 0.5, "reasoning": "Assessment failed"}
+        # Fallback: unknown = untrusted (0.0), not neutral (0.5)
+        return {"score": 0.0, "reasoning": "Assessment failed"}
 
 
 async def detect_content_integrity(content: str) -> dict:
@@ -653,9 +656,9 @@ Only return the JSON, no other text."""
             result = json.loads(text)
         except json.JSONDecodeError:
             logger.error(f"[GLM-5] Invalid JSON response: {text[:200]}")
-            return {"integrity_score": 0.5, "scores": {}, "flags": ["JSON parse error"]}
+            return {"integrity_score": 0.0, "scores": {}, "flags": ["JSON parse error"]}
 
-        integrity_score = result.get("integrity_score", 0.5)
+        integrity_score = result.get("integrity_score", 0.0)
         # Validate: recalculate average if scores dict is present
         scores = result.get("scores", {})
         if scores and len(scores) == 5:
@@ -674,7 +677,7 @@ Only return the JSON, no other text."""
 
     except Exception as e:
         logger.error(f"[INTEGRITY] Content integrity check failed: {e}")
-        return {"integrity_score": 0.5, "scores": {}, "flags": ["Assessment failed"]}
+        return {"integrity_score": 0.0, "scores": {}, "flags": ["Assessment failed"]}
 
 
 # --- Credibility Scoring ---
@@ -715,15 +718,15 @@ async def calculate_credibility_score(
 
     # Factor 1: Content Integrity — "is this trustworthy?" (25 pts max)
     if content_integrity:
-        integrity = content_integrity.get("integrity_score", 0.5)
+        integrity = content_integrity.get("integrity_score", 0.0)
     else:
-        integrity = 0.5
+        integrity = 0.0
     integrity_points = integrity * 25.0
     score += integrity_points
     breakdown["integrity"] = round(integrity_points, 1)
 
     # Factor 2: Content Quality — "is this well-written?" (15 pts max)
-    quality_score = content_quality.get("score", 0.5)
+    quality_score = content_quality.get("score", 0.0)
     quality_points = quality_score * 15.0
     score += quality_points
     breakdown["quality"] = round(quality_points, 1)
@@ -916,14 +919,14 @@ def calculate_rescue_bonus(
     # Signal 4: SERP ranking (moved from main scoring - better suited as rescue signal)
     if serp_position is not None:
         if serp_position <= 5:
-            bonus += 10.0
-            reasons.append(f"SERP:top5(+10)")
+            bonus += RESCUE_SERP_TOP5_BONUS
+            reasons.append(f"SERP:top5(+{RESCUE_SERP_TOP5_BONUS:.0f})")
         elif serp_position <= 10:
-            bonus += 7.0
-            reasons.append(f"SERP:top10(+7)")
+            bonus += RESCUE_SERP_TOP10_BONUS
+            reasons.append(f"SERP:top10(+{RESCUE_SERP_TOP10_BONUS:.0f})")
         elif serp_position <= 20:
-            bonus += 4.0
-            reasons.append(f"SERP:top20(+4)")
+            bonus += RESCUE_SERP_TOP20_BONUS
+            reasons.append(f"SERP:top20(+{RESCUE_SERP_TOP20_BONUS:.0f})")
 
     # Signal 5: Internal citations (moved from main scoring - extracted after initial verification)
     if citations:
@@ -936,7 +939,7 @@ def calculate_rescue_bonus(
     if bonus > 0:
         logger.info(f"[RESCUE] Bonus: +{bonus:.0f} pts | {', '.join(reasons)}")
 
-    return min(15.0, bonus)
+    return min(RESCUE_MAX_BONUS, bonus)
 
 
 # --- Fact Extraction ---
@@ -1385,6 +1388,7 @@ async def link_facts_to_sources(verified_sources: list, research_run_id: int, db
         if copypasta_flagged:
             logger.warning(f"[CONSENSUS] {copypasta_flagged} facts flagged as suspected viral copypasta (no Tier 1-2 corroboration)")
 
+    db = ensure_db_alive(db)
     db.commit()
     logger.info(f"[FACTS] Linked {len(all_new_citations)} facts to {len(verified_sources)} verified sources")
 
@@ -1509,6 +1513,7 @@ async def verify_sources(
         domain = local_signals[i]["domain"]
 
         # Try cache lookup
+        db = ensure_db_alive(db)
         cache_entry = db.query(DomainCredibilityCache).filter_by(
             domain=domain,
             niche=normalized_niche
@@ -1602,8 +1607,8 @@ async def verify_sources(
                     f"(score: {original_ai_score:.1f} -> {credibility_score:.1f})"
                 )
 
-        # Borderline rescue: sources scoring 35.0-44.9 get supplementary signal check
-        if 35.0 <= credibility_score < 45.0:
+        # Borderline rescue: sources in rescue window get supplementary signal check
+        if RESCUE_MIN_SCORE <= credibility_score < SOURCE_CREDIBILITY_THRESHOLD:
             rescue_bonus = calculate_rescue_bonus(source, content_integrity, serp_pos, citations)
             if rescue_bonus > 0:
                 original_score = credibility_score
@@ -1640,6 +1645,7 @@ async def verify_sources(
             freshness_score = max(0.0, 1.0 - (days_old / 1095.0))
 
         # Check if source already exists (prevent duplicate key error in iterative search)
+        db = ensure_db_alive(db)
         existing_source = db.query(VerifiedSource).filter_by(
             research_run_id=research_run_id,
             url=source["url"]

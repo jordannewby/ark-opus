@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
+from ..database import ensure_db_alive
 from ..models import ContentCampaign
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ class CartographerService:
             pillar_keyword=pillar_kw,
             spoke_keywords_json=json.dumps(parsed_map)  # Store whole map for easy retrieval
         )
+        self.db = ensure_db_alive(self.db)
         self.db.add(campaign)
         self.db.commit()
         self.db.refresh(campaign)

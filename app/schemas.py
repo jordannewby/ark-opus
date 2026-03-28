@@ -175,6 +175,27 @@ class VerifiedSourceResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ProfileSettingsUpdate(BaseModel):
+    claim_gate_hard_block: bool | None = None
+    verify_qualitative_claims: bool | None = None
+    dataforseo_content_analysis_enabled: bool | None = None
+    debug_mode: bool | None = None
+    source_credibility_threshold: float | None = None
+    exa_num_results: int | None = None
+    max_agentic_iterations: int | None = None
+    cache_ttl_hours: int | None = None
+    writer_max_tokens: int | None = None
+    max_writer_attempts: int | None = None
+
+
+class ProfileSettingsResponse(BaseModel):
+    profile_name: str
+    settings: dict
+    configurable: dict  # CONFIGURABLE_SETTINGS metadata for frontend rendering
+
+    model_config = {"from_attributes": True}
+
+
 class FactCitationResponse(BaseModel):
     id: int
     verified_source_id: int

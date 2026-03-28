@@ -1,6 +1,7 @@
 import logging
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from dotenv import load_dotenv
 
@@ -12,11 +13,13 @@ SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 if not SQLALCHEMY_DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is required. Set it in .env")
 
-# Added `pool_pre_ping=True` and `pool_recycle=300` to prevent drop connections with Serverless Postgres
+# Added `pool_pre_ping=True` and `pool_recycle` to prevent drop connections with Serverless Postgres
+from .settings import DB_POOL_RECYCLE
+
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    pool_pre_ping=True, 
-    pool_recycle=300,
+    pool_pre_ping=True,
+    pool_recycle=DB_POOL_RECYCLE,
     connect_args={"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 5}
 )
 
@@ -340,9 +343,76 @@ def migrate_style_rule_archive():
         logger.info("[OK] Created user_style_rule_archives table")
 
 
+def migrate_writer_verification_telemetry():
+    """One-time migration: Add claim verification telemetry columns to writer_runs."""
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+
+    if 'writer_runs' not in inspector.get_table_names():
+        return  # Table doesn't exist yet
+
+    columns = [col['name'] for col in inspector.get_columns('writer_runs')]
+
+    new_columns = {
+        'claims_verified': "INTEGER DEFAULT NULL",
+        'claims_fabricated': "INTEGER DEFAULT NULL",
+        'claims_uncited': "INTEGER DEFAULT NULL",
+        'claims_total': "INTEGER DEFAULT NULL",
+        'claim_gate_passed': "BOOLEAN DEFAULT NULL",
+    }
+
+    added = []
+    with engine.begin() as conn:
+        for col_name, col_def in new_columns.items():
+            if col_name not in columns:
+                conn.execute(text(f"ALTER TABLE writer_runs ADD COLUMN {col_name} {col_def}"))
+                added.append(col_name)
+
+    if added:
+        logger.info(f"[OK] Added verification telemetry columns to writer_runs: {', '.join(added)}")
+
+
+def migrate_profile_settings():
+    """One-time migration: Create profile_settings table for runtime configuration."""
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+
+    if 'profile_settings' in inspector.get_table_names():
+        return  # Already exists
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE profile_settings (
+                id SERIAL PRIMARY KEY,
+                profile_name VARCHAR(50) NOT NULL UNIQUE,
+                settings_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TIMESTAMP DEFAULT NULL
+            )
+        """))
+        conn.execute(text("CREATE UNIQUE INDEX idx_profile_settings_name ON profile_settings(profile_name)"))
+        logger.info("[OK] Created profile_settings table")
+
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+def ensure_db_alive(db):
+    """Ping the connection; if Neon killed it during a long async gap, return a fresh session."""
+    try:
+        db.execute(text("SELECT 1"))
+        return db
+    except OperationalError:
+        logger.warning("[DB-REFRESH] Stale connection detected, creating fresh session")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        db.close()
+        return SessionLocal()
