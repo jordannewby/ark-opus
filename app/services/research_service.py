@@ -857,7 +857,7 @@ class ResearchAgent:
         )
         result["research_run_id"] = run_id
 
-        self._save_cache(keyword, profile_name, niche, result)
+        self._save_cache(keyword, profile_name, niche, result, cache_ttl_hours=_cache_ttl)
 
         return result
 
@@ -2047,7 +2047,7 @@ class ResearchAgent:
 
         return json.loads(row.result_json)
 
-    def _save_cache(self, keyword: str, profile_name: str, niche: str, result: dict) -> None:
+    def _save_cache(self, keyword: str, profile_name: str, niche: str, result: dict, cache_ttl_hours: int = CACHE_TTL_HOURS) -> None:
         """Upsert research result into the cache table."""
         self.db = ensure_db_alive(self.db)
         row = (
@@ -2070,7 +2070,7 @@ class ResearchAgent:
                 profile_name=profile_name,
                 niche=niche,
                 result_json=payload,
-                cache_ttl_hours=_cache_ttl,
+                cache_ttl_hours=cache_ttl_hours,
             )
             self.db.add(row)
 
