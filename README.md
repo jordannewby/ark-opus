@@ -967,15 +967,6 @@ git check-ignore .env  # Should output: .env
 git status             # Should NOT show .env in untracked files
 ```
 
-### Git History Scrubbing
-
-This repository was cleaned in March 2026:
-- Personal email removed from commit author fields
-- Sensitive files (`.env`, `blog.db`, temp files) purged from all history
-- Force-pushed to GitHub with clean history
-
-**If you cloned before March 27, 2026**: Re-clone to get the cleaned history.
-
 ---
 
 ## 13. Troubleshooting
@@ -1057,29 +1048,3 @@ The `CLAUDE.md` file contains critical development rules:
 
 See `docs/architecture.md` for detailed phase diagrams, scoring algorithms, and intelligence loop mechanics.
 
-### Contributing
-
-This is a private project. If you're a collaborator:
-1. Always `git pull` before starting work
-2. Create feature branches for major changes
-3. Test locally with `uvicorn app.main:app --reload`
-4. Never commit `.env` or database files
-5. Follow the rules in `CLAUDE.md` for code changes
-6. `git commit` and `git push` when done
-
-### Cleanup Notes (March 2026)
-
-The project underwent a comprehensive cleanup:
-- Removed 11 obsolete one-time patch scripts (~95KB)
-- Cleaned Python cache files and unused imports
-- Refactored duplicate logic in readability service
-- Optimized requirements.txt (removed 4 unused dependencies)
-- Result: 100% test coverage maintained
-
-See commit history on `cleanup/complete-audit` branch.
-
----
-
-**Built with GLM-5 + DeepSeek-V3 + Claude Sonnet 4.5 + Exa.ai + DataForSEO**
-
-For questions or support, see GitHub issues: `https://github.com/jordannewby/ares-engine/issues`
