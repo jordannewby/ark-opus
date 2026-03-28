@@ -1,5 +1,13 @@
 # Ares Engine
 
+## NEVER
+- Never rewrite entire files for small logic changes — use targeted edits
+- Never commit `.env`, `venv/`, `blog.db`, `__pycache__/`
+- Never swap the database to SQLite or any non-Neon provider
+- Never duplicate source code into `.md` memory files
+- Never introduce paid dependencies without admin approval
+- Never remove `pool_pre_ping` or keepalive args from `database.py`
+
 **Stack**: FastAPI + Neon PostgreSQL + GLM-5 Thinking, DeepSeek V3 + Claude Sonnet 4.6 + Exa.ai + DataForSEO MCP
 **Budget**: $10-$20 max — prefer lightweight, serverless
 
@@ -33,14 +41,6 @@
 - **Centralized config** — operational constants (timeouts, thresholds, tuning params) live in `app/settings.py`; add new values there and import in services
 - **Structured logging** — all service files use `logger = logging.getLogger(__name__)`; never use bare `print()` for debug output
 - **API keys** — ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, EXA_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD (`.env` only)
-
-## NEVER
-- Never rewrite entire files for small logic changes — use targeted edits
-- Never commit `.env`, `venv/`, `blog.db`, `__pycache__/`
-- Never swap the database to SQLite or any non-Neon provider
-- Never duplicate source code into `.md` memory files
-- Never introduce paid dependencies without admin approval
-- Never remove `pool_pre_ping` or keepalive args from `database.py`
 
 ## Architecture
 Only if told to read. Full pipeline (7 phases), agent logic, scoring algorithms, intelligence loops, and workspace system: `docs/architecture.md`
