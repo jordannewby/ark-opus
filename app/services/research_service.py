@@ -1,11 +1,11 @@
 """
-ResearchAgent — uses DataForSEO and DeepSeek-R1 to gather competitive intel for a keyword.
+ResearchAgent — uses DataForSEO and GLM-5 Deep Thinking to gather competitive intel for a keyword.
 
 Returns structured JSON with:
   - Top 5 competitor H2/H3 headers
   - "People Also Ask" questions
   - 15+ semantic entities
-  - Information Gap (via DeepSeek-R1)
+  - Information Gap (via GLM-5)
   - On-Page metrics
   - Backlinks
 """

@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from anthropic import AsyncAnthropic
 from ..settings import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_WRITER_ATTEMPTS, WRITER_MAX_TOKENS, LLM_SOURCE_CONTEXT_CHARS, MAX_UNCITED_CLAIMS
-from .readability_service import verify_readability, READABILITY_DIRECTIVE
+from .readability_service import verify_readability
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +183,7 @@ class WriterService:
             "niche": niche,
             "all_citations": all_citations,
             "style_rules": style_rules_text,
+            "psychology_directives": "",
             "sections_planned": [],
             "current_section_idx": 0,
             "draft_sections": [],

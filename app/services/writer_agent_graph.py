@@ -8,7 +8,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from anthropic import AsyncAnthropic
 
-from .readability_service import verify_readability
+from .readability_service import verify_readability, READABILITY_DIRECTIVE
 from ..settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
 import logging
@@ -40,7 +40,8 @@ class WriterState(TypedDict):
     niche: str
     all_citations: List[dict] # list of dicts with 'citation_anchor', 'source_url', 'fact_text'
     style_rules: str # Dynamic human rules from DB
-    
+    psychology_directives: str # Extracted psychology blueprint fields for writer
+
     sections_planned: List[SectionPlan]
     current_section_idx: int
     draft_sections: List[str]
@@ -96,8 +97,26 @@ async def planner_node(state: WriterState) -> dict:
             "message": "Graph: Planning with ZERO citations - writer will only be able to write general advice"
         })
 
+    # Extract psychology blueprint fields for the writer node
+    psych_parts = []
+    if blueprint.get("hook_strategy"):
+        psych_parts.append(f"HOOK STRATEGY (use in opening section): {blueprint['hook_strategy']}")
+    if blueprint.get("target_identity"):
+        psych_parts.append(f"TARGET READER: {blueprint['target_identity']}")
+    if blueprint.get("problem_statement"):
+        psych_parts.append(f"CORE PROBLEM (misunderstood root cause): {blueprint['problem_statement']}")
+    if blueprint.get("agitation_points"):
+        points = blueprint["agitation_points"]
+        if isinstance(points, list):
+            psych_parts.append("AGITATION POINTS (why standard advice fails):\n" + "\n".join(f"  - {p}" for p in points))
+    if blueprint.get("identity_hooks"):
+        hooks = blueprint["identity_hooks"]
+        if isinstance(hooks, list):
+            psych_parts.append("IDENTITY HOOKS (tribal positioning):\n" + "\n".join(f"  - {h}" for h in hooks))
+    psychology_directives = "\n".join(psych_parts) if psych_parts else ""
+
     yield_msgs.append({"type": "debug", "message": f"Graph: Planner mapped {len(outline.sections)} sections."})
-    return {"sections_planned": outline.sections, "current_section_idx": 0, "draft_sections": [], "yield_messages": yield_msgs}
+    return {"sections_planned": outline.sections, "current_section_idx": 0, "draft_sections": [], "psychology_directives": psychology_directives, "yield_messages": yield_msgs}
 
 async def retriever_node(state: WriterState) -> dict:
     idx = state["current_section_idx"]
@@ -147,8 +166,8 @@ async def writer_node(state: WriterState) -> dict:
     
     yield_msgs = [{"type": "debug", "message": f"Graph: WriterNode drafting section {idx+1} (extended thinking)..."}]
     
-    # --- System prompt: writer.md + section-mode override ---
-    system = _WRITER_SYSTEM_PROMPT + (
+    # --- System prompt: writer.md + readability directive + section-mode override ---
+    system = _WRITER_SYSTEM_PROMPT + "\n\n" + READABILITY_DIRECTIVE + (
         "\n\n# SECTION-MODE OVERRIDE\n"
         "You are writing ONE section of a larger article, not the full article. "
         "Do NOT write an introduction or conclusion unless this is the first/last section. "
@@ -246,6 +265,37 @@ Do NOT name organizations (McKinsey, Gartner, etc.) unless the URL belongs to th
     else:
         prompt += "\n<citations>\nNo citations available. Write only general advice. Do NOT state any statistics or data-backed claims.\n</citations>\n"
         
+    # Inject psychology directives AFTER no_fabrication + citations (safety: fact rules take precedence)
+    psych_text = state.get("psychology_directives", "")
+    if psych_text:
+        is_first_section = (idx == 0)
+        if is_first_section:
+            # First section gets full hook_strategy + all directives
+            prompt += f"""\n<psychology_directives>
+STYLE GOALS ONLY — do NOT invent claims, statistics, or quotes to satisfy these hooks.
+Use these to shape TONE and FRAMING, not to fabricate evidence.
+
+{psych_text}
+</psychology_directives>
+"""
+        else:
+            # Subsequent sections get target_identity + identity_hooks only (no hook_strategy)
+            filtered_lines = [
+                line for line in psych_text.split("\n")
+                if not line.startswith("HOOK STRATEGY")
+                and not line.startswith("CORE PROBLEM")
+                and not line.startswith("AGITATION POINTS")
+                and not line.startswith("  - ")  # Skip agitation bullet points
+            ]
+            filtered = "\n".join(l for l in filtered_lines if l.strip())
+            if filtered:
+                prompt += f"""\n<psychology_directives>
+STYLE GOALS ONLY — do NOT invent claims, statistics, or quotes to satisfy these hooks.
+
+{filtered}
+</psychology_directives>
+"""
+
     if feedback:
         prompt += (
             f"\n<revision_feedback>\n{feedback}\n"
@@ -297,6 +347,7 @@ Output ONLY the final Markdown section text."""
         
     except Exception as e:
         logger.error(f"[WRITER] Extended thinking call failed: {e}. Falling back to standard call.")
+        yield_msgs.append({"type": "warning", "message": f"Extended thinking unavailable for section {idx+1}, using standard call. Quality may be lower."})
         # Fallback to standard LangChain call if extended thinking fails
         llm = get_claude(0.7)
         res = await llm.ainvoke([SystemMessage(content=system), HumanMessage(content=prompt)])

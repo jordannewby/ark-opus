@@ -27,4 +27,4 @@ Return ONLY a valid JSON object with these keys:
 - "agitation_points": (list) 3 points on why "standard advice" is actually making things worse.
 - "identity_hooks": (list) Exactly 3 hooks using the tribal categories above.
 - "semantic_entity_map": (list) Map 5-10 semantic entities to specific H2/H3 headers for maximum relevance.
-- "outline_structure": (list of dicts) Each dict: {"heading": string, "psychological_goal": string, "information_gain_trigger": string}.
+- "outline_structure": (list of dicts) Each dict: {"heading": string, "psychological_goal": string, "information_gain_trigger": string}. IMPORTANT: Every heading MUST use the "H2: " prefix (e.g., "H2: Why Most AI Plans Fail"). Use "H3: " only for sub-sections within an H2. You must have at least 5 H2 headings.
