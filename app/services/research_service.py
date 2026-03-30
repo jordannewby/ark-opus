@@ -19,7 +19,6 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
-import httpx
 
 logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
@@ -32,7 +31,7 @@ from ..settings import (
     ZAI_API_KEY, GLM5_MODEL, GLM5_API_URL, GLM5_MAX_TOKENS, GLM5_TEMPERATURE, GLM5_TIMEOUT,
     DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD,
     CACHE_TTL_HOURS, MAX_AGENTIC_ITERATIONS, EXA_NUM_RESULTS,
-    EXA_MAX_CHARACTERS, EXA_TIMEOUT, SERP_DEPTH,
+    EXA_MAX_CHARACTERS, SERP_DEPTH,
     LOCATION_CODE, LANGUAGE_CODE,
 )
 
@@ -919,14 +918,10 @@ class ResearchAgent:
         Returns truncated full-text for GLM-5 Information Gap analysis.
         """
         from ..settings import EXA_API_KEY
+        from ..exa_client import exa_search, exa_contents
         if not EXA_API_KEY:
             return []
-            
-        headers = {
-            "x-api-key": EXA_API_KEY,
-            "Content-Type": "application/json"
-        }
-        
+
         # Exa Neural Prompting - asking for meaning, not just keywords
         prompt = f"High-quality, expert-level blog post or article about {keyword}"
         if niche != "default":
@@ -938,140 +933,127 @@ class ResearchAgent:
         # Calculate 2 years ago for recency filter
         two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
 
-        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
-            try:
-                # --- Step 1: Neural Search (discovery only, no inline content) ---
-                search_payload = {
-                    "query": prompt,
-                    "type": "auto",
-                    "num_results": 10,  # Increased from 5 to match agentic prompt
-                    "exclude_domains": EXA_EXCLUDE_DOMAINS,  # Block low-quality
-                    "start_published_date": two_years_ago,  # Recency filter
-                }
-                if include_domains:
-                    search_payload["include_domains"] = include_domains  # Quality filter for recognized niches
-                
-                logger.debug(f"[DEBUG] Exa Step 1: Neural Search for '{keyword}'")
-                
-                search_resp = await client.post(
-                    "https://api.exa.ai/search", headers=headers, json=search_payload
-                )
-                search_resp.raise_for_status()
-                search_data = search_resp.json()
-                
-                search_results = search_data.get("results", [])
-                if not search_results:
-                    logger.debug("[DEBUG] Exa: No search results found.")
-                    return []
-                
-                # Extract IDs and build metadata maps from search results
-                result_ids = [r.get("id") for r in search_results if r.get("id")]
-                # Preserve Exa metadata (score + publishedDate) keyed by URL for credibility scoring
-                url_metadata_map = {
-                    r.get("url", ""): {
-                        "score": r.get("score"),
-                        "published_date": r.get("publishedDate")
-                    }
-                    for r in search_results
-                }
+        try:
+            # --- Step 1: Neural Search (discovery only, no inline content) ---
+            search_payload = {
+                "query": prompt,
+                "type": "auto",
+                "num_results": 10,
+                "exclude_domains": EXA_EXCLUDE_DOMAINS,
+                "start_published_date": two_years_ago,
+            }
+            if include_domains:
+                search_payload["include_domains"] = include_domains
 
-                if not result_ids:
-                    # Fallback: return title/url from search results if no IDs available
-                    return [
-                        {"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
-                         "published_date": r.get("publishedDate"), "author": r.get("author"),
-                         "exa_score": r.get("score")}
-                        for r in search_results[:5]
-                    ]
-                
-                logger.debug(f"[DEBUG] Exa Step 2: Fetching full text for {len(result_ids)} articles")
-                
-                # --- Step 2: Full-Text Extraction via get_contents ---
-                contents_payload = {
-                    "ids": result_ids,
-                    "text": {
-                        "max_characters": EXA_MAX_CHARACTERS  # Generous fetch — full article body
-                    }
-                }
-                
-                contents_resp = await client.post(
-                    "https://api.exa.ai/contents", headers=headers, json=contents_payload
-                )
-                contents_resp.raise_for_status()
-                contents_data = contents_resp.json()
-                
-                # --- Step 3: Format & Truncate for GLM-5 context efficiency ---
-                elite_articles = []
-                for article in contents_data.get("results", []):
-                    full_text = article.get("text", "")
-                    article_url = article.get("url", "")
-                    metadata = url_metadata_map.get(article_url, {})
-                    elite_articles.append({
-                        "title": article.get("title", ""),
-                        "url": article_url,
-                        "content": full_text[:20000],  # Safety cap: ~3,500 words per article
-                        "published_date": metadata.get("published_date"),  # From search step
-                        "author": article.get("author"),
-                        "exa_score": metadata.get("score"),  # From search step
-                    })
-                
-                # Gap 27: Filter non-English results
-                elite_articles = _filter_non_english_results(elite_articles, "elite_discovery")
+            logger.debug(f"[DEBUG] Exa Step 1: Neural Search for '{keyword}'")
 
-                # Layer 1B: Keyword-relevance fallback
-                # If niche filter returned mostly off-topic results, retry WITHOUT include_domains
-                if include_domains:
-                    relevant_count = _keyword_relevance_score(keyword, elite_articles)
-                    if relevant_count < 3:
-                        logger.debug(f"[RELEVANCE] Only {relevant_count}/{len(elite_articles)} results relevant to '{keyword}', trying unfiltered search...")
-                    if relevant_count < 3:
-                        try:
-                            unfilt_payload = {
-                                "query": prompt,
-                                "type": "auto",
-                                "num_results": 10,
-                                "exclude_domains": EXA_EXCLUDE_DOMAINS,
-                                "start_published_date": two_years_ago,
-                            }
-                            # No include_domains — search broadly
-                            unfilt_resp = await client.post("https://api.exa.ai/search", headers=headers, json=unfilt_payload)
-                            unfilt_resp.raise_for_status()
-                            unfilt_results = unfilt_resp.json().get("results", [])
+            search_data = await exa_search(search_payload)
 
-                            existing_urls = {a["url"] for a in elite_articles}
-                            new_ids = [r["id"] for r in unfilt_results if r.get("id") and r.get("url", "") not in existing_urls]
-
-                            if new_ids:
-                                unfilt_meta = {r.get("url", ""): {"score": r.get("score"), "published_date": r.get("publishedDate")} for r in unfilt_results}
-                                cont_resp = await client.post("https://api.exa.ai/contents", headers=headers, json={"ids": new_ids[:10], "text": {"max_characters": EXA_MAX_CHARACTERS}})
-                                cont_resp.raise_for_status()
-                                for article in cont_resp.json().get("results", []):
-                                    a_url = article.get("url", "")
-                                    meta = unfilt_meta.get(a_url, {})
-                                    elite_articles.append({
-                                        "title": article.get("title", ""),
-                                        "url": a_url,
-                                        "content": article.get("text", "")[:20000],
-                                        "published_date": meta.get("published_date"),
-                                        "author": article.get("author"),
-                                        "exa_score": meta.get("score"),
-                                    })
-                                elite_articles = _filter_non_english_results(elite_articles, "elite_unfiltered")
-                                if logger.isEnabledFor(logging.DEBUG):
-                                    new_relevant = _keyword_relevance_score(keyword, elite_articles)
-                                    logger.debug(f"[RELEVANCE] After unfiltered fallback: {new_relevant}/{len(elite_articles)} relevant")
-                        except Exception as e:
-                            logger.debug(f"[RELEVANCE] Unfiltered fallback failed (non-critical): {e}")
-
-                if logger.isEnabledFor(logging.DEBUG):
-                    total_chars = sum(len(a["content"]) for a in elite_articles)
-                    logger.debug(f"[DEBUG] Exa Full-Text Audit complete: {len(elite_articles)} articles, {total_chars} total chars")
-
-                return elite_articles
-
-            except Exception as e:
-                logger.error(f"Exa.ai API Error: {e}")
+            search_results = search_data.get("results", [])
+            if not search_results:
+                logger.debug("[DEBUG] Exa: No search results found.")
                 return []
+
+            # Extract IDs and build metadata maps from search results
+            result_ids = [r.get("id") for r in search_results if r.get("id")]
+            # Preserve Exa metadata (score + publishedDate) keyed by URL for credibility scoring
+            url_metadata_map = {
+                r.get("url", ""): {
+                    "score": r.get("score"),
+                    "published_date": r.get("publishedDate")
+                }
+                for r in search_results
+            }
+
+            if not result_ids:
+                return [
+                    {"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
+                     "published_date": r.get("publishedDate"), "author": r.get("author"),
+                     "exa_score": r.get("score")}
+                    for r in search_results[:5]
+                ]
+
+            logger.debug(f"[DEBUG] Exa Step 2: Fetching full text for {len(result_ids)} articles")
+
+            # --- Step 2: Full-Text Extraction via get_contents ---
+            contents_payload = {
+                "ids": result_ids,
+                "text": {
+                    "max_characters": EXA_MAX_CHARACTERS
+                }
+            }
+
+            contents_data = await exa_contents(contents_payload)
+
+            # --- Step 3: Format & Truncate for GLM-5 context efficiency ---
+            elite_articles = []
+            for article in contents_data.get("results", []):
+                full_text = article.get("text", "")
+                article_url = article.get("url", "")
+                metadata = url_metadata_map.get(article_url, {})
+                elite_articles.append({
+                    "title": article.get("title", ""),
+                    "url": article_url,
+                    "content": full_text[:20000],
+                    "published_date": metadata.get("published_date"),
+                    "author": article.get("author"),
+                    "exa_score": metadata.get("score"),
+                })
+
+            # Gap 27: Filter non-English results
+            elite_articles = _filter_non_english_results(elite_articles, "elite_discovery")
+
+            # Layer 1B: Keyword-relevance fallback
+            # If niche filter returned mostly off-topic results, retry WITHOUT include_domains
+            if include_domains:
+                relevant_count = _keyword_relevance_score(keyword, elite_articles)
+                if relevant_count < 3:
+                    logger.debug(f"[RELEVANCE] Only {relevant_count}/{len(elite_articles)} results relevant to '{keyword}', trying unfiltered search...")
+                if relevant_count < 3:
+                    try:
+                        unfilt_payload = {
+                            "query": prompt,
+                            "type": "auto",
+                            "num_results": 10,
+                            "exclude_domains": EXA_EXCLUDE_DOMAINS,
+                            "start_published_date": two_years_ago,
+                        }
+                        unfilt_data = await exa_search(unfilt_payload)
+                        unfilt_results = unfilt_data.get("results", [])
+
+                        existing_urls = {a["url"] for a in elite_articles}
+                        new_ids = [r["id"] for r in unfilt_results if r.get("id") and r.get("url", "") not in existing_urls]
+
+                        if new_ids:
+                            unfilt_meta = {r.get("url", ""): {"score": r.get("score"), "published_date": r.get("publishedDate")} for r in unfilt_results}
+                            cont_data = await exa_contents({"ids": new_ids[:10], "text": {"max_characters": EXA_MAX_CHARACTERS}})
+                            for article in cont_data.get("results", []):
+                                a_url = article.get("url", "")
+                                meta = unfilt_meta.get(a_url, {})
+                                elite_articles.append({
+                                    "title": article.get("title", ""),
+                                    "url": a_url,
+                                    "content": article.get("text", "")[:20000],
+                                    "published_date": meta.get("published_date"),
+                                    "author": article.get("author"),
+                                    "exa_score": meta.get("score"),
+                                })
+                            elite_articles = _filter_non_english_results(elite_articles, "elite_unfiltered")
+                            if logger.isEnabledFor(logging.DEBUG):
+                                new_relevant = _keyword_relevance_score(keyword, elite_articles)
+                                logger.debug(f"[RELEVANCE] After unfiltered fallback: {new_relevant}/{len(elite_articles)} relevant")
+                    except Exception as e:
+                        logger.debug(f"[RELEVANCE] Unfiltered fallback failed (non-critical): {e}")
+
+            if logger.isEnabledFor(logging.DEBUG):
+                total_chars = sum(len(a["content"]) for a in elite_articles)
+                logger.debug(f"[DEBUG] Exa Full-Text Audit complete: {len(elite_articles)} articles, {total_chars} total chars")
+
+            return elite_articles
+
+        except Exception as e:
+            logger.error(f"Exa.ai API Error: {e}")
+            return []
     async def backfill_search(self, keyword: str, niche: str, exclude_domains: list[str]) -> list[dict]:
         """
         Broader Exa search for source backfill when initial verification yields <3 credible sources.
@@ -1079,10 +1061,9 @@ class ResearchAgent:
         Returns [{title, url, content}, ...] — same format as _exa_elite_discovery().
         """
         from ..settings import EXA_API_KEY
+        from ..exa_client import exa_search, exa_contents
         if not EXA_API_KEY:
             return []
-
-        headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
 
         prompt = f"High-quality, expert-level blog post or article about {keyword}"
         if niche != "default":
@@ -1093,72 +1074,61 @@ class ResearchAgent:
         # Combine standard exclusions with rejected domains
         all_excluded = list(set(EXA_EXCLUDE_DOMAINS + exclude_domains))
 
-        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
-            try:
-                search_payload = {
-                    "query": prompt,
-                    "type": "auto",
-                    "num_results": 15,
-                    "exclude_domains": all_excluded,
-                    "start_published_date": two_years_ago,
-                }
-                # No include_domains — search broadly
+        try:
+            search_payload = {
+                "query": prompt,
+                "type": "auto",
+                "num_results": 15,
+                "exclude_domains": all_excluded,
+                "start_published_date": two_years_ago,
+            }
 
-                logger.debug(f"[BACKFILL] Exa broad search for '{keyword}' (excluding {len(all_excluded)} domains)")
+            logger.debug(f"[BACKFILL] Exa broad search for '{keyword}' (excluding {len(all_excluded)} domains)")
 
-                search_resp = await client.post("https://api.exa.ai/search", headers=headers, json=search_payload)
-                search_resp.raise_for_status()
-                search_results = search_resp.json().get("results", [])
+            search_data = await exa_search(search_payload)
+            search_results = search_data.get("results", [])
 
-                if not search_results:
-                    logger.debug("[BACKFILL] No results found in broad search")
-                    return []
-
-                result_ids = [r.get("id") for r in search_results if r.get("id")]
-                # Preserve Exa metadata (score + publishedDate) for credibility scoring
-                url_metadata_map = {
-                    r.get("url", ""): {
-                        "score": r.get("score"),
-                        "published_date": r.get("publishedDate")
-                    }
-                    for r in search_results
-                }
-                if not result_ids:
-                    return [{"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
-                             "published_date": r.get("publishedDate"), "author": r.get("author"),
-                             "exa_score": r.get("score")} for r in search_results[:5]]
-
-                logger.debug(f"[BACKFILL] Fetching full text for {len(result_ids)} articles")
-
-                contents_resp = await client.post(
-                    "https://api.exa.ai/contents", headers=headers,
-                    json={"ids": result_ids, "text": {"max_characters": EXA_MAX_CHARACTERS}}
-                )
-                contents_resp.raise_for_status()
-
-                elite_articles = []
-                for article in contents_resp.json().get("results", []):
-                    article_url = article.get("url", "")
-                    metadata = url_metadata_map.get(article_url, {})
-                    elite_articles.append({
-                        "title": article.get("title", ""),
-                        "url": article_url,
-                        "content": article.get("text", "")[:20000],
-                        "published_date": metadata.get("published_date"),  # From search step
-                        "author": article.get("author"),
-                        "exa_score": metadata.get("score"),  # From search step
-                    })
-
-                # Gap 27: Filter non-English results
-                elite_articles = _filter_non_english_results(elite_articles, "backfill")
-
-                logger.debug(f"[BACKFILL] Found {len(elite_articles)} backfill articles")
-
-                return elite_articles
-
-            except Exception as e:
-                logger.error(f"[BACKFILL] Exa API Error: {e}")
+            if not search_results:
+                logger.debug("[BACKFILL] No results found in broad search")
                 return []
+
+            result_ids = [r.get("id") for r in search_results if r.get("id")]
+            url_metadata_map = {
+                r.get("url", ""): {
+                    "score": r.get("score"),
+                    "published_date": r.get("publishedDate")
+                }
+                for r in search_results
+            }
+            if not result_ids:
+                return [{"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
+                         "published_date": r.get("publishedDate"), "author": r.get("author"),
+                         "exa_score": r.get("score")} for r in search_results[:5]]
+
+            logger.debug(f"[BACKFILL] Fetching full text for {len(result_ids)} articles")
+
+            contents_data = await exa_contents({"ids": result_ids, "text": {"max_characters": EXA_MAX_CHARACTERS}})
+
+            elite_articles = []
+            for article in contents_data.get("results", []):
+                article_url = article.get("url", "")
+                metadata = url_metadata_map.get(article_url, {})
+                elite_articles.append({
+                    "title": article.get("title", ""),
+                    "url": article_url,
+                    "content": article.get("text", "")[:20000],
+                    "published_date": metadata.get("published_date"),
+                    "author": article.get("author"),
+                    "exa_score": metadata.get("score"),
+                })
+
+            elite_articles = _filter_non_english_results(elite_articles, "backfill")
+            logger.debug(f"[BACKFILL] Found {len(elite_articles)} backfill articles")
+            return elite_articles
+
+        except Exception as e:
+            logger.error(f"[BACKFILL] Exa API Error: {e}")
+            return []
 
     async def niche_filtered_backfill(self, keyword: str, niche: str, exclude_domains: list[str]) -> list[dict]:
         """
@@ -1167,6 +1137,7 @@ class ResearchAgent:
         Returns [] for unrecognized niches (lets broad backfill handle them).
         """
         from ..settings import EXA_API_KEY
+        from ..exa_client import exa_search, exa_contents
 
         include_domains = self._get_niche_include_domains(niche)
         if not include_domains:
@@ -1176,8 +1147,6 @@ class ResearchAgent:
         if not EXA_API_KEY:
             return []
 
-        headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
-
         prompt = f"High-quality, expert-level blog post or article about {keyword}"
         if niche != "default":
             prompt = f"High-quality, advanced {niche} blog post or article about {keyword}"
@@ -1185,72 +1154,62 @@ class ResearchAgent:
         two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
         all_excluded = list(set(EXA_EXCLUDE_DOMAINS + exclude_domains))
 
-        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
-            try:
-                search_payload = {
-                    "query": prompt,
-                    "type": "auto",
-                    "num_results": 15,
-                    "exclude_domains": all_excluded,
-                    "include_domains": include_domains,
-                    "start_published_date": two_years_ago,
-                }
+        try:
+            search_payload = {
+                "query": prompt,
+                "type": "auto",
+                "num_results": 15,
+                "exclude_domains": all_excluded,
+                "include_domains": include_domains,
+                "start_published_date": two_years_ago,
+            }
 
-                logger.debug(f"[BACKFILL-NICHE] Exa niche-filtered search for '{keyword}' with {len(include_domains)} domains")
+            logger.debug(f"[BACKFILL-NICHE] Exa niche-filtered search for '{keyword}' with {len(include_domains)} domains")
 
-                search_resp = await client.post("https://api.exa.ai/search", headers=headers, json=search_payload)
-                search_resp.raise_for_status()
-                search_results = search_resp.json().get("results", [])
+            search_data = await exa_search(search_payload)
+            search_results = search_data.get("results", [])
 
-                if not search_results:
-                    logger.debug("[BACKFILL-NICHE] No results found in niche-filtered search")
-                    return []
-
-                result_ids = [r.get("id") for r in search_results if r.get("id")]
-                # Preserve Exa metadata (score + publishedDate) for credibility scoring
-                url_metadata_map = {
-                    r.get("url", ""): {
-                        "score": r.get("score"),
-                        "published_date": r.get("publishedDate")
-                    }
-                    for r in search_results
-                }
-                if not result_ids:
-                    return [{"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
-                             "published_date": r.get("publishedDate"), "author": r.get("author"),
-                             "exa_score": r.get("score")} for r in search_results[:5]]
-
-                logger.debug(f"[BACKFILL-NICHE] Fetching full text for {len(result_ids)} articles")
-
-                contents_resp = await client.post(
-                    "https://api.exa.ai/contents", headers=headers,
-                    json={"ids": result_ids, "text": {"max_characters": EXA_MAX_CHARACTERS}}
-                )
-                contents_resp.raise_for_status()
-
-                elite_articles = []
-                for article in contents_resp.json().get("results", []):
-                    article_url = article.get("url", "")
-                    metadata = url_metadata_map.get(article_url, {})
-                    elite_articles.append({
-                        "title": article.get("title", ""),
-                        "url": article_url,
-                        "content": article.get("text", "")[:20000],
-                        "published_date": metadata.get("published_date"),  # From search step
-                        "author": article.get("author"),
-                        "exa_score": metadata.get("score"),  # From search step
-                    })
-
-                # Gap 27: Filter non-English results
-                elite_articles = _filter_non_english_results(elite_articles, "backfill_niche")
-
-                logger.debug(f"[BACKFILL-NICHE] Found {len(elite_articles)} niche-filtered backfill articles")
-
-                return elite_articles
-
-            except Exception as e:
-                logger.error(f"[BACKFILL-NICHE] Exa API Error: {e}")
+            if not search_results:
+                logger.debug("[BACKFILL-NICHE] No results found in niche-filtered search")
                 return []
+
+            result_ids = [r.get("id") for r in search_results if r.get("id")]
+            url_metadata_map = {
+                r.get("url", ""): {
+                    "score": r.get("score"),
+                    "published_date": r.get("publishedDate")
+                }
+                for r in search_results
+            }
+            if not result_ids:
+                return [{"title": r.get("title", ""), "url": r.get("url", ""), "content": "",
+                         "published_date": r.get("publishedDate"), "author": r.get("author"),
+                         "exa_score": r.get("score")} for r in search_results[:5]]
+
+            logger.debug(f"[BACKFILL-NICHE] Fetching full text for {len(result_ids)} articles")
+
+            contents_data = await exa_contents({"ids": result_ids, "text": {"max_characters": EXA_MAX_CHARACTERS}})
+
+            elite_articles = []
+            for article in contents_data.get("results", []):
+                article_url = article.get("url", "")
+                metadata = url_metadata_map.get(article_url, {})
+                elite_articles.append({
+                    "title": article.get("title", ""),
+                    "url": article_url,
+                    "content": article.get("text", "")[:20000],
+                    "published_date": metadata.get("published_date"),
+                    "author": article.get("author"),
+                    "exa_score": metadata.get("score"),
+                })
+
+            elite_articles = _filter_non_english_results(elite_articles, "backfill_niche")
+            logger.debug(f"[BACKFILL-NICHE] Found {len(elite_articles)} niche-filtered backfill articles")
+            return elite_articles
+
+        except Exception as e:
+            logger.error(f"[BACKFILL-NICHE] Exa API Error: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # Native Exa Tool Functions (Scout & Extract)
@@ -1276,15 +1235,14 @@ class ResearchAgent:
             start_published_date: ISO date (YYYY-MM-DD) for recency filter
         """
         from ..settings import EXA_API_KEY
+        from ..exa_client import exa_search as _exa_search
         if not EXA_API_KEY:
             return [{"error": "EXA_API_KEY not configured"}]
 
-        headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
         payload = {
             "query": query,
             "type": "auto",
             "num_results": num_results,
-            "use_autoprompt": True
         }
 
         # Add quality filters if provided
@@ -1295,34 +1253,30 @@ class ResearchAgent:
         if start_published_date:
             payload["start_published_date"] = start_published_date
 
-        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
-            try:
-                resp = await client.post("https://api.exa.ai/search", headers=headers, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
+        try:
+            data = await _exa_search(payload)
 
-                results = []
-                for r in data.get("results", []):
-                    results.append({
-                        "id": r.get("id", ""),
-                        "title": r.get("title", ""),
-                        "url": r.get("url", ""),
-                        "snippet": (r.get("text", "") or "")[:300],  # Brief snippet only
-                        "published_date": r.get("publishedDate"),
-                        "author": r.get("author"),
-                        "exa_score": r.get("score"),
-                    })
+            results = []
+            for r in data.get("results", []):
+                results.append({
+                    "id": r.get("id", ""),
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "snippet": (r.get("text", "") or "")[:300],
+                    "published_date": r.get("publishedDate"),
+                    "author": r.get("author"),
+                    "exa_score": r.get("score"),
+                })
 
-                # Gap 27: Filter non-English results
-                results = _filter_non_english_results(results, "scout")
+            results = _filter_non_english_results(results, "scout")
 
-                if logger.isEnabledFor(logging.DEBUG):
-                    filter_info = f" with filters: include={include_domains}, exclude={exclude_domains}, after={start_published_date}" if any([include_domains, exclude_domains, start_published_date]) else ""
-                    logger.debug(f"[DEBUG] exa_scout_search: Found {len(results)} results for '{query}'{filter_info}")
-                return results
-            except Exception as e:
-                logger.error(f"Exa Scout Error: {e}")
-                return [{"error": str(e)}]
+            if logger.isEnabledFor(logging.DEBUG):
+                filter_info = f" with filters: include={include_domains}, exclude={exclude_domains}, after={start_published_date}" if any([include_domains, exclude_domains, start_published_date]) else ""
+                logger.debug(f"[DEBUG] exa_scout_search: Found {len(results)} results for '{query}'{filter_info}")
+            return results
+        except Exception as e:
+            logger.error(f"Exa Scout Error: {e}")
+            return [{"error": str(e)}]
 
     async def exa_extract_full_text(self, ids: list[str]) -> list[dict]:
         """
@@ -1330,42 +1284,39 @@ class ResearchAgent:
         Truncates each article to 20,000 chars (~3,500 words).
         """
         from ..settings import EXA_API_KEY
+        from ..exa_client import exa_contents as _exa_contents
         if not EXA_API_KEY:
             return [{"error": "EXA_API_KEY not configured"}]
         if not ids:
             return [{"error": "No IDs provided"}]
-        
-        headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
+
         payload = {
             "ids": ids,
             "text": {"max_characters": EXA_MAX_CHARACTERS}
         }
-        
-        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
-            try:
-                resp = await client.post("https://api.exa.ai/contents", headers=headers, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                
-                articles = []
-                for article in data.get("results", []):
-                    full_text = article.get("text", "")
-                    articles.append({
-                        "title": article.get("title", ""),
-                        "url": article.get("url", ""),
-                        "content": full_text[:20000],  # Safety cap: ~3,500 words
-                        "published_date": article.get("publishedDate"),
-                        "author": article.get("author"),
-                        "exa_score": None,  # /contents API has no score; caller must merge from search metadata
-                    })
-                
-                if logger.isEnabledFor(logging.DEBUG):
-                    total_chars = sum(len(a["content"]) for a in articles)
-                    logger.debug(f"[DEBUG] exa_extract_full_text: {len(articles)} articles, {total_chars} total chars")
-                return articles
-            except Exception as e:
-                logger.error(f"Exa Extract Error: {e}")
-                return [{"error": str(e)}]
+
+        try:
+            data = await _exa_contents(payload)
+
+            articles = []
+            for article in data.get("results", []):
+                full_text = article.get("text", "")
+                articles.append({
+                    "title": article.get("title", ""),
+                    "url": article.get("url", ""),
+                    "content": full_text[:20000],
+                    "published_date": article.get("publishedDate"),
+                    "author": article.get("author"),
+                    "exa_score": None,
+                })
+
+            if logger.isEnabledFor(logging.DEBUG):
+                total_chars = sum(len(a["content"]) for a in articles)
+                logger.debug(f"[DEBUG] exa_extract_full_text: {len(articles)} articles, {total_chars} total chars")
+            return articles
+        except Exception as e:
+            logger.error(f"Exa Extract Error: {e}")
+            return [{"error": str(e)}]
 
     # ------------------------------------------------------------------
     # Native Exa Tool: Find Similar (Source Discovery)
@@ -1384,10 +1335,10 @@ class ResearchAgent:
         Cost: Same as regular search (~$0.007/search).
         """
         from ..settings import EXA_API_KEY
+        from ..exa_client import exa_find_similar as _exa_find_similar
         if not EXA_API_KEY:
             return [{"error": "EXA_API_KEY not configured"}]
 
-        headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
         payload: dict = {
             "url": url,
             "num_results": num_results,
@@ -1399,34 +1350,28 @@ class ResearchAgent:
         if start_published_date:
             payload["start_published_date"] = start_published_date
 
-        async with httpx.AsyncClient(timeout=EXA_TIMEOUT) as client:
-            try:
-                resp = await client.post("https://api.exa.ai/findSimilar", headers=headers, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
+        try:
+            data = await _exa_find_similar(payload)
 
-                results = []
-                for r in data.get("results", []):
-                    results.append({
-                        "id": r.get("id", ""),
-                        "title": r.get("title", ""),
-                        "url": r.get("url", ""),
-                        "snippet": (r.get("text", "") or "")[:300],
-                        "published_date": r.get("publishedDate"),
-                        "author": r.get("author"),
-                        "exa_score": r.get("score"),
-                    })
+            results = []
+            for r in data.get("results", []):
+                results.append({
+                    "id": r.get("id", ""),
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "snippet": (r.get("text", "") or "")[:300],
+                    "published_date": r.get("publishedDate"),
+                    "author": r.get("author"),
+                    "exa_score": r.get("score"),
+                })
 
-                # Gap 27: Filter non-English results
-                results = _filter_non_english_results(results, "find_similar")
+            results = _filter_non_english_results(results, "find_similar")
 
-                logger.debug(f"[DEBUG] exa_find_similar: Found {len(results)} similar articles for '{url}'")
-                return results
-            except Exception as e:
-                logger.error(f"Exa FindSimilar Error: {e}")
-                return [{"error": str(e)}]
-
-        return []  # Unreachable but satisfies type checker
+            logger.debug(f"[DEBUG] exa_find_similar: Found {len(results)} similar articles for '{url}'")
+            return results
+        except Exception as e:
+            logger.error(f"Exa FindSimilar Error: {e}")
+            return [{"error": str(e)}]
 
     # ------------------------------------------------------------------
     # DataForSEO Content Analysis (Optional Enhancement)

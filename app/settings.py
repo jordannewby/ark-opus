@@ -68,6 +68,18 @@ GLM5_MAX_RETRIES = 3
 GLM5_RETRY_BASE_DELAY = 1  # seconds, exponential backoff: 1s, 2s, 4s
 GLM5_CONCURRENCY_LIMIT = 2  # GLM-5 API allows max 2 simultaneous requests
 
+# Exa rate limiting (Phase 1 raw calls)
+EXA_SEARCH_CONCURRENCY = 8       # Max concurrent /search + /findSimilar (Exa limit: 10 QPS)
+EXA_CONTENTS_CONCURRENCY = 20    # Max concurrent /contents (Exa limit: 100 QPS)
+EXA_MAX_RETRIES = 3
+EXA_RETRY_BASE_DELAY = 1         # seconds, exponential backoff: 1s, 2s, 4s
+EXA_INTER_REQUEST_DELAY = 0.12   # seconds between search releases (~8 QPS sustained)
+
+# Exa Research API (Phase 1.5 fact discovery + verification)
+EXA_RESEARCH_TIMEOUT = 300          # seconds to poll before giving up (Research API p90 ~90s, complex niches can take longer)
+EXA_RESEARCH_MODEL = "exa-research" # or "exa-research-pro" for complex niches
+EXA_RESEARCH_ENABLED = True         # feature flag — False skips Phase 1.5 entirely
+
 # Writer tuning
 MAX_WRITER_ATTEMPTS = 5
 WRITER_MAX_TOKENS = 8192

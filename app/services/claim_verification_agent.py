@@ -732,6 +732,12 @@ def detect_unverified_entities(
     for m in product_pattern.finditer(scan_text):
         name = m.group(1).strip()
         if len(name) >= 4:  # Skip very short matches
+            # Extract core name (strip product suffix like "AI", "Platform")
+            core = re.sub(r'\s+(' + _PRODUCT_SUFFIXES + r')$', '', name, flags=re.IGNORECASE).strip()
+            # Skip if ALL words in core name are common English words (e.g., "Your AI", "Most AI", "Traditional AI")
+            core_words = [w.lower() for w in core.split()]
+            if all(w in _COMMON_WORDS for w in core_words):
+                continue
             candidates.add(name)
 
     for m in standalone_pattern.finditer(scan_text):
@@ -827,6 +833,8 @@ _COMMON_WORDS = frozenset({
     "here", "there", "then", "than", "both", "each", "every", "either",
     "neither", "most", "much", "many", "more", "some", "such", "other",
     # Pronouns and common subjects
+    "you", "your", "yours", "they", "them", "their", "theirs",
+    "we", "our", "ours", "my", "his", "her", "its",
     "anyone", "everyone", "someone", "nobody",
     # Business/professional nouns
     "client", "clients", "employees", "firms", "users", "customers",
@@ -860,6 +868,10 @@ _COMMON_WORDS = frozenset({
     # Adjectives/quantifiers
     "several", "various", "numerous", "multiple", "different", "certain",
     "specific", "particular", "overall", "entire", "lower", "recent",
+    "traditional", "conventional", "typical", "general", "advanced",
+    "automated", "potential", "current", "previous", "proper",
+    "zero", "single", "double", "triple", "one", "two", "three",
+    "many", "few", "own", "same", "other", "another", "whole",
     # Nouns that appear in business/tech context
     "threat", "threats", "recovery", "access", "credential", "confidential",
     "financial", "restricted", "internal", "public", "classification",
@@ -1359,7 +1371,7 @@ def format_claim_verification_feedback(verification_result: dict) -> str:
             lines.append(f"     Fix: Rewrite to closely match one of the available facts above.")
         lines.append("")
 
-    uncited = verification_result.get("uncited", [])
+    uncited = verification_result.get("uncited_details", [])
     if uncited:
         lines.append("UNCITED FACTUAL CLAIMS (must add citation from the citation map):")
         for i, d in enumerate(uncited, 1):

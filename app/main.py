@@ -340,7 +340,7 @@ def update_settings(payload: ProfileSettingsUpdate, profile_name: str = "default
 async def generate_article(keyword: str, payload: GeneratePayload, request: Request, db: Session = Depends(get_db)):
     from .services.psychology_agent import PsychologyAgent
     from .services.writer_service import WriterService
-    from .settings import CONFIGURABLE_SETTINGS, resolve_settings
+    from .settings import CONFIGURABLE_SETTINGS, resolve_settings, EXA_RESEARCH_ENABLED
     import time
     import traceback
 
@@ -386,155 +386,70 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 tools_str = ", ".join(tools_used)
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'MCP Tools Executed: {tools_str}'})}\n\n"
 
-            # Phase 1.5 - Source Verification
+            # Phase 1.5 - Fact Discovery + Verification via Exa Research API
             elite_competitors = research_data_dict.get("elite_competitors", [])
             research_run_id = research_data_dict.get("research_run_id", 0)
 
-            source_content_map = {}  # Built during Phase 1.5, passed to writer for claim verification
+            # Build source_content_map from Phase 1 raw articles (for post-writer claim gate)
+            source_content_map = {}
+            for comp in elite_competitors:
+                comp_url = comp.get("url", "")
+                comp_content = comp.get("content", "")
+                if comp_url and comp_content:
+                    source_content_map[comp_url] = comp_content
 
-            if elite_competitors:
-                yield f"data: {json.dumps({'event': 'phase1_5_start', 'message': 'Verifying source credibility...'})}\n\n"
+            if research_run_id and EXA_RESEARCH_ENABLED:
+                from .services.exa_research_service import research_facts, create_citations_from_research, ExaResearchError
+
+                yield f"data: {json.dumps({'event': 'phase1_5_start', 'message': 'Researching and verifying facts...'})}\n\n"
                 p1_5_start = time.time()
 
-                from .services.source_verification_service import verify_sources, link_facts_to_sources
+                try:
+                    # Single async Research API call (~45-90s)
+                    research_result = await research_facts(keyword=keyword, niche=niche)
 
-                verification_result = await verify_sources(
-                    elite_competitors=elite_competitors,
-                    db=db,
-                    profile_name=payload.profile_name,
-                    research_run_id=research_run_id,
-                    mcp_session=request.app.state.mcp_session,
-                    keyword=keyword,
-                    niche=niche,
-                    min_score_threshold=runtime["source_credibility_threshold"],
-                )
+                    cost = research_result.get("cost_dollars", 0)
+                    num_facts = len(research_result.get("facts", []))
+                    yield f"data: {json.dumps({'event': 'fact_verification_start', 'message': f'Processing {num_facts} verified facts (${cost:.3f})...'})}\n\n"
 
-                verified_sources = verification_result["verified_sources"]
-                rejected_sources = verification_result["rejected_sources"]
-
-                if runtime["debug_mode"]:
-                    for i, source in enumerate(verified_sources):
-                        yield f"data: {json.dumps({'event': 'source_verification', 'source_title': source.title, 'domain': source.domain, 'credibility_score': round(source.credibility_score, 1), 'progress': f'{i+1}/{len(elite_competitors)}'})}\n\n"
-
-                # Iterative source search if < 3 verified sources
-                if len(verified_sources) < 3:
-                    yield f"data: {json.dumps({'event': 'source_backfill_start', 'message': f'Only {len(verified_sources)} credible sources found. Starting iterative search...'})}\n\n"
-
-                    from .services.source_verification_service import iterative_source_search
-
-                    search_result = await iterative_source_search(
-                        keyword=keyword,
-                        niche=niche,
-                        profile_name=payload.profile_name,
+                    # Create VerifiedSource + FactCitation DB rows
+                    db = ensure_db_alive(db)
+                    citation_result = await create_citations_from_research(
+                        research_result=research_result,
                         research_run_id=research_run_id,
+                        profile_name=payload.profile_name,
                         db=db,
-                        mcp_session=request.app.state.mcp_session,
-                        research_agent=research_agent,
-                        initial_sources=verified_sources,
-                        target_count=3,
-                        max_iterations=3,
                     )
 
-                    verified_sources = search_result["verified_sources"]
-                    rejected_sources.extend(search_result["rejected_sources"])
+                    verified_sources = citation_result["verified_sources"]
+                    fact_citations = citation_result["fact_citations"]
 
-                    # Merge new sources into elite_competitors for fact extraction
-                    for source in verified_sources:
-                        elite_competitors.append({
-                            "url": source.url,
-                            "title": source.title,
-                            "content": source.content_snippet or "",
-                            "credibility_score": source.credibility_score,
-                            "domain_authority": source.domain_authority,
-                            "freshness_score": source.freshness_score,
-                            "publish_date": source.publish_date.isoformat() if source.publish_date else None,
-                            "domain": source.domain,
-                        })
+                    # SSE: fact verification complete
+                    yield f"data: {json.dumps({'event': 'fact_verification_complete', 'message': f'{len(fact_citations)} facts verified from {len(verified_sources)} authoritative sources', 'verified': len(fact_citations), 'unverifiable': 0, 'corrected': 0, 'total_checked': len(fact_citations)})}\n\n"
 
-                    backfill_found = len(verified_sources)
-                    iterations_used = search_result["iterations_used"]
-                    yield f"data: {json.dumps({'event': 'source_backfill_complete', 'message': f'Iterative search complete: {backfill_found} total verified sources after {iterations_used} iterations', 'verified_count': backfill_found, 'iterations': iterations_used})}\n\n"
+                    # Enrich research_data_dict for downstream phases
+                    research_data_dict["verified_sources"] = [
+                        {"title": s.title, "url": s.url, "credibility_score": s.credibility_score}
+                        for s in verified_sources
+                    ]
+                    research_data_dict["fact_categories"] = citation_result["fact_categories"]
 
-                    # Softer gate: allow 1-2 high-quality sources if avg credibility is very high
-                    if len(verified_sources) == 0:
-                        error_msg = f"Insufficient credible sources after iterative search: 0 sources found (need at least 1). Rejected: {len(rejected_sources)} sources."
-                        yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
-                        return
-                    elif len(verified_sources) < 3:
-                        avg_score = sum(s.credibility_score for s in verified_sources) / len(verified_sources)
-                        if avg_score >= 60.0:
-                            logger.info(f"[GATE] Allowing {len(verified_sources)} sources (avg credibility: {avg_score:.1f})")
-                            yield f"data: {json.dumps({'event': 'debug', 'message': f'Proceeding with {len(verified_sources)} high-quality sources (avg credibility: {avg_score:.1f}/100)'})}\n\n"
-                        else:
-                            error_msg = f"Insufficient credible sources: only {len(verified_sources)} found with avg credibility {avg_score:.1f} < 60.0 threshold."
-                            yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
-                            return
+                    avg_credibility = (
+                        sum(s.credibility_score for s in verified_sources) / len(verified_sources)
+                    ) if verified_sources else 0
 
-                # Extract facts and link to sources (pass full content for better extraction)
-                yield f"data: {json.dumps({'event': 'fact_verification_start', 'message': 'Verifying extracted facts against authoritative sources...'})}\n\n"
+                    yield f"data: {json.dumps({'event': 'phase1_5_complete', 'verified_count': len(verified_sources), 'rejected_count': 0, 'avg_credibility': round(avg_credibility, 1)})}\n\n"
 
-                fact_link_result = await link_facts_to_sources(
-                    verified_sources, research_run_id, db,
-                    elite_competitors=elite_competitors, niche=niche,
-                )
+                    if runtime["debug_mode"]:
+                        yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1.5 (Exa Research) completed in {round(time.time() - p1_5_start, 2)}s. Cost: ${cost:.3f}. Facts: {len(fact_citations)}'})}\n\n"
 
-                # Emit fact verification SSE events
-                if fact_link_result:
-                    fv = fact_link_result.get("fact_verification", {})
-                    total_checked = fv.get("total_checked", 0)
-                    fv_verified = fv.get("verified", 0)
-                    fv_unverifiable = fv.get("unverifiable", 0)
-                    fv_corrected = fv.get("corrected", 0)
+                except (ExaResearchError, asyncio.TimeoutError) as e:
+                    logger.error(f"[RESEARCH-API] Failed: {e}")
+                    yield f"data: {json.dumps({'event': 'error', 'message': f'Fact research failed: {e}'})}\n\n"
+                    return
 
-                    if total_checked > 0:
-                        yield f"data: {json.dumps({'event': 'fact_verification_complete', 'message': f'{fv_verified}/{total_checked} facts independently verified, {fv_unverifiable} unverifiable, {fv_corrected} corrected', 'verified': fv_verified, 'unverifiable': fv_unverifiable, 'corrected': fv_corrected, 'total_checked': total_checked})}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'event': 'fact_verification_complete', 'message': 'All facts from trusted sources (Tier 1-2) - independent verification skipped', 'verified': 0, 'unverifiable': 0, 'corrected': 0, 'total_checked': 0})}\n\n"
-
-                # Build source_content_map for post-writer claim cross-referencing
-                source_content_map = {}
-                for comp in elite_competitors:
-                    url = comp.get("url", "")
-                    content = comp.get("content", "")
-                    if url and content:
-                        source_content_map[url] = content
-                # Fallback: fill gaps from VerifiedSource.content_snippet
-                for vs in verified_sources:
-                    if vs.url not in source_content_map and vs.content_snippet:
-                        source_content_map[vs.url] = vs.content_snippet
-
-                avg_credibility = sum(s.credibility_score for s in verified_sources) / len(verified_sources) if verified_sources else 0
-
-                yield f"data: {json.dumps({'event': 'phase1_5_complete', 'verified_count': len(verified_sources), 'rejected_count': len(rejected_sources), 'avg_credibility': round(avg_credibility, 1)})}\n\n"
-
-                if runtime["debug_mode"]:
-                    yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1.5 (Source Verification) completed in {round(time.time() - p1_5_start, 2)}s. Avg credibility: {round(avg_credibility, 1)}/100'})}\n\n"
-
-                # Enrich research_result for downstream phases
-                research_data_dict["verified_sources"] = [
-                    {"title": s.title, "url": s.url, "credibility_score": s.credibility_score}
-                    for s in verified_sources
-                ]
-
-                # Gap 15: Enrich with fact category distribution for psychology agent
-                db = ensure_db_alive(db)
-                fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
-                if fact_citations:
-                    fact_type_counts = {}
-                    for fc in fact_citations:
-                        ft = fc.fact_type or "unknown"
-                        fact_type_counts[ft] = fact_type_counts.get(ft, 0) + 1
-                    research_data_dict["fact_categories"] = {
-                        "distribution": fact_type_counts,
-                        "total_facts": len(fact_citations),
-                        "dominant_type": max(fact_type_counts, key=fact_type_counts.get),
-                        "has_stats": fact_type_counts.get("stat", 0) > 0,
-                        "has_case_studies": fact_type_counts.get("case_study", 0) > 0,
-                        "has_expert_quotes": fact_type_counts.get("expert_quote", 0) > 0,
-                    }
-            else:
-                if runtime["debug_mode"]:
-                    yield f"data: {json.dumps({'event': 'debug', 'message': 'Phase 1.5 skipped: No elite competitors found in research'})}\n\n"
+            elif runtime["debug_mode"]:
+                yield f"data: {json.dumps({'event': 'debug', 'message': 'Phase 1.5 skipped'})}\n\n"
 
             # Phase 2
             yield f"data: {json.dumps({'event': 'phase2_start', 'message': 'Mapping psychological blueprint...'})}\n\n"
@@ -644,10 +559,11 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 llm_resolved = 0
                 for amb in ambiguous[:2]:
                     try:
+                        claim_dict = amb["claim"]
                         llm_verdict = await verify_claim_with_llm(
-                            amb["claim_text"],
+                            claim_dict["claim_text"],
                             amb.get("candidate_facts", []),
-                            source_content_map.get(amb.get("source_url", ""), "")[:5000] if source_content_map else None,
+                            source_content_map.get(claim_dict.get("citation_url", ""), "")[:5000] if source_content_map else None,
                         )
                         if llm_verdict.get("supported"):
                             xref_result["verified"] = xref_result.get("verified", 0) + 1
@@ -655,7 +571,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                             llm_resolved += 1
                             # Update the detail entry
                             for d in xref_result.get("details", []):
-                                if d.get("claim_text") == amb["claim_text"] and d.get("status") == "ambiguous":
+                                if d.get("claim_text") == claim_dict["claim_text"] and d.get("status") == "ambiguous":
                                     d["status"] = "verified"
                                     d["reason"] = f"LLM verified: {llm_verdict.get('reasoning', '')}"
                                     break
@@ -886,13 +802,9 @@ async def health_check():
         if not EXA_API_KEY:
             return False
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.post(
-                    "https://api.exa.ai/search",
-                    headers={"x-api-key": EXA_API_KEY, "Content-Type": "application/json"},
-                    json={"query": "health", "type": "auto", "num_results": 1}
-                )
-                return resp.status_code == 200
+            from .exa_client import exa_search
+            await exa_search({"query": "health", "type": "auto", "num_results": 1}, timeout=5)
+            return True
         except Exception:
             return False
 
