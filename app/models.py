@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, func, JSON
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -12,7 +12,7 @@ class Post(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     profile_name: Mapped[str] = mapped_column(String(50), index=True, default="default", server_default="default")
     niche: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
-    research_run_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    research_run_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("research_runs.id", ondelete="SET NULL"), index=True, nullable=True)
     title: Mapped[str] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(Text)
     original_ai_content: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -103,7 +103,7 @@ class WriterRun(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     profile_name: Mapped[str] = mapped_column(String(50), index=True, default="default", server_default="default")
     niche: Mapped[str] = mapped_column(String(100))
-    post_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    post_id: Mapped[int] = mapped_column(Integer, ForeignKey("posts.id", ondelete="CASCADE"), nullable=False)
 
     # Readability metrics at generation time (from Post.readability_score)
     ari_score: Mapped[float] = mapped_column(nullable=False)

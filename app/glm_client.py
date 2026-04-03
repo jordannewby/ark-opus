@@ -78,24 +78,23 @@ async def call_glm5_with_retry(
                     return resp.json()
 
             except httpx.HTTPStatusError as e:
-                # Check if it's a 429 rate limit error
-                is_rate_limit = (
-                    e.response.status_code == 429 or
-                    "429" in str(e).lower() or
+                status = e.response.status_code
+                is_retryable = (
+                    status in (429, 500, 502, 503) or
                     "rate limit" in str(e).lower() or
                     "too many requests" in str(e).lower()
                 )
 
-                if is_rate_limit and attempt < max_retries:
+                if is_retryable and attempt < max_retries:
                     delay = GLM5_RETRY_BASE_DELAY * (2 ** attempt)  # 1s, 2s, 4s
                     logger.warning(
-                        f"[GLM-5-RETRY] 429 rate limit, retrying in {delay}s "
+                        f"[GLM-5-RETRY] HTTP {status}, retrying in {delay}s "
                         f"(attempt {attempt + 1}/{max_retries})"
                     )
                     await asyncio.sleep(delay)
                     continue
 
-                # Non-429 error or exhausted retries
+                # Non-retryable error or exhausted retries
                 raise
 
             except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:

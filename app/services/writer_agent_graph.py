@@ -371,12 +371,14 @@ async def editor_node(state: WriterState) -> dict:
     if found_banned:
         errors.append(f"You used banned words: {', '.join(found_banned)}. Replace them with simpler terms.")
         
-    # 2. ARI check
+    # 2. Readability check (delegates to readability_service's multi-factor gate)
     read_result = verify_readability(draft)
     details = read_result.get("details", {})
     ari = details.get("ari_grade", 0)
-    if ari > 11.5:
-        errors.append(f"Readability is too complex (ARI: {ari}). Shorten your sentences to 8-12 words.")
+    if not read_result.get("passed", True) and ari > 10.0:
+        feedback_lines = read_result.get("feedback", [])
+        fb_summary = "; ".join(feedback_lines[:2]) if feedback_lines else f"ARI: {ari}"
+        errors.append(f"Readability too complex ({fb_summary}). Shorten sentences to 8-12 words.")
         
     # 3. Citation check
     for c in citations:

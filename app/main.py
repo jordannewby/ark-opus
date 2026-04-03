@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager, AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from .database import Base, engine, get_db, ensure_db_alive, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, migrate_domain_credibility_cache, migrate_fact_verification, migrate_style_rule_archive, migrate_writer_verification_telemetry, migrate_profile_settings, SessionLocal
+from .database import Base, engine, get_db, ensure_db_alive, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, migrate_domain_credibility_cache, migrate_fact_verification, migrate_style_rule_archive, migrate_writer_verification_telemetry, migrate_profile_settings, migrate_fk_constraints, migrate_version_tracking, record_all_migrations, SessionLocal
 from .models import Post, ProfileSettings, ResearchRun, UserStyleRule, Workspace, WriterRun, FactCitation
 from .schemas import (
     BlueprintResponse,
@@ -54,13 +54,29 @@ migrate_fact_verification()
 migrate_style_rule_archive()
 migrate_writer_verification_telemetry()
 migrate_profile_settings()
+migrate_version_tracking()
 Base.metadata.create_all(bind=engine)
+migrate_fk_constraints()
+record_all_migrations()
 
 def normalize_niche(niche: str | None) -> str:
     """Single source of truth for niche normalization."""
     if not niche:
         return "general"
     return niche.strip().lower().replace(" ", "-")
+
+def _normalize_url(url: str) -> str:
+    """Normalize URL for consistent source_content_map keying."""
+    from urllib.parse import urlparse, urlunparse
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        path = parsed.path.rstrip("/") or "/"
+        return urlunparse((parsed.scheme, netloc, path, "", "", ""))
+    except Exception:
+        return url
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -340,12 +356,12 @@ def update_settings(payload: ProfileSettingsUpdate, profile_name: str = "default
 async def generate_article(keyword: str, payload: GeneratePayload, request: Request, db: Session = Depends(get_db)):
     from .services.psychology_agent import PsychologyAgent
     from .services.writer_service import WriterService
-    from .settings import CONFIGURABLE_SETTINGS, resolve_settings, EXA_RESEARCH_ENABLED
+    from .settings import CONFIGURABLE_SETTINGS, resolve_settings, EXA_RESEARCH_ENABLED, MAX_USER_CONTEXT_CHARS, RESEARCH_TIMEOUT
     import time
     import traceback
 
     niche = payload.niche
-    context = payload.context
+    context = payload.context[:MAX_USER_CONTEXT_CHARS] if payload.context else None
 
     # Resolve per-profile runtime settings (DB overrides + defaults)
     settings_row = db.query(ProfileSettings).filter_by(profile_name=payload.profile_name).first()
@@ -373,13 +389,13 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                         mcp_session=request.app.state.mcp_session,
                         settings_override=runtime,
                     ),
-                    timeout=300
+                    timeout=RESEARCH_TIMEOUT
                 )
             except asyncio.TimeoutError:
-                yield f"data: {json.dumps({'event': 'error', 'message': 'Research phase timed out after 5 minutes. Try a more specific keyword or check your API connections.'})}\n\n"
+                yield f"data: {json.dumps({'event': 'error', 'message': f'Research phase timed out after {RESEARCH_TIMEOUT}s. Try a more specific keyword or check your API connections.'})}\n\n"
                 return
             if runtime["debug_mode"]:
-                yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1 (DeepSeek-R1 + MCP) completed in {round(time.time() - p1_start, 2)}s'})}\n\n"
+                yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1 (GLM-5 + MCP) completed in {round(time.time() - p1_start, 2)}s'})}\n\n"
             
             tools_used = research_data_dict.get("executed_tools", [])
             if runtime["debug_mode"] and tools_used:
@@ -391,12 +407,13 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             research_run_id = research_data_dict.get("research_run_id", 0)
 
             # Build source_content_map from Phase 1 raw articles (for post-writer claim gate)
+            # URLs are normalized (strip www, query params, trailing slash) for consistent lookup
             source_content_map = {}
             for comp in elite_competitors:
                 comp_url = comp.get("url", "")
                 comp_content = comp.get("content", "")
                 if comp_url and comp_content:
-                    source_content_map[comp_url] = comp_content
+                    source_content_map[_normalize_url(comp_url)] = comp_content
 
             if research_run_id and EXA_RESEARCH_ENABLED:
                 from .services.exa_research_service import research_facts, create_citations_from_research, ExaResearchError
@@ -434,6 +451,18 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     ]
                     research_data_dict["fact_categories"] = citation_result["fact_categories"]
 
+                    # CRITICAL-1 fix: Add Phase 1.5 fact texts to source_content_map
+                    # so claim cross-referencing (Phase 4) can verify citations from Research API sources
+                    for fact in research_result.get("facts", []):
+                        fact_url = fact.get("source_url", "")
+                        fact_text = fact.get("fact_text", "")
+                        if fact_url and fact_text:
+                            norm_url = _normalize_url(fact_url)
+                            if norm_url not in source_content_map:
+                                source_content_map[norm_url] = fact_text
+                            else:
+                                source_content_map[norm_url] += "\n" + fact_text
+
                     avg_credibility = (
                         sum(s.credibility_score for s in verified_sources) / len(verified_sources)
                     ) if verified_sources else 0
@@ -441,12 +470,11 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     yield f"data: {json.dumps({'event': 'phase1_5_complete', 'verified_count': len(verified_sources), 'rejected_count': 0, 'avg_credibility': round(avg_credibility, 1)})}\n\n"
 
                     if runtime["debug_mode"]:
-                        yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1.5 (Exa Research) completed in {round(time.time() - p1_5_start, 2)}s. Cost: ${cost:.3f}. Facts: {len(fact_citations)}'})}\n\n"
+                        yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1.5 (Exa Research) completed in {round(time.time() - p1_5_start, 2)}s. Cost: ${cost:.3f}. Facts: {len(fact_citations)}. source_content_map: {len(source_content_map)} URLs'})}\n\n"
 
                 except (ExaResearchError, asyncio.TimeoutError) as e:
-                    logger.error(f"[RESEARCH-API] Failed: {e}")
-                    yield f"data: {json.dumps({'event': 'error', 'message': f'Fact research failed: {e}'})}\n\n"
-                    return
+                    logger.error(f"[RESEARCH-API] Phase 1.5 failed (non-fatal): {e}")
+                    yield f"data: {json.dumps({'event': 'phase1_5_warning', 'message': f'Fact research unavailable: {e}. Continuing with general research data.'})}\n\n"
 
             elif runtime["debug_mode"]:
                 yield f"data: {json.dumps({'event': 'debug', 'message': 'Phase 1.5 skipped'})}\n\n"
@@ -454,8 +482,15 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             # Phase 2
             yield f"data: {json.dumps({'event': 'phase2_start', 'message': 'Mapping psychological blueprint...'})}\n\n"
             p2_start = time.time()
-            psychology_agent = PsychologyAgent(db=db) 
-            blueprint_dict = await psychology_agent.generate_blueprint(research_data_dict)
+            psychology_agent = PsychologyAgent(db=db)
+            try:
+                blueprint_dict = await asyncio.wait_for(
+                    psychology_agent.generate_blueprint(research_data_dict),
+                    timeout=90
+                )
+            except asyncio.TimeoutError:
+                yield f"data: {json.dumps({'event': 'error', 'message': 'Psychology blueprint timed out after 90s. Try again.'})}\n\n"
+                return
             yield f"data: {json.dumps({'event': 'phase2_complete', 'blueprint': blueprint_dict})}\n\n"
             if runtime["debug_mode"]:
                 yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 2 (DeepSeek-V3) completed in {round(time.time() - p2_start, 2)}s'})}\n\n"
@@ -510,39 +545,15 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     verify_claim_with_llm,
                     format_claim_verification_feedback,
                 )
-                from .settings import MAX_UNCITED_CLAIMS
+                from .settings import MAX_UNCITED_CLAIMS, MAX_CLAIM_RETRIES
 
                 yield f"data: {json.dumps({'event': 'claim_verification_start', 'message': 'Cross-referencing claims against verified facts...'})}\n\n"
 
                 article_claims = extract_article_claims(article_content, verify_qualitative=runtime["verify_qualitative_claims"])
 
                 # Attribution-URL mismatch detection: flag "Gartner says X" linked to random-blog.com
-                from .services.source_verification_service import KNOWN_RESEARCH_ORGS, extract_domain
-                import re as _re
-                _org_pattern = _re.compile(
-                    r'\b(' + '|'.join(_re.escape(org) for org in sorted(KNOWN_RESEARCH_ORGS.keys(), key=len, reverse=True)) + r')\b',
-                    _re.IGNORECASE,
-                )
-                attribution_mismatches = []
-                for claim in article_claims:
-                    matches = _org_pattern.findall(claim.get("claim_text", ""))
-                    if not matches:
-                        matches = _org_pattern.findall(claim.get("citation_anchor", ""))
-                    if matches:
-                        cite_domain = extract_domain(claim.get("citation_url", ""))
-                        for org_name in matches:
-                            org_key = org_name.lower()
-                            canonical_domains = KNOWN_RESEARCH_ORGS.get(org_key, [])
-                            if not canonical_domains:
-                                continue
-                            if not any(cite_domain == cd or cite_domain.endswith("." + cd) for cd in canonical_domains):
-                                attribution_mismatches.append({
-                                    "claim_text": claim["claim_text"][:120],
-                                    "named_org": org_key,
-                                    "citation_url": claim["citation_url"],
-                                    "citation_domain": cite_domain,
-                                })
-                                break
+                from .services.source_verification_service import detect_attribution_mismatches
+                attribution_mismatches = detect_attribution_mismatches(article_claims)
 
                 uncited_claims = detect_uncited_claims(article_content, article_claims, verify_qualitative=runtime["verify_qualitative_claims"])
 
@@ -598,7 +609,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 # Gate: reject if fabricated citations, too many uncited claims, or attribution mismatches
                 claim_gate_failed = fabricated > 0 or uncited_count > MAX_UNCITED_CLAIMS or mismatch_count > 0
                 claim_retry_count = 0
-                max_claim_retries = 2
+                max_claim_retries = MAX_CLAIM_RETRIES
 
                 while claim_gate_failed and claim_retry_count < max_claim_retries:
                     claim_retry_count += 1
@@ -632,26 +643,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     # Re-verify
                     article_claims = extract_article_claims(article_content, verify_qualitative=runtime["verify_qualitative_claims"])
                     # Re-check attribution mismatches
-                    attribution_mismatches = []
-                    for claim in article_claims:
-                        matches = _org_pattern.findall(claim.get("claim_text", ""))
-                        if not matches:
-                            matches = _org_pattern.findall(claim.get("citation_anchor", ""))
-                        if matches:
-                            cite_domain = extract_domain(claim.get("citation_url", ""))
-                            for org_name in matches:
-                                org_key = org_name.lower()
-                                canonical_domains = KNOWN_RESEARCH_ORGS.get(org_key, [])
-                                if not canonical_domains:
-                                    continue
-                                if not any(cite_domain == cd or cite_domain.endswith("." + cd) for cd in canonical_domains):
-                                    attribution_mismatches.append({
-                                        "claim_text": claim["claim_text"][:120],
-                                        "named_org": org_key,
-                                        "citation_url": claim["citation_url"],
-                                        "citation_domain": cite_domain,
-                                    })
-                                    break
+                    attribution_mismatches = detect_attribution_mismatches(article_claims)
 
                     uncited_claims = detect_uncited_claims(article_content, article_claims, verify_qualitative=runtime["verify_qualitative_claims"])
                     xref_result = cross_reference_claims(
@@ -717,6 +709,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     claims_total=xref_result.get("total_claims", 0) if xref_result else None,
                     claim_gate_passed=not claim_gate_failed if claim_gate_failed is not None else None,
                 )
+                db = ensure_db_alive(db)
                 db.add(writer_run)
                 db.commit()
 

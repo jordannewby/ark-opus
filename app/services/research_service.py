@@ -1868,6 +1868,9 @@ class ResearchAgent:
             "- ZERO HALLUCINATION: Use only exact tool names from the list above."
         )
         if niche_intel:
+            from ..settings import MAX_PLAYBOOK_CHARS
+            if len(niche_intel) > MAX_PLAYBOOK_CHARS:
+                niche_intel = niche_intel[:MAX_PLAYBOOK_CHARS] + "\n[...truncated]"
             prompt += (
                 "\n\n<niche_playbook>\n"
                 f"{niche_intel}\n"

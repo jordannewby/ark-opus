@@ -115,9 +115,17 @@ DB_POOL_RECYCLE = 240  # seconds — safely under Neon's 5-min idle timeout
 # Claim gate enforcement
 CLAIM_GATE_HARD_BLOCK = True  # Block article save when claim verification fails after retries
 VERIFY_QUALITATIVE_CLAIMS = True  # Verify qualitative claims (research shows, according to, etc.)
+MAX_CLAIM_RETRIES = 2               # Max writer retries on claim verification failure
 
 # Feedback
 RULE_CONSOLIDATION_THRESHOLD = 20
+
+# Prompt injection bounds (max chars for user-controlled inputs injected into LLM prompts)
+MAX_USER_CONTEXT_CHARS = 2000       # Briefing answers injected into GLM-5 research prompt
+MAX_STYLE_RULES_CHARS = 1500        # Accumulated style rules injected into writer prompt
+MAX_RESEARCH_JSON_CHARS = 6000      # Research data JSON injected into psychology prompt
+MAX_PLAYBOOK_CHARS = 1500           # Niche/writer playbook text injected into prompts
+RESEARCH_TIMEOUT = 300              # Phase 1 timeout (seconds)
 
 # ── User-Configurable Settings Registry ──────────────────────────────
 # Each entry defines type, default, bounds/choices, and UI metadata.

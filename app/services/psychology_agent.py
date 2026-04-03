@@ -93,9 +93,13 @@ class PsychologyAgent:
                 f"Ensure your outline supports this depth.\n"
             )
 
+        from ..settings import MAX_RESEARCH_JSON_CHARS
+        research_json_str = json.dumps(research_data, indent=2)
+        if len(research_json_str) > MAX_RESEARCH_JSON_CHARS:
+            research_json_str = research_json_str[:MAX_RESEARCH_JSON_CHARS] + "\n... [truncated]"
         prompt_instructions += (
             "\nFULL RESEARCH JSON:\n"
-            f"{json.dumps(research_data, indent=2)}\n\n"
+            f"{research_json_str}\n\n"
             "Ensure the output is STRICTLY a valid JSON object matching the required keys. "
             "Do NOT include markdown formatting like ```json or ```. Return ONLY the raw JSON object.\n"
             "Your outline_structure must use H2 headings (## prefix) for ALL main sections — "
@@ -147,13 +151,13 @@ class PsychologyAgent:
 
             except Exception as e:
                 logger.error(f"DeepSeek Blueprint Generation Error: {e}")
-                # Fallback empty blueprint on error
+                # Neutral fallback blueprint — no error strings that pollute writer output
                 blueprint = {
-                    "hook_strategy": "Fallback Hook",
-                    "target_identity": "Fallback Target",
-                    "problem_statement": "Fallback Problem",
-                    "agitation_points": ["Error fetching points"],
-                    "identity_hooks": ["Error fetching hooks"],
+                    "hook_strategy": "Focus on practical value and actionable takeaways",
+                    "target_identity": "Practitioner seeking proven solutions",
+                    "problem_statement": "Readers need clear, evidence-based guidance",
+                    "agitation_points": ["Misinformation is common", "Time wasted on ineffective approaches"],
+                    "identity_hooks": ["Expert practitioners verify before acting", "Smart professionals demand evidence"],
                     "semantic_entity_map": [],
                     "outline_structure": []
                 }

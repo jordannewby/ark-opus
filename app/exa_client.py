@@ -95,17 +95,17 @@ async def _call_exa(
                     return resp.json()
 
             except httpx.HTTPStatusError as e:
-                is_rate_limit = (
-                    e.response.status_code == 429
-                    or "429" in str(e).lower()
+                status = e.response.status_code
+                is_retryable = (
+                    status in (429, 500, 502, 503)
                     or "rate limit" in str(e).lower()
                     or "too many requests" in str(e).lower()
                 )
 
-                if is_rate_limit and attempt < max_retries:
+                if is_retryable and attempt < max_retries:
                     delay = EXA_RETRY_BASE_DELAY * (2 ** attempt)
                     logger.warning(
-                        f"[EXA-RETRY] 429 on {endpoint}, retrying in {delay}s "
+                        f"[EXA-RETRY] HTTP {status} on {endpoint}, retrying in {delay}s "
                         f"(attempt {attempt + 1}/{max_retries})"
                     )
                     await asyncio.sleep(delay)

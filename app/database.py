@@ -395,6 +395,111 @@ def migrate_profile_settings():
         logger.info("[OK] Created profile_settings table")
 
 
+def migrate_fk_constraints():
+    """Add foreign key constraints to posts.research_run_id and writer_runs.post_id."""
+    with engine.connect() as conn:
+        # Check if FK already exists to avoid duplicate
+        result = conn.execute(text("""
+            SELECT 1 FROM information_schema.table_constraints
+            WHERE constraint_name = 'fk_posts_research_run_id'
+            AND table_name = 'posts'
+        """))
+        if result.fetchone():
+            return  # Already exists
+
+        # Clean up orphaned references before adding FK
+        conn.execute(text("""
+            UPDATE posts SET research_run_id = NULL
+            WHERE research_run_id IS NOT NULL
+            AND research_run_id NOT IN (SELECT id FROM research_runs)
+        """))
+        conn.execute(text("""
+            DELETE FROM writer_runs
+            WHERE post_id NOT IN (SELECT id FROM posts)
+        """))
+        conn.commit()
+
+        try:
+            conn.execute(text("""
+                ALTER TABLE posts
+                ADD CONSTRAINT fk_posts_research_run_id
+                FOREIGN KEY (research_run_id) REFERENCES research_runs(id) ON DELETE SET NULL
+            """))
+            conn.commit()
+            logger.info("[OK] Added FK constraint: posts.research_run_id -> research_runs.id")
+        except Exception as e:
+            logger.warning(f"[SKIP] posts FK constraint: {e}")
+            conn.rollback()
+
+        try:
+            conn.execute(text("""
+                ALTER TABLE writer_runs
+                ADD CONSTRAINT fk_writer_runs_post_id
+                FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+            """))
+            conn.commit()
+            logger.info("[OK] Added FK constraint: writer_runs.post_id -> posts.id")
+        except Exception as e:
+            logger.warning(f"[SKIP] writer_runs FK constraint: {e}")
+            conn.rollback()
+
+
+def migrate_version_tracking():
+    """Create migration_history table to track applied migrations."""
+    with engine.connect() as conn:
+        result = conn.execute(text("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = 'migration_history'
+            )
+        """))
+        if result.scalar():
+            return
+
+        conn.execute(text("""
+            CREATE TABLE migration_history (
+                id SERIAL PRIMARY KEY,
+                migration_name VARCHAR(200) NOT NULL UNIQUE,
+                applied_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        conn.commit()
+        logger.info("[OK] Created migration_history table")
+
+
+def _record_migration(name: str):
+    """Record a migration as applied in migration_history. Idempotent (ON CONFLICT DO NOTHING)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "INSERT INTO migration_history (migration_name) VALUES (:name) ON CONFLICT DO NOTHING"
+            ), {"name": name})
+            conn.commit()
+    except Exception:
+        pass  # Table may not exist yet on first run
+
+
+def record_all_migrations():
+    """Seed migration_history with all known migrations. Called after migrate_version_tracking()."""
+    migrations = [
+        "migrate_research_cache",
+        "migrate_posts_readability",
+        "migrate_writer_learning",
+        "migrate_source_verification",
+        "migrate_composite_scoring",
+        "migrate_fact_consensus",
+        "migrate_domain_credibility_cache",
+        "migrate_fact_verification",
+        "migrate_style_rule_archive",
+        "migrate_writer_verification_telemetry",
+        "migrate_profile_settings",
+        "migrate_version_tracking",
+        "migrate_fk_constraints",
+    ]
+    for name in migrations:
+        _record_migration(name)
+
+
 def get_db():
     db = SessionLocal()
     try:

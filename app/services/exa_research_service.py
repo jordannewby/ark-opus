@@ -23,6 +23,7 @@ from ..settings import (
     EXA_RESEARCH_MODEL,
 )
 from ..domain_tiers import get_domain_tier_score
+from .source_verification_service import detect_citation_laundering
 
 logger = logging.getLogger(__name__)
 
@@ -343,20 +344,41 @@ async def create_citations_from_research(
         url_to_source[url] = source
         all_sources.append(source)
 
-    # Create FactCitation rows (one per fact)
+    # Create FactCitation rows (one per fact) with citation laundering detection
     all_citations = []
+    laundered_count = 0
 
     for fact in facts:
         source = url_to_source[fact["source_url"]]
         tier_level, _ = get_domain_tier_score(source.domain)
 
-        # Research API facts are pre-verified by cross-referencing
-        if tier_level in (1, 2):
+        # Citation laundering check: flag "Gartner says X" from random-blog.com
+        laundering = detect_citation_laundering(
+            fact["fact_text"], source.domain, fact.get("anchor", "")
+        )
+        is_laundered = laundering.get("is_laundered", False)
+        if is_laundered:
+            laundered_count += 1
+            logger.warning(
+                f"[RESEARCH-API] Citation laundering detected: "
+                f"'{fact['fact_text'][:80]}...' claims {laundering['claimed_org']} "
+                f"but source is {source.domain}"
+            )
+
+        # Tier-aware confidence: Tier 1-2 get higher confidence, unknown domains lower
+        if is_laundered:
+            confidence = 0.40  # Laundered citations are suspect
+            verification_status = "suspect"
+        elif tier_level in (1, 2):
+            confidence = 0.90
             verification_status = "trusted"
+        elif tier_level in (3, 4):
+            confidence = 0.75
+            verification_status = "corroborated"
         else:
+            confidence = 0.60  # Unknown domain — Research API cross-referenced but unverified tier
             verification_status = "corroborated"
 
-        confidence = 0.85
         credibility = source.credibility_score
         composite = (confidence * 100 + credibility) / 2
 
@@ -373,15 +395,18 @@ async def create_citations_from_research(
             confidence_score=confidence,
             source_credibility=credibility,
             composite_score=composite,
-            is_grounded=True,
+            is_grounded=not is_laundered,
             grounding_method="exa_research",
-            is_verified=True,
+            is_verified=not is_laundered,
             verification_status=verification_status,
             consensus_count=1,
             corroboration_url=None,
         )
         db.add(citation)
         all_citations.append(citation)
+
+    if laundered_count:
+        logger.warning(f"[RESEARCH-API] {laundered_count}/{len(facts)} facts flagged as citation laundering")
 
     db.commit()
 

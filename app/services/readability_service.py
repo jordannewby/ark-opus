@@ -319,7 +319,7 @@ def passes_readability(
       2. FK at or below target + 1.5 (cross-check with syllable noise buffer)
       3. Average sentence length at or below max_sentence_length (≤12 words)
       4. Complex sentences (>15 words) ≤ 15% of total sentences
-      5. Sentence distribution: ≥80% of sentences must be 8-12 words
+      5. Sentence distribution: ≥50% of sentences must be 8-14 words
 
     CLI is advisory only — reported in debug but does not block publishing.
     This prevents technical vocabulary (long words that ARE the SEO keywords)
@@ -566,20 +566,20 @@ def _build_feedback(
     # Diagnose each failure reason specifically
     failures = []
 
-    # CRITICAL: Diagnose sentence distribution (80% rule)
-    if distribution and distribution['target'] < 80.0:
+    # Diagnose sentence distribution (gate: 50% at 8-14 words)
+    if distribution and distribution['target'] < 50.0:
         failures.append("SENTENCE DISTRIBUTION VIOLATION")
-        lines.append(f"CRITICAL ISSUE: Only {distribution['target']}% of sentences are 8-12 words. Must be ≥80%.")
+        lines.append(f"CRITICAL ISSUE: Only {distribution['target']}% of sentences are 8-14 words. Must be ≥50%.")
         lines.append(f"  Current distribution:")
         lines.append(f"    - {distribution['short']}% are 1-7 words (too short, choppy)")
-        lines.append(f"    - {distribution['target']}% are 8-12 words (TARGET RANGE)")
-        lines.append(f"    - {distribution['medium']}% are 13-15 words (too long)")
+        lines.append(f"    - {distribution['target']}% are 8-14 words (TARGET RANGE)")
+        lines.append(f"    - {distribution['medium']}% are 13-15 words (acceptable but long)")
         lines.append(f"    - {distribution['complex']}% are 16+ words (way too long)")
         lines.append("")
         lines.append("ACTION: Rebalance your sentence lengths:")
-        lines.append("  1. Split all sentences >12 words into two shorter sentences")
-        lines.append("  2. Combine choppy 3-5 word sentences into 8-10 word explanations")
-        lines.append("  3. Target: 80% of sentences should be 8-12 words")
+        lines.append("  1. Split all sentences >14 words into two shorter sentences")
+        lines.append("  2. Combine choppy 3-5 word sentences into 8-12 word explanations")
+        lines.append("  3. Target: majority of sentences should be 8-14 words")
         lines.append("")
 
     if avg_sent_len > 12:
@@ -741,7 +741,7 @@ LAYER-CAKE SCANNING FORMAT:
 - Front-load value: put the most important information at the TOP of each section
 
 SENTENCE RULES (MANDATORY — READABILITY GATE):
-- TARGET: 8-12 words per sentence. This is NOT a suggestion — 80% of your sentences must fall in this range.
+- TARGET: 8-12 words per sentence. Aim for the majority of your sentences to fall in this range. Never exceed 15 words.
 - HARD CEILING: Never exceed 15 words. If a sentence hits 15 words, split it into two sentences.
 - One idea per sentence. Period. New sentence.
 - Rhythm variation: Mix 6-word punchy sentences with 12-word explanatory ones. Avoid monotony.

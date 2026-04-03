@@ -168,14 +168,17 @@ class WriterService:
                     "verification_status": getattr(c, 'verification_status', 'not_checked') or 'not_checked',
                 })
 
-        # Inject Dynamic Human Style Rules
+        # Inject Dynamic Human Style Rules (capped to prevent prompt crowding)
         from ..models import UserStyleRule
+        from ..settings import MAX_STYLE_RULES_CHARS
         style_rules_text = ""
         self.db = ensure_db_alive(self.db)
         style_rules = self.db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).all()
         if style_rules:
             for rule in style_rules:
                 style_rules_text += f"- {rule.rule_description}\n"
+            if len(style_rules_text) > MAX_STYLE_RULES_CHARS:
+                style_rules_text = style_rules_text[:MAX_STYLE_RULES_CHARS] + "\n[...truncated]\n"
 
         if claim_feedback:
             style_rules_text += "\n\n=== CLAIM VERIFICATION FEEDBACK (MUST FIX) ===\n"

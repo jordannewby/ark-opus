@@ -164,6 +164,36 @@ def detect_citation_laundering(fact_text: str, source_domain: str, citation_anch
     return {"is_laundered": False, "claimed_org": None, "source_domain": source_domain}
 
 
+def detect_attribution_mismatches(article_claims: list[dict]) -> list[dict]:
+    """
+    Detect claims where a named research org is mentioned but the citation URL
+    doesn't belong to that org. Reuses module-level _ORG_PATTERN and KNOWN_RESEARCH_ORGS.
+
+    Returns list of mismatch dicts: {claim_text, named_org, citation_url, citation_domain}
+    """
+    mismatches = []
+    for claim in article_claims:
+        matches = _ORG_PATTERN.findall(claim.get("claim_text", ""))
+        if not matches:
+            matches = _ORG_PATTERN.findall(claim.get("citation_anchor", ""))
+        if matches:
+            cite_domain = extract_domain(claim.get("citation_url", ""))
+            for org_name in matches:
+                org_key = org_name.lower()
+                canonical_domains = KNOWN_RESEARCH_ORGS.get(org_key, [])
+                if not canonical_domains:
+                    continue
+                if not any(cite_domain == cd or cite_domain.endswith("." + cd) for cd in canonical_domains):
+                    mismatches.append({
+                        "claim_text": claim["claim_text"][:120],
+                        "named_org": org_key,
+                        "citation_url": claim["citation_url"],
+                        "citation_domain": cite_domain,
+                    })
+                    break
+    return mismatches
+
+
 # --- Helper Functions ---
 
 def extract_domain(url: str) -> str:
@@ -1532,6 +1562,13 @@ async def verify_sources(
                 cache_hits += 1
                 logger.info(f"[CACHE-HIT] {domain} -> cached scores (age: {age_days}d)")
                 continue
+            else:
+                # Stale entry — delete so it gets refreshed
+                db.delete(cache_entry)
+                try:
+                    db.flush()
+                except Exception:
+                    pass
 
         # Cache miss - need to call DeepSeek
         uncached_indices.append(i)

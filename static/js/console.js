@@ -1,7 +1,7 @@
 // ARES CONSOLE v4.0 - CYBER GLASS EXPERIMENT
 window.addEventListener('error', (e) => {
     console.error("Global Trapped Error:", e.error);
-    alert("UI Error: " + (e.message || "Unknown error occurred in console.js"));
+    console.warn("UI Error (non-fatal): " + (e.message || "Unknown error occurred in console.js"));
 });
 let lastGeneratedMarkdown = "";
 let currentAbortController = null;
@@ -426,6 +426,9 @@ async function executeGeneration(userContext) {
                                     const avgCred = payload.avg_credibility || 0;
                                     const avgColor = avgCred >= 80 ? "#10b981" : avgCred >= 45 ? "#22d3ee" : "#fbbf24";
                                     terminalLog("VERIFY", `Sources verified: ${payload.verified_count} passed, ${payload.rejected_count} rejected (Avg: ${avgCred}/100)`, avgColor);
+                                    break;
+                                case 'phase1_5_warning':
+                                    terminalLog("VERIFY", payload.message, "#facc15");
                                     break;
                                 case 'source_backfill_start':
                                     terminalLog("BACKFILL", payload.message, "#f59e0b");
@@ -1015,7 +1018,7 @@ cartEls.mapBtn.addEventListener('click', async () => {
         console.error("Cartographer Map Error:", e);
         cartEls.loading.classList.add('hidden');
         cartEls.empty.classList.remove('hidden');
-        alert("Failed to map campaign: " + e.message);
+        terminalLog("ERROR", "Failed to map campaign: " + e.message, "#ef4444");
     } finally {
         cartEls.mapBtn.disabled = false;
     }

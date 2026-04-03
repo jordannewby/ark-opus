@@ -417,8 +417,8 @@ if __name__ == "__main__":
         "security.nist.gov",
     ]
 
-    print("Domain Tier Testing:")
-    print("-" * 60)
+    logger.debug("Domain Tier Testing:")
+    logger.debug("-" * 60)
     for domain in test_domains:
         tier, score = get_domain_tier_score(domain)
-        print(f"{domain:30} → Tier {tier} (Score: {score})")
+        logger.debug(f"{domain:30} -> Tier {tier} (Score: {score})")
