@@ -161,10 +161,12 @@ class ContentCampaign(Base):
 
 class Workspace(Base):
     __tablename__ = "workspaces"
+    __table_args__ = (UniqueConstraint("slug", "profile_name", name="uix_workspace_slug_profile"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(50), unique=True)
-    slug: Mapped[str] = mapped_column(String(50), unique=True)
+    name: Mapped[str] = mapped_column(String(50))
+    slug: Mapped[str] = mapped_column(String(50))
+    profile_name: Mapped[str] = mapped_column(String(50), default="default")
 
 
 class VerifiedSource(Base):

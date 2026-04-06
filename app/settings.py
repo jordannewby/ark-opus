@@ -132,6 +132,7 @@ RESEARCH_TIMEOUT = 300              # Phase 1 timeout (seconds)
 
 # Rate limiting
 MAX_DAILY_GENERATIONS = 50          # Per-profile daily cap (~$15 at $0.30/gen)
+MAX_STYLE_RULES_PER_PROFILE = 25    # Prevent unbounded style rule accumulation
 
 # ── User-Configurable Settings Registry ──────────────────────────────
 # Each entry defines type, default, bounds/choices, and UI metadata.

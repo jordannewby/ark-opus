@@ -27,7 +27,7 @@ from .auth import verify_api_key
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from .database import Base, engine, get_db, ensure_db_alive, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, migrate_domain_credibility_cache, migrate_fact_verification, migrate_style_rule_archive, migrate_writer_verification_telemetry, migrate_profile_settings, migrate_fk_constraints, migrate_version_tracking, migrate_api_keys, record_all_migrations, SessionLocal
+from .database import Base, engine, get_db, ensure_db_alive, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, migrate_domain_credibility_cache, migrate_fact_verification, migrate_style_rule_archive, migrate_writer_verification_telemetry, migrate_profile_settings, migrate_fk_constraints, migrate_version_tracking, migrate_api_keys, migrate_workspace_profile, record_all_migrations, SessionLocal
 from .models import Post, ProfileSettings, ResearchRun, UserStyleRule, Workspace, WriterRun, FactCitation, ApiKey
 from .schemas import (
     BlueprintResponse,
@@ -63,6 +63,7 @@ migrate_writer_verification_telemetry()
 migrate_profile_settings()
 migrate_version_tracking()
 migrate_api_keys()
+migrate_workspace_profile()
 Base.metadata.create_all(bind=engine)
 migrate_fk_constraints()
 record_all_migrations()
@@ -129,6 +130,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
+        response.headers['Strict-Transport-Security'] = 'max-age=63072000; includeSubDomains'
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
@@ -268,6 +270,10 @@ def get_style_rules(profile_name: str = Depends(verify_api_key), db: Session = D
 @app.post("/rules", response_model=StyleRuleResponse)
 def add_style_rule(rule: StyleRuleCreate, profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     """Manually inject a new style rule into the AI's memory."""
+    from .settings import MAX_STYLE_RULES_PER_PROFILE
+    existing_count = db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).count()
+    if existing_count >= MAX_STYLE_RULES_PER_PROFILE:
+        raise HTTPException(status_code=429, detail=f"Style rule limit ({MAX_STYLE_RULES_PER_PROFILE}) reached for this profile.")
     new_rule = UserStyleRule(rule_description=rule.rule_description, profile_name=profile_name)
     db.add(new_rule)
     db.commit()
@@ -289,18 +295,18 @@ def delete_style_rule(rule_id: int, profile_name: str = Depends(verify_api_key),
 # --- WORKSPACE ENDPOINTS ---
 
 @app.get("/workspaces", response_model=list[WorkspaceResponse])
-def get_workspaces(_profile: str = Depends(verify_api_key), db: Session = Depends(get_db)):
-    """Fetch all saved workspaces."""
-    return db.query(Workspace).order_by(Workspace.name.asc()).all()
+def get_workspaces(profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
+    """Fetch workspaces belonging to the authenticated profile."""
+    return db.query(Workspace).filter(Workspace.profile_name == profile_name).order_by(Workspace.name.asc()).all()
 
 @app.post("/workspaces", response_model=WorkspaceResponse)
-def create_workspace(workspace: WorkspaceCreate, _profile: str = Depends(verify_api_key), db: Session = Depends(get_db)):
-    """Create a new workspace if the slug does not exist."""
-    existing = db.query(Workspace).filter(Workspace.slug == workspace.slug).first()
+def create_workspace(workspace: WorkspaceCreate, profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
+    """Create a new workspace if the slug does not exist for this profile."""
+    existing = db.query(Workspace).filter(Workspace.slug == workspace.slug, Workspace.profile_name == profile_name).first()
     if existing:
         return existing
-    
-    new_workspace = Workspace(name=workspace.name, slug=workspace.slug)
+
+    new_workspace = Workspace(name=workspace.name, slug=workspace.slug, profile_name=profile_name)
     db.add(new_workspace)
     db.commit()
     db.refresh(new_workspace)

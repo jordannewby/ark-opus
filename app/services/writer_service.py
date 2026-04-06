@@ -5,6 +5,7 @@ from pathlib import Path
 from anthropic import AsyncAnthropic
 from ..database import ensure_db_alive
 from ..settings import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_WRITER_ATTEMPTS, WRITER_MAX_TOKENS, LLM_SOURCE_CONTEXT_CHARS, MAX_UNCITED_CLAIMS
+from ..security import sanitize_external_content
 from .readability_service import verify_readability
 
 logger = logging.getLogger(__name__)
@@ -184,13 +185,15 @@ class WriterService:
         style_rules = self.db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).all()
         if style_rules:
             for rule in style_rules:
-                style_rules_text += f"- {rule.rule_description}\n"
+                safe_rule = sanitize_external_content(rule.rule_description, max_chars=500)
+                style_rules_text += f"- {safe_rule}\n"
             if len(style_rules_text) > MAX_STYLE_RULES_CHARS:
                 style_rules_text = style_rules_text[:MAX_STYLE_RULES_CHARS] + "\n[...truncated]\n"
 
         if claim_feedback:
+            safe_feedback = sanitize_external_content(claim_feedback, max_chars=2000)
             style_rules_text += "\n\n=== CLAIM VERIFICATION FEEDBACK (MUST FIX) ===\n"
-            style_rules_text += claim_feedback
+            style_rules_text += safe_feedback
             style_rules_text += "\n=== END CLAIM FEEDBACK ===\n"
 
         initial_state: WriterState = {

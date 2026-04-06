@@ -469,6 +469,27 @@ def migrate_api_keys():
         logger.info("[OK] Created api_keys table")
 
 
+def migrate_workspace_profile():
+    """Add profile_name to workspaces table and replace unique constraints for multi-tenant isolation."""
+    from sqlalchemy import inspect
+    inspector = inspect(engine)
+
+    if 'workspaces' not in inspector.get_table_names():
+        return
+
+    columns = [c['name'] for c in inspector.get_columns('workspaces')]
+    if 'profile_name' in columns:
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE workspaces ADD COLUMN profile_name VARCHAR(50) NOT NULL DEFAULT 'default'"))
+        # Drop old unique constraints and add profile-scoped ones
+        conn.execute(text("ALTER TABLE workspaces DROP CONSTRAINT IF EXISTS workspaces_name_key"))
+        conn.execute(text("ALTER TABLE workspaces DROP CONSTRAINT IF EXISTS workspaces_slug_key"))
+        conn.execute(text("ALTER TABLE workspaces ADD CONSTRAINT uix_workspace_slug_profile UNIQUE (slug, profile_name)"))
+        logger.info("[OK] Added profile_name to workspaces table")
+
+
 def migrate_version_tracking():
     """Create migration_history table to track applied migrations."""
     with engine.connect() as conn:
@@ -521,6 +542,7 @@ def record_all_migrations():
         "migrate_version_tracking",
         "migrate_fk_constraints",
         "migrate_api_keys",
+        "migrate_workspace_profile",
     ]
     for name in migrations:
         _record_migration(name)

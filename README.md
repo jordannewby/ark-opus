@@ -19,7 +19,7 @@ It features real-time UI streaming via Server-Sent Events (SSE), multi-gate vali
 9. [API Endpoints](#9-api-endpoints)
 10. [Frontend UI](#10-frontend-ui)
 11. [Cost Breakdown](#11-cost-breakdown)
-12. [Security Best Practices](#12-security-best-practices)
+12. [Security](#12-security)
 13. [Troubleshooting](#13-troubleshooting)
 14. [Development Notes](#14-development-notes)
 
@@ -660,7 +660,7 @@ UNSOURCED_CLAIMS_PENALTY = 15.0       # Low-credibility domain claims penalty
 
 ## 8. Database Schema
 
-Ares Engine uses **Neon PostgreSQL** (serverless). Tables are created automatically via 10 migrations in `app/main.py`.
+Ares Engine uses **Neon PostgreSQL** (serverless). Tables are created automatically via 15 migrations in `app/database.py`.
 
 ### Core Models
 
@@ -810,35 +810,42 @@ Hub-and-spoke keyword mappings from Cartographer (Phase -1).
 #### Workspace
 ```python
 id: int (PK)
-profile_name: str (unique)
-created_at: datetime
+name: str
+slug: str
+profile_name: str
+# Unique constraint: (slug, profile_name)
 ```
 
-Multi-tenant workspace definitions.
+Multi-tenant workspace definitions scoped to authenticated profile.
 
 ---
 
 ## 9. API Endpoints
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| **`/generate/{keyword:path}`** | POST | **Main orchestration** — triggers full 7-phase pipeline. Accepts `GeneratePayload` (niche, context, profile_name). Returns SSE stream of phase events + final Post+Blueprint JSON |
-| **`/clarify`** | GET | Phase 0 — returns 3 clarifying questions for a keyword |
-| **`/posts`** | GET | List user's generated articles (paginated, workspace-scoped) |
-| **`/posts/{post_id}`** | GET | Fetch a specific article |
-| **`/posts`** | POST | Create new article manually |
-| **`/posts/{post_id}/approve`** | POST | Accept human edits, trigger FeedbackAgent + intelligence scoring (background tasks) |
-| **`/rules`** | GET | Fetch learned style rules (workspace-scoped) |
-| **`/rules`** | POST | Manually inject new style rule |
-| **`/rules/{rule_id}`** | DELETE | Remove style rule (verifies `rule.profile_name == profile_name`) |
-| **`/workspaces`** | GET | List all workspaces |
-| **`/workspaces`** | POST | Create new workspace |
-| **`/campaigns`** | GET | Fetch content campaigns (workspace-scoped) |
-| **`/campaigns/plan`** | POST | Phase -1 — Generate hub-and-spoke campaign via Cartographer |
-| **`/research/{keyword:path}`** | GET | Phase 1 only — direct research endpoint (returns ResearchResponse) |
-| **`/blueprint`** | POST | Phase 2 only — generates psychology blueprint from research data |
-| **`/health`** | GET | System status (checks DeepSeek + Exa API connectivity) |
-| **`/`** | GET | Serves frontend HTML (ares_console.html) |
+All endpoints except `/health` and `/` require `X-API-Key` header authentication.
+
+| Endpoint | Method | Auth | Rate Limit | Purpose |
+|----------|--------|------|------------|---------|
+| **`/generate/{keyword:path}`** | POST | API Key | 5/min, 50/day | **Main orchestration** — full 7-phase pipeline. SSE stream |
+| **`/research/{keyword:path}`** | GET | API Key | 10/min | Phase 1 only — direct research endpoint |
+| **`/clarify`** | GET | API Key | - | Phase 0 — 3 clarifying questions |
+| **`/blueprint`** | POST | API Key | - | Phase 2 only — psychology blueprint |
+| **`/posts`** | GET | API Key | - | List articles (profile-scoped) |
+| **`/posts/{post_id}`** | GET | API Key | - | Fetch specific article (profile-scoped) |
+| **`/posts`** | POST | API Key | - | Create article manually |
+| **`/posts/{post_id}/approve`** | POST | API Key | - | Approve edits, trigger FeedbackAgent + scoring |
+| **`/rules`** | GET | API Key | - | Fetch style rules (profile-scoped) |
+| **`/rules`** | POST | API Key | - | Add style rule (max 25 per profile) |
+| **`/rules/{rule_id}`** | DELETE | API Key | - | Delete style rule (ownership verified) |
+| **`/workspaces`** | GET | API Key | - | List workspaces (profile-scoped) |
+| **`/workspaces`** | POST | API Key | - | Create workspace (profile-scoped) |
+| **`/campaigns`** | GET | API Key | - | Fetch campaigns (profile-scoped) |
+| **`/campaigns/plan`** | POST | API Key | 10/min | Cartographer hub-and-spoke planning |
+| **`/settings`** | GET | API Key | - | Fetch profile settings |
+| **`/settings`** | PUT | API Key | - | Update profile settings |
+| **`/admin/api-keys`** | POST | Admin Secret | - | Create new API key (X-Admin-Secret header) |
+| **`/health`** | GET | None | - | System status check |
+| **`/`** | GET | None | - | Serves frontend UI |
 
 ---
 
@@ -937,59 +944,72 @@ The frontend (`static/ares_console.html` + `static/js/console.js`) features a **
 
 ## 12. Security
 
-### API Key Authentication
+Ares Engine implements defense-in-depth across authentication, prompt injection, rate limiting, and frontend hardening. Audited against OWASP Agentic Top 10 (2026), OWASP Web Top 10, and ASVS v4.0.
 
-All endpoints (except `/health` and static files) require API key authentication via the `X-API-Key` header. Keys are managed through:
+### Authentication & Authorization
 
-- `app/auth.py` — `verify_api_key()` dependency extracts, hashes (SHA256), and validates against the `api_keys` table
-- `POST /admin/api-keys` — Admin endpoint (protected by `ADMIN_SECRET` header) to create new API keys
-- Keys are generated as `secrets.token_urlsafe(32)` and stored as SHA256 hashes (never plaintext)
-- Each key is scoped to a `profile_name` for multi-tenant isolation
+- **API key auth** — All endpoints (except `/health`, `/`) require `X-API-Key` header. Keys are SHA256-hashed and validated against the `api_keys` table via `app/auth.py`
+- **Admin endpoint** — `POST /admin/api-keys` requires `X-Admin-Secret` header, validated with `secrets.compare_digest()` (timing-safe)
+- **Key generation** — `secrets.token_urlsafe(32)`, stored as SHA256 hash (never plaintext)
+- **Profile scoping** — Each API key is bound to a `profile_name`; all database queries filter by profile for multi-tenant isolation
 
-### Prompt Injection Protection
+### Prompt Injection Defense
 
-All user-controlled inputs are sanitized before injection into LLM prompts via `app/security.py`:
+All data entering LLM prompts is sanitized via `app/security.py`:
 
-- `sanitize_prompt_input(text, max_chars, tag)` — Removes HTML comments, control characters (zero-width, bidirectional), truncates, and wraps in XML boundary tags (`<tag>...</tag>`)
-- `sanitize_external_content(text, max_chars)` — Same cleaning without boundary tags (for Exa results, tool outputs)
-- Applied in: `research_service.py`, `briefing_agent.py`, `psychology_agent.py`, `writer_agent_graph.py`, `cartographer_service.py`
-- Input length bounds: `MAX_USER_CONTEXT_CHARS=2000`, `MAX_STYLE_RULES_CHARS=1500`, `MAX_RESEARCH_JSON_CHARS=6000`, `MAX_PLAYBOOK_CHARS=1500`
+| Function | Protection | Usage |
+|----------|-----------|-------|
+| `sanitize_prompt_input()` | Strips HTML comments + control chars, truncates, wraps in XML boundary tags | User-controlled inputs (keyword, niche, context, briefing answers) |
+| `sanitize_external_content()` | Strips HTML comments + control chars, truncates (no boundary tags) | External/LLM-derived data (Exa content, style rules, claim feedback, psychology directives, web content) |
 
-### API Key Management
+**Coverage** — sanitization applied at every LLM prompt boundary:
+- `research_service.py` — keyword, user_context, niche playbook, Exa tool results
+- `briefing_agent.py` — keyword, niche
+- `cartographer_service.py` — seed_topic, niche_context
+- `writer_agent_graph.py` — style rules, citation text, psychology directives
+- `writer_service.py` — style rule descriptions, claim feedback
+- `feedback_service.py` — original and edited article text
+- `source_verification_service.py` — web content in quality/integrity assessments
+- `psychology_agent.py` — research JSON data
 
-**Never commit `.env` to version control**:
-- `.env` is gitignored by default
-- Use `.env.example` as a template (no real keys)
-- Each developer/device needs its own `.env` file
+**Input length bounds** (Pydantic `Field(max_length=...)` at API boundary + truncation before LLM injection):
+- `MAX_USER_CONTEXT_CHARS=2000`, `MAX_STYLE_RULES_CHARS=1500`, `MAX_RESEARCH_JSON_CHARS=6000`, `MAX_PLAYBOOK_CHARS=1500`
 
-**Rotate API keys if exposed**:
-- If you accidentally commit keys, assume they're compromised
-- Immediately regenerate keys at provider dashboards:
-  - Anthropic: [console.anthropic.com](https://console.anthropic.com)
-  - DeepSeek: [platform.deepseek.com](https://platform.deepseek.com)
-  - Exa: [dashboard.exa.ai](https://dashboard.exa.ai)
-  - DataForSEO: [app.dataforseo.com](https://app.dataforseo.com)
-  - Neon: [console.neon.tech](https://console.neon.tech)
+### Rate Limiting & Abuse Prevention
 
-**Use environment variables**:
-- All API keys come from `app/settings.py` via `os.getenv()`
-- No hardcoded secrets in Python source files
-- Database connection string uses `DATABASE_URL` env var
-- Admin operations require `ADMIN_SECRET` environment variable
+- **Per-endpoint rate limits** — `slowapi`: `/generate` (5/min), `/research` (10/min), `/campaigns/plan` (10/min); keyed by API key hash
+- **Daily generation cap** — `MAX_DAILY_GENERATIONS=50` per profile per day
+- **Style rule cap** — `MAX_STYLE_RULES_PER_PROFILE=25` prevents unbounded memory accumulation
+- **Agentic loop limits** — `MAX_AGENTIC_ITERATIONS=5`, `MAX_WRITER_ATTEMPTS=5` cap per-request cost
 
-### .gitignore Verification
+### Security Headers
 
-Ensure `.gitignore` excludes:
-```gitignore
-.env
-venv/
-.venv/
-__pycache__/
-*.db
-*.sqlite3
-*.log
-node_modules/
-```
+`SecurityHeadersMiddleware` adds to all responses:
+- `Strict-Transport-Security: max-age=63072000; includeSubDomains` (HSTS)
+- `Content-Security-Policy` (default-src 'self', restricted script/style/font/connect sources)
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
+
+### Frontend Security
+
+- **XSS prevention** — All `innerHTML` assignments wrapped in `DOMPurify.sanitize()`
+- **Markdown rendering** — `marked.parse()` output sanitized via DOMPurify before DOM insertion
+- **SRI hashes** — Third-party scripts (marked.js, DOMPurify) loaded with Subresource Integrity
+- **Error isolation** — SSE error events send generic messages only; stack traces never reach the client
+
+### Secrets Management
+
+**Environment variables only** — All API keys loaded via `os.getenv()` in `app/settings.py`:
+- `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `EXA_API_KEY`, `ZAI_API_KEY`
+- `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD`
+- `DATABASE_URL`, `ADMIN_SECRET`
+- Validated at startup — server refuses to start if critical keys are missing
+
+**Never commit secrets**:
+- `.env` is gitignored; use `.env.example` as template
+- If keys are accidentally exposed, rotate immediately at provider dashboards
 
 **Verify before commit**:
 ```bash
@@ -1060,24 +1080,13 @@ SELECT fact_text, fact_type, confidence, verification_status FROM fact_citations
 
 ## 14. Development Notes
 
-### CLAUDE.md Reference
+All development rules, security constraints, and architecture conventions are documented in `CLAUDE.md` (project root). Key highlights:
 
-The `CLAUDE.md` file contains critical development rules:
-- **Async mandatory** — All HTTP clients + LLM generation must use async/await
-- **Pydantic-first** — Validate at every agent boundary via schemas
-- **Multi-tenant isolation** — All DB queries filter by `profile_name`; endpoints use `verify_api_key` for profile scoping
-- **Niche normalization** — Always use `normalize_niche()`: `strip().lower().replace(" ", "-")`
-- **No fake assets** — Writer prompt bans invented templates/tools/stats
-- **Banned word sanitizer** — Post-LLM regex catches inflected forms
-- **SSL retry pattern** — `nonlocal db` + `SessionLocal()` fallback for Neon
-- **Source credibility threshold** — 45.0/100 minimum
-- **Prompt files read-only** — Never modify `app/services/prompts/*.md` without approval
-- **MCP 429 retry** — Exponential backoff on DataForSEO rate-limits
-- **Prompt sanitization** — All user inputs sanitized via `app/security.py` before LLM prompt injection
-- **API key auth** — All endpoints authenticated via `app/auth.py` (`X-API-Key` header)
-- **No error leakage** — Exception details go to server logs only; clients get generic error messages
+- **Async mandatory** — All HTTP clients + LLM calls must use async/await
+- **Multi-tenant isolation** — All DB queries filter by `profile_name`
+- **Prompt injection defense** — All LLM prompt boundaries must use `sanitize_prompt_input()` or `sanitize_external_content()`
+- **Centralized config** — All constants in `app/settings.py`; never hardcode values in services
+- **Prompt files read-only** — Never modify `app/services/prompts/*.md` without explicit approval
 
-### Architecture Documentation
-
-See `docs/architecture.md` for detailed phase diagrams, scoring algorithms, and intelligence loop mechanics.
+For detailed phase diagrams, scoring algorithms, and intelligence loop mechanics, see `docs/architecture.md`.
 

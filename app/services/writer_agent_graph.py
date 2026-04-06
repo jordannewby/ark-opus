@@ -270,6 +270,7 @@ Do NOT name organizations (McKinsey, Gartner, etc.) unless the URL belongs to th
     # Inject psychology directives AFTER no_fabrication + citations (safety: fact rules take precedence)
     psych_text = state.get("psychology_directives", "")
     if psych_text:
+        safe_psych = sanitize_external_content(psych_text, max_chars=5000)
         is_first_section = (idx == 0)
         if is_first_section:
             # First section gets full hook_strategy + all directives
@@ -277,13 +278,13 @@ Do NOT name organizations (McKinsey, Gartner, etc.) unless the URL belongs to th
 STYLE GOALS ONLY — do NOT invent claims, statistics, or quotes to satisfy these hooks.
 Use these to shape TONE and FRAMING, not to fabricate evidence.
 
-{psych_text}
+{safe_psych}
 </psychology_directives>
 """
         else:
             # Subsequent sections get target_identity + identity_hooks only (no hook_strategy)
             filtered_lines = [
-                line for line in psych_text.split("\n")
+                line for line in safe_psych.split("\n")
                 if not line.startswith("HOOK STRATEGY")
                 and not line.startswith("CORE PROBLEM")
                 and not line.startswith("AGITATION POINTS")

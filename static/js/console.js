@@ -95,7 +95,7 @@ function renderBlueprint(bp) {
         });
         html += `</div>`;
     }
-    els.blueprintPane.innerHTML = html;
+    els.blueprintPane.innerHTML = DOMPurify.sanitize(html);
 }
 
 let currentPostId = null;

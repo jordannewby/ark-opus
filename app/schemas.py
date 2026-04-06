@@ -1,11 +1,11 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PostCreate(BaseModel):
-    title: str
-    content: str
+    title: str = Field(max_length=500)
+    content: str = Field(max_length=200000)
 
 
 class PostUpdate(BaseModel):
@@ -70,14 +70,14 @@ class GenerateFullResponse(BaseModel):
 
 # --- NEW: Payload for the Clarification / Generation Loop ---
 class GeneratePayload(BaseModel):
-    niche: str = "default"
-    context: str = ""
-    profile_name: str = "default"
+    niche: str = Field(default="default", max_length=100)
+    context: str = Field(default="", max_length=5000)
+    profile_name: str = Field(default="default", max_length=50)
 
 
 class StyleRuleCreate(BaseModel):
-    rule_description: str
-    profile_name: str = "default"
+    rule_description: str = Field(max_length=2000)
+    profile_name: str = Field(default="default", max_length=50)
 
 
 class StyleRuleResponse(BaseModel):
@@ -112,8 +112,8 @@ class NichePlaybookResponse(BaseModel):
 
 
 class WorkspaceCreate(BaseModel):
-    name: str
-    slug: str
+    name: str = Field(max_length=50)
+    slug: str = Field(max_length=50)
 
 class WorkspaceResponse(BaseModel):
     id: int
