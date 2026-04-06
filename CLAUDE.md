@@ -17,13 +17,14 @@
 - `app/glm_client.py` — GLM-5 API client (semaphore concurrency + 5xx retry)
 - `app/exa_client.py` — Exa API client (rate limiting + 5xx retry)
 - `app/services/exa_research_service.py` — Phase 1.5 Exa Research API fact discovery + citation laundering detection
-- `app/models.py` — ORM: Post, UserStyleRule, ResearchCache, Workspace, ResearchRun, NichePlaybook, WriterRun, WriterPlaybook, ContentCampaign, VerifiedSource, FactCitation
+- `app/models.py` — ORM: Post, UserStyleRule, UserStyleRuleArchive, ResearchCache, Workspace, ResearchRun, NichePlaybook, WriterRun, WriterPlaybook, ContentCampaign, VerifiedSource, FactCitation, ProfileSettings, DomainCredibilityCache, ApiKey
 - `app/schemas.py` — Pydantic request/response schemas
 - `app/domain_tiers.py` — 4-tier domain credibility lists
+- `app/auth.py` — API key authentication (`verify_api_key` FastAPI dependency, SHA256 hashing)
+- `app/security.py` — Prompt injection sanitization (`sanitize_prompt_input`, `sanitize_external_content`)
 - `app/services/prompts/` — LLM prompt templates (writer.md, persuasion.md)
 - `app/database.py` — Neon PostgreSQL (SQLAlchemy, pool_pre_ping, keepalives, FK constraints, migration versioning)
 - `static/` — Frontend (ares_console.html, js/console.js)
-- `tests/` — Unit tests (85 tests): test_writer_gates, test_claim_verification, test_readability, test_citation_laundering
 
 ## Rules
 - **Async mandatory** — all HTTP clients and generation calls must use async/await
@@ -39,7 +40,7 @@
 - **Exa metadata preservation** — all Exa search functions must preserve `publishedDate` + `score` via `url_metadata_map` pattern, merged into extract results for Phase 1.5 scoring
 - **Source credibility threshold** — 45.0/100 minimum (53% pass rate). 7-factor base scoring (85pts max) + rescue bonus (15pts max) for borderline sources
 - **Keyword relevance fallback** — `_keyword_relevance_score()` in research_service.py tokenizes slug keywords and checks source relevance; if <3 relevant sources after niche-filtered search, unfiltered Exa fallback + broad backfill fire automatically
-- **Claim verification gate** — post-writer claim cross-referencing via `claim_verification_agent.py`; fabricated citations (URL not in fact map) = zero-tolerance; ungrounded citations (URL exists but claim doesn't match) = zero-tolerance normally, softened to `max(2, int(total_claims * 0.15))` ungrounded claims when low topical coverage detected
+- **Claim verification gate** — post-writer claim cross-referencing via `claim_verification_agent.py`; fabricated citations (URL not in fact map) = zero-tolerance; ungrounded citations always enforced via `max(2, int(total_claims * MAX_UNGROUNDED_RATIO))` threshold; skipped entirely when no FactCitations exist (Phase 1.5 failure → graceful bypass)
 - **Attribution mismatch detection** — use `detect_attribution_mismatches()` from `source_verification_service.py`; single helper reusing module-level `_ORG_PATTERN` regex and `KNOWN_RESEARCH_ORGS` — never duplicate this logic
 - **Banned word sanitizer** — deterministic post-LLM regex in `writer_service._sanitize_banned_words()` catches inflected forms (leveraging, optimized, landscapes) after Claude generates; never rely solely on prompt instructions
 - **URL normalization** — `_normalize_url()` in `main.py` strips www, query params, fragments, trailing slashes; always use for `source_content_map` keys
@@ -55,7 +56,14 @@
 - **FK constraints** — `posts.research_run_id` → `research_runs.id` (SET NULL), `writer_runs.post_id` → `posts.id` (CASCADE); enforced at DB level
 - **Migration versioning** — `migration_history` table tracks applied migrations; `migrate_version_tracking()` in `database.py`
 - **Editor readability alignment** — `writer_agent_graph.py` editor node uses `verify_readability()` from readability service (not a separate ARI threshold)
-- **API keys** — ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, EXA_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD (`.env` only)
+- **API key auth** — all endpoints (except `/health`, `/`) require `X-API-Key` header validated by `verify_api_key()` from `app/auth.py`; SHA256 hashed, matched against `api_keys` table
+- **Prompt injection defense** — all user-controlled inputs sanitized via `sanitize_prompt_input()` from `app/security.py` before LLM prompt injection; XML boundary tags, HTML comment stripping, control char removal
+- **Rate limiting** — `slowapi` on `/campaigns/plan` (10/min), `/research` (10/min), `/generate` (5/min); keyed by API key hash or client IP
+- **Daily generation cap** — `MAX_DAILY_GENERATIONS=50` per profile enforced at `/generate` endpoint
+- **Admin secret** — `ADMIN_SECRET` env var for `/admin/api-keys` endpoint; validated with `secrets.compare_digest()` (timing-safe)
+- **Error sanitization** — SSE error events send generic messages only; stack traces logged server-side, never sent to client
+- **Security headers** — `SecurityHeadersMiddleware` adds CSP, X-Content-Type-Options, X-Frame-Options to all responses
+- **API keys** — ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, EXA_API_KEY, ZAI_API_KEY, DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD, ADMIN_SECRET (`.env` only)
 
 ## Architecture
 Only if told to read. Full pipeline (7 phases), agent logic, scoring algorithms, intelligence loops, and workspace system: `docs/architecture.md`
