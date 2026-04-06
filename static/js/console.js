@@ -6,6 +6,21 @@ window.addEventListener('error', (e) => {
 let lastGeneratedMarkdown = "";
 let currentAbortController = null;
 
+function getApiHeaders(extra = {}) {
+    const key = localStorage.getItem('ares_api_key') || '';
+    return { 'X-API-Key': key, ...extra };
+}
+
+function promptApiKey() {
+    const existing = localStorage.getItem('ares_api_key');
+    if (existing) return;
+    const key = window.prompt('Enter your Ares Engine API key:');
+    if (key && key.trim()) {
+        localStorage.setItem('ares_api_key', key.trim());
+    }
+}
+promptApiKey();
+
 const els = {
     keywordInput: document.getElementById('keyword-input'),
     generateBtn: document.getElementById('generate-btn'),
@@ -27,7 +42,7 @@ const els = {
 function terminalLog(agent, message, color = "#22d3ee") {
     const entry = document.createElement('div');
     entry.className = "flex bg-white/5 border border-white/5 rounded-md p-2 mt-2 animate-slideInRight text-slate-300";
-    entry.innerHTML = `<span class="mr-2 shrink-0 w-[85px] tracking-wide" style="color: ${color}; font-weight: 600;">[${agent}]</span> <span class="flex-1 opacity-90">${message}</span>`;
+    entry.innerHTML = `<span class="mr-2 shrink-0 w-[85px] tracking-wide" style="color: ${color}; font-weight: 600;">[${DOMPurify.sanitize(agent)}]</span> <span class="flex-1 opacity-90">${DOMPurify.sanitize(message)}</span>`;
     els.terminal.appendChild(entry);
     els.terminal.scrollTop = els.terminal.scrollHeight;
 }
@@ -64,13 +79,13 @@ function updateAgentUI(activeNode) {
 
 function renderBlueprint(bp) {
     if (!bp) return;
-    const audience = bp.target_audience || 'SEO Strategic Plan';
+    const audience = DOMPurify.sanitize(bp.target_audience || 'SEO Strategic Plan');
     let html = `<div class="mb-6"><h3 class="text-cyan-400 font-bold text-xs uppercase tracking-widest opacity-80">${audience}</h3></div>`;
 
     if (bp.outline_structure && Array.isArray(bp.outline_structure)) {
         html += `<div class="space-y-3">`;
         bp.outline_structure.forEach((item, idx) => {
-            const heading = typeof item === 'object' ? (item.heading || item.title || "Section") : item;
+            const heading = DOMPurify.sanitize(typeof item === 'object' ? (item.heading || item.title || "Section") : item);
             html += `<div class="p-4 bg-white/[0.02] border border-white/5 rounded-xl hover:bg-white/[0.04] transition-colors shadow-sm">
                         <div class="flex items-center gap-3">
                             <span class="text-cyan-500/50 mono-text text-[10px] uppercase font-bold tracking-widest">PHASE 0${idx + 1}</span>
@@ -114,9 +129,9 @@ document.getElementById('approve-btn').addEventListener('click', async () => {
 
     try {
         const profile = els.profileSelect ? els.profileSelect.value : "default";
-        const response = await fetch(`/posts/${currentPostId}/approve?profile_name=${encodeURIComponent(profile)}`, {
+        const response = await fetch(`/posts/${currentPostId}/approve`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ content: updatedContent })
         });
 
@@ -128,7 +143,7 @@ document.getElementById('approve-btn').addEventListener('click', async () => {
         editor.classList.add('hidden');
         document.getElementById('approve-container').classList.add('hidden');
 
-        els.articlePane.innerHTML = marked.parse(result.content);
+        els.articlePane.innerHTML = DOMPurify.sanitize(marked.parse(result.content));
         els.articlePane.classList.remove('hidden');
 
         terminalLog("SUCCESS", "Success! The AI has learned from your changes.", "#22d3ee");
@@ -324,7 +339,7 @@ els.generateBtn.addEventListener('click', async () => {
     terminalLog("SYSTEM", `Fetching briefing questions for: ${kw}...`, "#22d3ee");
 
     try {
-        const response = await fetch(`/clarify?keyword=${encodeURIComponent(kw)}`);
+        const response = await fetch(`/clarify?keyword=${encodeURIComponent(kw)}`, { headers: getApiHeaders() });
         if (!response.ok) throw new Error("Failed to fetch questions");
 
         const data = await response.json();
@@ -343,7 +358,7 @@ els.generateBtn.addEventListener('click', async () => {
             const block = document.createElement('div');
             block.className = 'bg-black/20 border border-white/5 rounded-xl p-4';
             block.innerHTML = `
-                <label class="block text-sm font-medium text-slate-200 mb-2 leading-snug">${idx + 1}. ${q}</label>
+                <label class="block text-sm font-medium text-slate-200 mb-2 leading-snug">${idx + 1}. ${DOMPurify.sanitize(q)}</label>
                 <textarea rows="2" class="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-sm text-white placeholder-slate-600 outline-none focus:border-cyan-500/50 focus:bg-white/10 transition-all resize-none" placeholder="Type your answer here... (Optional)"></textarea>
             `;
             modalEls.container.appendChild(block);
@@ -380,8 +395,8 @@ async function executeGeneration(userContext) {
     try {
         const response = await fetch(`/generate/${encodeURIComponent(kw)}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ niche: niche, context: userContext, profile_name: profile }),
+            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ niche: niche, context: userContext }),
             signal: currentAbortController.signal,
         });
 
@@ -618,7 +633,7 @@ async function loadRules() {
     brainEls.container.innerHTML = '<div class="text-slate-500 text-xs text-center mono-text animate-pulse py-10">Accessing memory blocks...</div>';
     try {
         const profile = els.profileSelect ? els.profileSelect.value : "default";
-        const res = await fetch('/rules?profile_name=' + profile);
+        const res = await fetch('/rules', { headers: getApiHeaders() });
         const rules = await res.json();
 
         if (rules.length === 0) {
@@ -635,7 +650,7 @@ async function loadRules() {
             <div class="group bg-white/[0.03] border border-white/5 rounded-2xl p-4 hover:bg-white/[0.05] hover:border-white/10 transition-all relative">
                 <div class="flex gap-4 items-start">
                     <div class="w-1.5 h-1.5 rounded-full bg-cyan-500 mt-2 shrink-0 cyber-glow-cyan shadow-[0_0_8px_rgba(34,211,238,0.5)]"></div>
-                    <p class="text-sm text-slate-300 leading-relaxed pr-8 font-medium">${r.rule_description}</p>
+                    <p class="text-sm text-slate-300 leading-relaxed pr-8 font-medium">${DOMPurify.sanitize(r.rule_description)}</p>
                 </div>
                 <button onclick="deleteRule(${r.id})" class="absolute top-4 right-4 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
@@ -656,8 +671,8 @@ brainEls.addBtn.addEventListener('click', async () => {
         const profile = els.profileSelect ? els.profileSelect.value : "default";
         const res = await fetch('/rules', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ rule_description: text, profile_name: profile })
+            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ rule_description: text })
         });
         if (res.ok) {
             brainEls.input.value = '';
@@ -671,7 +686,7 @@ brainEls.addBtn.addEventListener('click', async () => {
 async function deleteRule(id) {
     try {
         const profile = els.profileSelect ? els.profileSelect.value : "default";
-        const res = await fetch(`/rules/${id}?profile_name=${encodeURIComponent(profile)}`, { method: 'DELETE' });
+        const res = await fetch(`/rules/${id}`, { method: 'DELETE', headers: getApiHeaders() });
         if (res.ok) loadRules();
     } catch (e) {
         console.error("Failed to delete rule", e);
@@ -698,7 +713,7 @@ const wsEls = {
 
 async function syncWorkspaces() {
     try {
-        const res = await fetch('/workspaces');
+        const res = await fetch('/workspaces', { headers: getApiHeaders() });
         if (!res.ok) throw new Error('Failed to fetch workspaces');
         const workspaces = await res.json();
 
@@ -813,7 +828,7 @@ async function createWorkspace() {
         // Persist to Neon DB
         const res = await fetch('/workspaces', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name: raw, slug: slug })
         });
 
@@ -929,17 +944,17 @@ function renderCampaign(campaign) {
                 <div class="bg-white/[0.02] border border-white/5 hover:border-indigo-500/30 transition-colors rounded-xl p-4 flex items-center justify-between group">
                     <div>
                         <div class="flex items-center gap-3 mb-1">
-                            <span class="text-sm font-bold text-slate-200 group-hover:text-indigo-300 transition-colors">${spoke.keyword}</span>
-                            <span class="text-[10px] px-2 py-0.5 rounded bg-white/5 border border-white/10 uppercase tracking-widest text-slate-400 font-mono">${spoke.intent}</span>
+                            <span class="text-sm font-bold text-slate-200 group-hover:text-indigo-300 transition-colors">${DOMPurify.sanitize(spoke.keyword)}</span>
+                            <span class="text-[10px] px-2 py-0.5 rounded bg-white/5 border border-white/10 uppercase tracking-widest text-slate-400 font-mono">${DOMPurify.sanitize(spoke.intent)}</span>
                         </div>
-                        <p class="text-xs text-slate-500 leading-snug">${spoke.angle}</p>
+                        <p class="text-xs text-slate-500 leading-snug">${DOMPurify.sanitize(spoke.angle)}</p>
                     </div>
                     <div class="flex items-center gap-6">
                         <div class="text-right whitespace-nowrap hidden sm:block">
                             <div class="text-xs font-mono font-bold ${spoke.kd > 45 ? 'text-rose-400' : 'text-emerald-400'}">KD: ${spoke.kd}</div>
                             <div class="text-xs font-mono font-bold text-slate-400">VOL: ${spoke.vol.toLocaleString()}</div>
                         </div>
-                        <button class="generate-spoke-btn shrink-0 w-10 h-10 rounded-full bg-indigo-500/10 hover:bg-indigo-500 border border-indigo-500/30 flex items-center justify-center text-indigo-400 hover:text-white transition-all shadow-[0_0_10px_rgba(99,102,241,0.1)] hover:shadow-[0_0_20px_rgba(99,102,241,0.5)]" data-keyword="${spoke.keyword}" title="Generate Article for this Spoke">
+                        <button class="generate-spoke-btn shrink-0 w-10 h-10 rounded-full bg-indigo-500/10 hover:bg-indigo-500 border border-indigo-500/30 flex items-center justify-center text-indigo-400 hover:text-white transition-all shadow-[0_0_10px_rgba(99,102,241,0.1)] hover:shadow-[0_0_20px_rgba(99,102,241,0.5)]" data-keyword="${DOMPurify.sanitize(spoke.keyword)}" title="Generate Article for this Spoke">
                             <svg class="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
                         </button>
                     </div>
@@ -955,7 +970,7 @@ function renderCampaign(campaign) {
 async function loadCampaigns() {
     try {
         const profile = els.profileSelect ? els.profileSelect.value : "default";
-        const res = await fetch('/campaigns?profile_name=' + profile);
+        const res = await fetch('/campaigns', { headers: getApiHeaders() });
         if (!res.ok) throw new Error("Failed to load campaigns");
         const campaigns = await res.json();
 
@@ -995,7 +1010,7 @@ cartEls.mapBtn.addEventListener('click', async () => {
         const nicheContext = cartEls.nicheInput ? cartEls.nicheInput.value.trim() : "";
         const res = await fetch('/campaigns/plan', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
                 seed_topic: topic,
                 profile_name: profile,
@@ -1163,7 +1178,7 @@ async function loadSettings() {
 
     const profile = els.profileSelect ? els.profileSelect.value : 'default';
     try {
-        const res = await fetch('/settings?profile_name=' + encodeURIComponent(profile));
+        const res = await fetch('/settings', { headers: getApiHeaders() });
         const data = await res.json();
         settingsCache = data.settings || {};
         settingsConfigurable = data.configurable || {};
@@ -1294,9 +1309,9 @@ async function saveSettings() {
     if (settingsEls.saveBtn) settingsEls.saveBtn.disabled = true;
 
     try {
-        const res = await fetch('/settings?profile_name=' + encodeURIComponent(profile), {
+        const res = await fetch('/settings', {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(settingsDirty),
         });
         if (!res.ok) {

@@ -10,6 +10,7 @@ from anthropic import AsyncAnthropic
 
 from .readability_service import verify_readability, READABILITY_DIRECTIVE
 from ..settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from ..security import sanitize_prompt_input, sanitize_external_content
 
 import logging
 logger = logging.getLogger(__name__)
@@ -235,7 +236,8 @@ FORMATTING: Only output the Markdown. Start with ## heading. No chat preamble. N
     
     style_rules = state.get("style_rules", "")
     if style_rules:
-        prompt += f"\n<human_style_rules>\n{style_rules}\n</human_style_rules>\n"
+        safe_rules = sanitize_prompt_input(style_rules, max_chars=1500, tag='human_style_rules')
+        prompt += f"\n{safe_rules}\n"
     
     # NO FABRICATION — always applies
     prompt += """\n<no_fabrication>
@@ -251,7 +253,7 @@ VIOLATION = IMMEDIATE REJECTION.
 
     if citations:
         citation_block = "\n".join(
-            f"- Fact: {c['fact_text']}\n  Cite as: [{c['citation_anchor']}]({c['source_url']})"
+            f"- Fact: {sanitize_external_content(c['fact_text'], max_chars=500)}\n  Cite as: [{sanitize_external_content(c['citation_anchor'], max_chars=100)}]({c['source_url']})"
             for c in citations
         )
         prompt += f"""\n<citations>
@@ -356,7 +358,8 @@ Output ONLY the final Markdown section text."""
     return {"current_section_draft": draft_text, "yield_messages": yield_msgs}
 
 async def editor_node(state: WriterState) -> dict:
-    draft = state["current_section_draft"]
+    from .writer_service import sanitize_banned_words
+    draft = sanitize_banned_words(state["current_section_draft"])
     section = state["sections_planned"][state["current_section_idx"]]
     citations = state["current_section_citations"]
     retries = state.get("section_retry_count", 0)
@@ -435,7 +438,7 @@ async def editor_node(state: WriterState) -> dict:
     is_done = (state["current_section_idx"] + 1) >= len(state["sections_planned"])
     final_article = ""
     if is_done:
-        final_article = "\n\n".join(drafts)
+        final_article = sanitize_banned_words("\n\n".join(drafts))
         yield_msgs.append({"type": "content", "data": "\n\n" + draft}) # Yield final chunk
         yield_msgs.append({"type": "debug", "message": "Graph: Finished all sections!"})
     else:
@@ -453,9 +456,12 @@ async def editor_node(state: WriterState) -> dict:
 
 def route_editor(state: WriterState) -> str:
     if state["section_feedback"]:
+        logger.debug(f"[GRAPH-ROUTE] Section {state['current_section_idx']+1}: retry (feedback present)")
         return "writer"
     if state["current_section_idx"] >= len(state["sections_planned"]):
+        logger.debug(f"[GRAPH-ROUTE] All {len(state['sections_planned'])} sections complete -> END")
         return "end"
+    logger.debug(f"[GRAPH-ROUTE] Section {state['current_section_idx']+1}/{len(state['sections_planned'])}: next section")
     return "retriever"
 
 workflow = StateGraph(WriterState)
@@ -470,4 +476,4 @@ workflow.add_edge("retriever", "writer")
 workflow.add_edge("writer", "editor")
 
 workflow.add_conditional_edges("editor", route_editor, {"writer": "writer", "retriever": "retriever", "end": END})
-app_graph = workflow.compile()
+app_graph = workflow.compile(recursion_limit=75)

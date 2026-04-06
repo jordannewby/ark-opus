@@ -5,23 +5,30 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Configure logging so INFO-level messages (scoring breakdowns, verified sources) are visible
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Ensure environment is loaded BEFORE importing services
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
+import hashlib
+import secrets
+
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager, AsyncExitStack
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+
+from .auth import verify_api_key
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from .database import Base, engine, get_db, ensure_db_alive, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, migrate_domain_credibility_cache, migrate_fact_verification, migrate_style_rule_archive, migrate_writer_verification_telemetry, migrate_profile_settings, migrate_fk_constraints, migrate_version_tracking, record_all_migrations, SessionLocal
-from .models import Post, ProfileSettings, ResearchRun, UserStyleRule, Workspace, WriterRun, FactCitation
+from .database import Base, engine, get_db, ensure_db_alive, migrate_research_cache, migrate_posts_readability, migrate_writer_learning, migrate_source_verification, migrate_composite_scoring, migrate_fact_consensus, migrate_domain_credibility_cache, migrate_fact_verification, migrate_style_rule_archive, migrate_writer_verification_telemetry, migrate_profile_settings, migrate_fk_constraints, migrate_version_tracking, migrate_api_keys, record_all_migrations, SessionLocal
+from .models import Post, ProfileSettings, ResearchRun, UserStyleRule, Workspace, WriterRun, FactCitation, ApiKey
 from .schemas import (
     BlueprintResponse,
     GenerateFullResponse,
@@ -55,6 +62,7 @@ migrate_style_rule_archive()
 migrate_writer_verification_telemetry()
 migrate_profile_settings()
 migrate_version_tracking()
+migrate_api_keys()
 Base.metadata.create_all(bind=engine)
 migrate_fk_constraints()
 record_all_migrations()
@@ -88,10 +96,13 @@ async def lifespan(app: FastAPI):
         command="node",
         args=[
             "mcp-dataforseo-server/index.js",
-            DATAFORSEO_LOGIN,
-            DATAFORSEO_PASSWORD
         ],
-        env=None
+        env={
+            "DATAFORSEO_LOGIN": DATAFORSEO_LOGIN,
+            "DATAFORSEO_PASSWORD": DATAFORSEO_PASSWORD,
+            "PATH": os.environ.get("PATH", ""),
+            "NODE_PATH": os.environ.get("NODE_PATH", ""),
+        }
     )
 
     exit_stack = AsyncExitStack()
@@ -112,22 +123,60 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Ares Engine Console", lifespan=lifespan)
 
+# --- Security Headers Middleware ---
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'DENY'
+        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "connect-src 'self'; "
+            "img-src 'self' data:; "
+            "frame-ancestors 'none'"
+        )
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# --- Rate Limiting ---
+
+def _rate_limit_key(request: Request) -> str:
+    api_key = request.headers.get('X-API-Key', '')
+    if api_key:
+        return hashlib.sha256(api_key.encode()).hexdigest()[:16]
+    return request.client.host if request.client else "unknown"
+
+limiter = Limiter(key_func=_rate_limit_key)
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded. Try again later."})
+
 # --- CRUD Endpoints ---
 
 @app.get("/posts", response_model=list[PostResponse])
-def list_posts(skip: int = 0, limit: int = 20, profile_name: str = "default", db: Session = Depends(get_db)):
+def list_posts(skip: int = 0, limit: int = 20, profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     return db.query(Post).filter(Post.profile_name == profile_name).offset(skip).limit(limit).all()
 
 @app.get("/posts/{post_id}", response_model=PostResponse)
-def get_post(post_id: int, profile_name: str = "default", db: Session = Depends(get_db)):
+def get_post(post_id: int, profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     post = db.query(Post).filter(Post.id == post_id, Post.profile_name == profile_name).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
     return post
 
 @app.post("/posts", response_model=PostResponse, status_code=201)
-def create_post(data: PostCreate, db: Session = Depends(get_db)):
-    post = Post(**data.model_dump())
+def create_post(data: PostCreate, profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
+    post = Post(**{**data.model_dump(), "profile_name": profile_name})
     db.add(post)
     db.commit()
     db.refresh(post)
@@ -140,7 +189,7 @@ async def approve_and_train_post(
     post_id: int,
     data: PostUpdate,
     background_tasks: BackgroundTasks,
-    profile_name: str = "default",
+    profile_name: str = Depends(verify_api_key),
     db: Session = Depends(get_db)
 ):
     """
@@ -212,21 +261,21 @@ async def approve_and_train_post(
 # --- AI BRAIN / STYLE RULE CRUD ---
 
 @app.get("/rules", response_model=list[StyleRuleResponse])
-def get_style_rules(profile_name: str = "default", db: Session = Depends(get_db)):
+def get_style_rules(profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     """Fetch all learned style rules from the AI's memory."""
     return db.query(UserStyleRule).filter(UserStyleRule.profile_name == profile_name).order_by(UserStyleRule.id.desc()).all()
 
 @app.post("/rules", response_model=StyleRuleResponse)
-def add_style_rule(rule: StyleRuleCreate, db: Session = Depends(get_db)):
+def add_style_rule(rule: StyleRuleCreate, profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     """Manually inject a new style rule into the AI's memory."""
-    new_rule = UserStyleRule(rule_description=rule.rule_description, profile_name=rule.profile_name)
+    new_rule = UserStyleRule(rule_description=rule.rule_description, profile_name=profile_name)
     db.add(new_rule)
     db.commit()
     db.refresh(new_rule)
     return new_rule
 
 @app.delete("/rules/{rule_id}")
-def delete_style_rule(rule_id: int, profile_name: str = "default", db: Session = Depends(get_db)):
+def delete_style_rule(rule_id: int, profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     """Delete a specific style rule from memory."""
     rule = db.get(UserStyleRule, rule_id)
     if not rule:
@@ -240,12 +289,12 @@ def delete_style_rule(rule_id: int, profile_name: str = "default", db: Session =
 # --- WORKSPACE ENDPOINTS ---
 
 @app.get("/workspaces", response_model=list[WorkspaceResponse])
-def get_workspaces(db: Session = Depends(get_db)):
+def get_workspaces(_profile: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     """Fetch all saved workspaces."""
     return db.query(Workspace).order_by(Workspace.name.asc()).all()
 
 @app.post("/workspaces", response_model=WorkspaceResponse)
-def create_workspace(workspace: WorkspaceCreate, db: Session = Depends(get_db)):
+def create_workspace(workspace: WorkspaceCreate, _profile: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     """Create a new workspace if the slug does not exist."""
     existing = db.query(Workspace).filter(Workspace.slug == workspace.slug).first()
     if existing:
@@ -260,26 +309,28 @@ def create_workspace(workspace: WorkspaceCreate, db: Session = Depends(get_db)):
 # --- CARTOGRAPHER ENDPOINTS ---
 
 @app.get("/campaigns", response_model=list[CampaignResponse])
-def get_campaigns(profile_name: str = "default", db: Session = Depends(get_db)):
+def get_campaigns(profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     """Fetch structured campaigns from DB."""
     service = CartographerService(db)
     return service.get_campaigns(profile_name)
 
 @app.post("/campaigns/plan", response_model=CampaignResponse)
-async def plan_campaign(req: CampaignCreateRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+async def plan_campaign(req: CampaignCreateRequest, request: Request, _profile: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     """Generate a Pillar/Spoke map via DataForSEO & DeepSeek."""
     service = CartographerService(db)
-    return await service.plan_campaign(req.seed_topic, req.profile_name, req.niche_context)
+    return await service.plan_campaign(req.seed_topic, _profile, req.niche_context)
 
 # --- Orchestration Endpoints ---
 
 @app.get("/research/{keyword:path}", response_model=ResearchResponse)
-async def research_keyword(keyword: str, niche: str = "default", profile_name: str = "default", db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+async def research_keyword(keyword: str, request: Request, niche: str = "default", profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     agent = ResearchAgent(db)
     return await agent.research(keyword, niche=niche, profile_name=profile_name)
 
 @app.post("/blueprint", response_model=BlueprintResponse)
-async def generate_blueprint(research_data: ResearchResponse, db: Session = Depends(get_db)):
+async def generate_blueprint(research_data: ResearchResponse, _profile: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     from .services.psychology_agent import PsychologyAgent
     agent = PsychologyAgent(db=db) 
     # research_data is a Pydantic model here, so we dump it to a dict
@@ -290,7 +341,7 @@ import json
 from .schemas import GeneratePayload
 
 @app.get("/clarify")
-async def clarify_intent(keyword: str):
+async def clarify_intent(keyword: str, _profile: str = Depends(verify_api_key)):
     from .services.briefing_agent import BriefingAgent
     agent = BriefingAgent()
     questions = await agent.get_clarifying_questions(keyword)
@@ -299,7 +350,7 @@ async def clarify_intent(keyword: str):
 # --- Settings Endpoints ---
 
 @app.get("/settings", response_model=ProfileSettingsResponse)
-def get_settings(profile_name: str = "default", db: Session = Depends(get_db)):
+def get_settings(profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     from .settings import CONFIGURABLE_SETTINGS, resolve_settings
     row = db.query(ProfileSettings).filter_by(profile_name=profile_name).first()
     merged = resolve_settings(row)
@@ -310,7 +361,7 @@ def get_settings(profile_name: str = "default", db: Session = Depends(get_db)):
     )
 
 @app.put("/settings", response_model=ProfileSettingsResponse)
-def update_settings(payload: ProfileSettingsUpdate, profile_name: str = "default", db: Session = Depends(get_db)):
+def update_settings(payload: ProfileSettingsUpdate, profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     import json as _json
     from .settings import CONFIGURABLE_SETTINGS, resolve_settings
 
@@ -353,18 +404,29 @@ def update_settings(payload: ProfileSettingsUpdate, profile_name: str = "default
 
 
 @app.post("/generate/{keyword:path}")
-async def generate_article(keyword: str, payload: GeneratePayload, request: Request, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def generate_article(keyword: str, payload: GeneratePayload, request: Request, profile_name: str = Depends(verify_api_key), db: Session = Depends(get_db)):
     from .services.psychology_agent import PsychologyAgent
     from .services.writer_service import WriterService
-    from .settings import CONFIGURABLE_SETTINGS, resolve_settings, EXA_RESEARCH_ENABLED, MAX_USER_CONTEXT_CHARS, RESEARCH_TIMEOUT
+    from .settings import CONFIGURABLE_SETTINGS, resolve_settings, EXA_RESEARCH_ENABLED, MAX_USER_CONTEXT_CHARS, RESEARCH_TIMEOUT, MAX_DAILY_GENERATIONS
     import time
     import traceback
 
     niche = payload.niche
     context = payload.context[:MAX_USER_CONTEXT_CHARS] if payload.context else None
 
+    # Daily generation cap per profile
+    from datetime import datetime, date
+    today = date.today()
+    gen_count = db.query(Post).filter(
+        Post.profile_name == profile_name,
+        Post.created_at >= datetime(today.year, today.month, today.day),
+    ).count()
+    if gen_count >= MAX_DAILY_GENERATIONS:
+        raise HTTPException(status_code=429, detail=f"Daily generation limit ({MAX_DAILY_GENERATIONS}) reached for this profile.")
+
     # Resolve per-profile runtime settings (DB overrides + defaults)
-    settings_row = db.query(ProfileSettings).filter_by(profile_name=payload.profile_name).first()
+    settings_row = db.query(ProfileSettings).filter_by(profile_name=profile_name).first()
     runtime = resolve_settings(settings_row)
 
     logger.info(f"[ARES] Starting unified generation for: {keyword} (niche: {niche})")
@@ -385,7 +447,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                         keyword,
                         niche=niche,
                         user_context=context,
-                        profile_name=payload.profile_name,
+                        profile_name=profile_name,
                         mcp_session=request.app.state.mcp_session,
                         settings_override=runtime,
                     ),
@@ -434,7 +496,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     citation_result = await create_citations_from_research(
                         research_result=research_result,
                         research_run_id=research_run_id,
-                        profile_name=payload.profile_name,
+                        profile_name=profile_name,
                         db=db,
                     )
 
@@ -502,7 +564,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             article_content = ""
             readability_scores = None
             run_id = research_data_dict.get("research_run_id")
-            async for result in writer_service.produce_article(blueprint_dict, payload.profile_name, normalize_niche(payload.niche), research_run_id=run_id, source_content_map=source_content_map, settings_override=runtime):
+            async for result in writer_service.produce_article(blueprint_dict, profile_name, normalize_niche(payload.niche), research_run_id=run_id, source_content_map=source_content_map, settings_override=runtime):
                 if result.get("type") == "content":
                     yield f"data: {json.dumps({'event': 'content', 'data': result['data']})}\n\n"
                 elif result.get("type") == "debug":
@@ -545,7 +607,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     verify_claim_with_llm,
                     format_claim_verification_feedback,
                 )
-                from .settings import MAX_UNCITED_CLAIMS, MAX_CLAIM_RETRIES
+                from .settings import MAX_UNCITED_CLAIMS, MAX_CLAIM_RETRIES, MAX_UNGROUNDED_RATIO
 
                 yield f"data: {json.dumps({'event': 'claim_verification_start', 'message': 'Cross-referencing claims against verified facts...'})}\n\n"
 
@@ -561,94 +623,40 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 db = ensure_db_alive(db)
                 run_fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
 
-                xref_result = cross_reference_claims(
-                    article_claims, run_fact_citations, source_content_map
-                )
-
-                # Resolve ambiguous claims via LLM (max 2 calls)
-                ambiguous = xref_result.get("ambiguous_claims", [])
-                llm_resolved = 0
-                for amb in ambiguous[:2]:
-                    try:
-                        claim_dict = amb["claim"]
-                        llm_verdict = await verify_claim_with_llm(
-                            claim_dict["claim_text"],
-                            amb.get("candidate_facts", []),
-                            source_content_map.get(claim_dict.get("citation_url", ""), "")[:5000] if source_content_map else None,
-                        )
-                        if llm_verdict.get("supported"):
-                            xref_result["verified"] = xref_result.get("verified", 0) + 1
-                            xref_result["ambiguous"] = max(0, xref_result.get("ambiguous", 0) - 1)
-                            llm_resolved += 1
-                            # Update the detail entry
-                            for d in xref_result.get("details", []):
-                                if d.get("claim_text") == claim_dict["claim_text"] and d.get("status") == "ambiguous":
-                                    d["status"] = "verified"
-                                    d["reason"] = f"LLM verified: {llm_verdict.get('reasoning', '')}"
-                                    break
-                    except Exception as e:
-                        logger.warning(f"[CLAIM-VERIFY] LLM verification failed: {e}")
-
-                # Add uncited claims and attribution mismatches to the result
-                xref_result["uncited"] = len(uncited_claims)
-                xref_result["uncited_details"] = uncited_claims
-                xref_result["attribution_mismatches"] = attribution_mismatches
-
-                fabricated = xref_result.get("fabricated", 0)
-                ungrounded = xref_result.get("ungrounded", 0)
-                uncited_count = len(uncited_claims)
-                mismatch_count = len(attribution_mismatches)
-                verified_count = xref_result.get("verified", 0)
-                total_claims = xref_result.get("total_claims", 0)
-
-                if mismatch_count:
-                    logger.warning(f"[CLAIM-VERIFY] {mismatch_count} attribution-URL mismatches: {[m['named_org'] + ' -> ' + m['citation_domain'] for m in attribution_mismatches[:3]]}")
-
-                yield f"data: {json.dumps({'event': 'claim_verification_complete', 'message': f'Claims: {verified_count}/{total_claims} verified, {fabricated} fabricated, {ungrounded} ungrounded, {uncited_count} uncited, {mismatch_count} attribution mismatches', 'verified': verified_count, 'fabricated': fabricated, 'ungrounded': ungrounded, 'uncited': uncited_count, 'mismatches': mismatch_count, 'total': total_claims})}\n\n"
-
-                # Gate: reject if fabricated citations, too many uncited claims, or attribution mismatches
-                claim_gate_failed = fabricated > 0 or uncited_count > MAX_UNCITED_CLAIMS or mismatch_count > 0
-                claim_retry_count = 0
-                max_claim_retries = MAX_CLAIM_RETRIES
-
-                while claim_gate_failed and claim_retry_count < max_claim_retries:
-                    claim_retry_count += 1
-                    feedback = format_claim_verification_feedback(xref_result)
-                    logger.warning(f"[CLAIM-VERIFY] Gate failed (attempt {claim_retry_count}/{max_claim_retries}): {fabricated} fabricated, {uncited_count} uncited. Sending feedback to writer.")
-                    yield f"data: {json.dumps({'event': 'claim_verification_retry', 'message': f'Claim verification failed. Retrying writer (attempt {claim_retry_count}/{max_claim_retries})...'})}\n\n"
-
-                    # Re-run writer with claim feedback
-                    article_content = ""
-                    async for result in writer_service.produce_article(
-                        blueprint_dict, payload.profile_name, normalize_niche(payload.niche),
-                        research_run_id=run_id, source_content_map=source_content_map,
-                        claim_feedback=feedback, settings_override=runtime,
-                    ):
-                        if result.get("type") == "content":
-                            yield f"data: {json.dumps({'event': 'content', 'data': result['data']})}\n\n"
-                        elif result.get("type") == "debug":
-                            yield f"data: {json.dumps({'event': 'debug', 'message': result['message']})}\n\n"
-                        elif result.get("type") == "control":
-                            yield f"data: {json.dumps({'event': 'control', 'action': result.get('action', '')})}\n\n"
-                        elif result.get("status") == "error":
-                            yield f"data: {json.dumps({'event': 'error', 'message': result['message']})}\n\n"
-                            return
-                        elif result.get("status") == "success":
-                            article_content = result["text"]
-                            readability_scores = result.get("readability_score")
-
-                    if not article_content:
-                        break
-
-                    # Re-verify
-                    article_claims = extract_article_claims(article_content, verify_qualitative=runtime["verify_qualitative_claims"])
-                    # Re-check attribution mismatches
-                    attribution_mismatches = detect_attribution_mismatches(article_claims)
-
-                    uncited_claims = detect_uncited_claims(article_content, article_claims, verify_qualitative=runtime["verify_qualitative_claims"])
+                # C-2 fix: skip claim verification if no fact citations exist (Phase 1.5 may have failed)
+                if not run_fact_citations:
+                    logger.warning("[CLAIM-VERIFY] No fact citations found for research run %s -- skipping claim verification (Phase 1.5 may have failed)", research_run_id)
+                    yield f"data: {json.dumps({'event': 'claim_verification_complete', 'message': 'Claim verification skipped: no verified facts available (Phase 1.5 may have been unavailable)', 'verified': 0, 'fabricated': 0, 'ungrounded': 0, 'uncited': 0, 'mismatches': 0, 'total': 0})}\n\n"
+                else:
                     xref_result = cross_reference_claims(
                         article_claims, run_fact_citations, source_content_map
                     )
+
+                    # Resolve ambiguous claims via LLM (max 2 calls)
+                    ambiguous = xref_result.get("ambiguous_claims", [])
+                    llm_resolved = 0
+                    for amb in ambiguous[:2]:
+                        try:
+                            claim_dict = amb["claim"]
+                            llm_verdict = await verify_claim_with_llm(
+                                claim_dict["claim_text"],
+                                amb.get("candidate_facts", []),
+                                source_content_map.get(claim_dict.get("citation_url", ""), "")[:5000] if source_content_map else None,
+                            )
+                            if llm_verdict.get("supported"):
+                                xref_result["verified"] = xref_result.get("verified", 0) + 1
+                                xref_result["ambiguous"] = max(0, xref_result.get("ambiguous", 0) - 1)
+                                llm_resolved += 1
+                                # Update the detail entry
+                                for d in xref_result.get("details", []):
+                                    if d.get("claim_text") == claim_dict["claim_text"] and d.get("status") == "ambiguous":
+                                        d["status"] = "verified"
+                                        d["reason"] = f"LLM verified: {llm_verdict.get('reasoning', '')}"
+                                        break
+                        except Exception as e:
+                            logger.warning(f"[CLAIM-VERIFY] LLM verification failed: {e}")
+
+                    # Add uncited claims and attribution mismatches to the result
                     xref_result["uncited"] = len(uncited_claims)
                     xref_result["uncited_details"] = uncited_claims
                     xref_result["attribution_mismatches"] = attribution_mismatches
@@ -660,25 +668,86 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     verified_count = xref_result.get("verified", 0)
                     total_claims = xref_result.get("total_claims", 0)
 
-                    claim_gate_failed = fabricated > 0 or uncited_count > MAX_UNCITED_CLAIMS or mismatch_count > 0
+                    if mismatch_count:
+                        logger.warning(f"[CLAIM-VERIFY] {mismatch_count} attribution-URL mismatches: {[m['named_org'] + ' -> ' + m['citation_domain'] for m in attribution_mismatches[:3]]}")
 
-                    yield f"data: {json.dumps({'event': 'claim_verification_complete', 'message': f'Retry {claim_retry_count}: {verified_count}/{total_claims} verified, {fabricated} fabricated, {uncited_count} uncited, {mismatch_count} mismatches', 'verified': verified_count, 'fabricated': fabricated, 'ungrounded': ungrounded, 'uncited': uncited_count, 'mismatches': mismatch_count, 'total': total_claims})}\n\n"
+                    yield f"data: {json.dumps({'event': 'claim_verification_complete', 'message': f'Claims: {verified_count}/{total_claims} verified, {fabricated} fabricated, {ungrounded} ungrounded, {uncited_count} uncited, {mismatch_count} attribution mismatches', 'verified': verified_count, 'fabricated': fabricated, 'ungrounded': ungrounded, 'uncited': uncited_count, 'mismatches': mismatch_count, 'total': total_claims})}\n\n"
 
-                if claim_gate_failed:
-                    if runtime["claim_gate_hard_block"]:
-                        logger.error(f"[CLAIM-VERIFY] Gate still failing after {max_claim_retries} retries. BLOCKING article save.")
-                        yield f"data: {json.dumps({'event': 'error', 'message': f'Article rejected: claim verification failed after {max_claim_retries} retries. {fabricated} fabricated, {uncited_count} uncited, {mismatch_count} attribution mismatches. Article NOT saved.'})}\n\n"
-                        return
-                    else:
-                        logger.error(f"[CLAIM-VERIFY] Gate still failing after {max_claim_retries} retries. Proceeding with warnings.")
-                        yield f"data: {json.dumps({'event': 'claim_verification_warning', 'message': f'WARNING: Article has {fabricated} fabricated and {uncited_count} uncited claims after {max_claim_retries} retries. Review carefully.'})}\n\n"
+                    # Gate: reject if fabricated citations, too many uncited/ungrounded claims, or attribution mismatches
+                    max_ungrounded = max(2, int(total_claims * MAX_UNGROUNDED_RATIO)) if total_claims > 0 else 2
+                    claim_gate_failed = fabricated > 0 or uncited_count > MAX_UNCITED_CLAIMS or mismatch_count > 0 or ungrounded > max_ungrounded
+                    claim_retry_count = 0
+                    max_claim_retries = MAX_CLAIM_RETRIES
+
+                    while claim_gate_failed and claim_retry_count < max_claim_retries:
+                        claim_retry_count += 1
+                        feedback = format_claim_verification_feedback(xref_result)
+                        logger.warning(f"[CLAIM-VERIFY] Gate failed (attempt {claim_retry_count}/{max_claim_retries}): {fabricated} fabricated, {uncited_count} uncited. Sending feedback to writer.")
+                        yield f"data: {json.dumps({'event': 'claim_verification_retry', 'message': f'Claim verification failed. Retrying writer (attempt {claim_retry_count}/{max_claim_retries})...'})}\n\n"
+
+                        # Re-run writer with claim feedback
+                        article_content = ""
+                        async for result in writer_service.produce_article(
+                            blueprint_dict, profile_name, normalize_niche(payload.niche),
+                            research_run_id=run_id, source_content_map=source_content_map,
+                            claim_feedback=feedback, settings_override=runtime,
+                        ):
+                            if result.get("type") == "content":
+                                yield f"data: {json.dumps({'event': 'content', 'data': result['data']})}\n\n"
+                            elif result.get("type") == "debug":
+                                yield f"data: {json.dumps({'event': 'debug', 'message': result['message']})}\n\n"
+                            elif result.get("type") == "control":
+                                yield f"data: {json.dumps({'event': 'control', 'action': result.get('action', '')})}\n\n"
+                            elif result.get("status") == "error":
+                                yield f"data: {json.dumps({'event': 'error', 'message': result['message']})}\n\n"
+                                return
+                            elif result.get("status") == "success":
+                                article_content = result["text"]
+                                readability_scores = result.get("readability_score")
+
+                        if not article_content:
+                            break
+
+                        # Re-verify
+                        article_claims = extract_article_claims(article_content, verify_qualitative=runtime["verify_qualitative_claims"])
+                        # Re-check attribution mismatches
+                        attribution_mismatches = detect_attribution_mismatches(article_claims)
+
+                        uncited_claims = detect_uncited_claims(article_content, article_claims, verify_qualitative=runtime["verify_qualitative_claims"])
+                        xref_result = cross_reference_claims(
+                            article_claims, run_fact_citations, source_content_map
+                        )
+                        xref_result["uncited"] = len(uncited_claims)
+                        xref_result["uncited_details"] = uncited_claims
+                        xref_result["attribution_mismatches"] = attribution_mismatches
+
+                        fabricated = xref_result.get("fabricated", 0)
+                        ungrounded = xref_result.get("ungrounded", 0)
+                        uncited_count = len(uncited_claims)
+                        mismatch_count = len(attribution_mismatches)
+                        verified_count = xref_result.get("verified", 0)
+                        total_claims = xref_result.get("total_claims", 0)
+
+                        max_ungrounded = max(2, int(total_claims * MAX_UNGROUNDED_RATIO)) if total_claims > 0 else 2
+                        claim_gate_failed = fabricated > 0 or uncited_count > MAX_UNCITED_CLAIMS or mismatch_count > 0 or ungrounded > max_ungrounded
+
+                        yield f"data: {json.dumps({'event': 'claim_verification_complete', 'message': f'Retry {claim_retry_count}: {verified_count}/{total_claims} verified, {fabricated} fabricated, {uncited_count} uncited, {mismatch_count} mismatches', 'verified': verified_count, 'fabricated': fabricated, 'ungrounded': ungrounded, 'uncited': uncited_count, 'mismatches': mismatch_count, 'total': total_claims})}\n\n"
+
+                    if claim_gate_failed:
+                        if runtime["claim_gate_hard_block"]:
+                            logger.error(f"[CLAIM-VERIFY] Gate still failing after {max_claim_retries} retries. BLOCKING article save.")
+                            yield f"data: {json.dumps({'event': 'error', 'message': f'Article rejected: claim verification failed after {max_claim_retries} retries. {fabricated} fabricated, {uncited_count} uncited, {mismatch_count} attribution mismatches. Article NOT saved.'})}\n\n"
+                            return
+                        else:
+                            logger.error(f"[CLAIM-VERIFY] Gate still failing after {max_claim_retries} retries. Proceeding with warnings.")
+                            yield f"data: {json.dumps({'event': 'claim_verification_warning', 'message': f'WARNING: Article has {fabricated} fabricated and {uncited_count} uncited claims after {max_claim_retries} retries. Review carefully.'})}\n\n"
 
             # Save the generated article
             post = Post(
                 title=keyword,
                 content=article_content,
                 original_ai_content=article_content,
-                profile_name=payload.profile_name,
+                profile_name=profile_name,
                 niche=normalize_niche(payload.niche),
                 readability_score=readability_scores,  # Save readability analytics
             )
@@ -695,7 +764,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             # Capture WriterRun telemetry for learning loop
             if readability_scores:
                 writer_run = WriterRun(
-                    profile_name=payload.profile_name,
+                    profile_name=profile_name,
                     niche=normalize_niche(payload.niche),
                     post_id=post.id,
                     ari_score=readability_scores["ari"],
@@ -744,13 +813,11 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             yield f"data: {json.dumps(final_payload)}\n\n"
             
         except Exception as e:
-            error_msg = str(e)
+            logger.error(f"[ARES] Generation Error: {e}")
             if runtime["debug_mode"]:
                 tb = traceback.format_exc()
                 logger.error(f"[CRITICAL ERROR TRACEBACK]\n{tb}")
-                error_msg = f"{str(e)} | Check backend terminal for full traceback."
-            else:
-                logger.error(f"[ARES] Generation Error: {e}")
+            error_msg = "An internal error occurred during generation. Check backend logs for details."
             yield f"data: {json.dumps({'event': 'error', 'message': error_msg})}\n\n"
         finally:
             # If db was reassigned via SSL retry (nonlocal db = SessionLocal()),
@@ -762,6 +829,34 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+
+# ---------------------------------------------------------------------------
+# Admin: API Key Management
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel as _PydanticBase
+
+class _CreateApiKeyRequest(_PydanticBase):
+    profile_name: str
+    label: str = "default"
+
+@app.post("/admin/api-keys")
+def create_api_key(req: _CreateApiKeyRequest, request: Request, db: Session = Depends(get_db)):
+    from .settings import ADMIN_SECRET
+    if not ADMIN_SECRET:
+        raise HTTPException(status_code=503, detail="ADMIN_SECRET not configured")
+    admin_secret = request.headers.get("X-Admin-Secret")
+    if not admin_secret or not secrets.compare_digest(admin_secret, ADMIN_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid admin secret")
+
+    raw_key = secrets.token_urlsafe(32)
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+    api_key = ApiKey(key_hash=key_hash, profile_name=req.profile_name, label=req.label)
+    db.add(api_key)
+    db.commit()
+
+    return {"api_key": raw_key, "profile_name": req.profile_name, "label": req.label}
 
 # ---------------------------------------------------------------------------
 # Health check (Synchronized with console.js checkSystemStatus)

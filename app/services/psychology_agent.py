@@ -4,6 +4,7 @@ import logging
 import httpx
 from pathlib import Path
 from ..settings import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_TIMEOUT
+from ..security import sanitize_external_content
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,7 @@ class PsychologyAgent:
 
         from ..settings import MAX_RESEARCH_JSON_CHARS
         research_json_str = json.dumps(research_data, indent=2)
-        if len(research_json_str) > MAX_RESEARCH_JSON_CHARS:
-            research_json_str = research_json_str[:MAX_RESEARCH_JSON_CHARS] + "\n... [truncated]"
+        research_json_str = sanitize_external_content(research_json_str, max_chars=MAX_RESEARCH_JSON_CHARS)
         prompt_instructions += (
             "\nFULL RESEARCH JSON:\n"
             f"{research_json_str}\n\n"

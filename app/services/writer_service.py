@@ -10,6 +10,59 @@ from .readability_service import verify_readability
 logger = logging.getLogger(__name__)
 
 
+# Module-level banned-word replacements (used by both WriterService and editor_node)
+# Must include all inflected forms since SEO gate uses substring matching
+BANNED_REPLACEMENTS = {
+    # delve
+    "delving": "exploring", "delved": "explored", "delves": "explores", "delve": "explore",
+    # tapestry
+    "tapestries": "mixes", "tapestry": "mix",
+    # landscape
+    "landscapes": "spaces", "landscape": "space",
+    # multifaceted
+    "multifaceted": "complex",
+    # comprehensive
+    "comprehensively": "thoroughly", "comprehensive": "thorough",
+    # holistic
+    "holistically": "completely", "holistic": "complete",
+    # navigate
+    "navigating": "moving through", "navigated": "moved through", "navigates": "moves through", "navigate": "move through",
+    # crucial
+    "crucially": "critically", "crucial": "critical",
+    # robust
+    "robustly": "strongly", "robustness": "strength", "robust": "strong",
+    # seamless
+    "seamlessly": "smoothly", "seamless": "smooth",
+    # synergy
+    "synergies": "collaborations", "synergy": "collaboration",
+    # leverage (must come before base to avoid partial matches)
+    "leveraging": "using", "leveraged": "used", "leverages": "uses", "leverage": "use",
+    # scalable
+    "scalability": "growth capacity", "scalable": "growable",
+    # foster
+    "fostering": "encouraging", "fostered": "encouraged", "fosters": "encourages", "foster": "encourage",
+    # optimize
+    "optimization": "improvement", "optimizing": "improving", "optimized": "improved", "optimizes": "improves", "optimize": "improve",
+    # ecosystem
+    "ecosystems": "environments", "ecosystem": "environment",
+    # paradigm
+    "paradigms": "models", "paradigm": "model",
+}
+
+
+def sanitize_banned_words(text: str) -> str:
+    """Replace banned words and their inflections with safe alternatives, preserving case."""
+    for banned, replacement in BANNED_REPLACEMENTS.items():
+        pattern = re.compile(r'\b' + re.escape(banned) + r'\b', re.IGNORECASE)
+        def _match_case(match, repl=replacement):
+            word = match.group()
+            if word[0].isupper():
+                return repl[0].upper() + repl[1:]
+            return repl
+        text = pattern.sub(_match_case, text)
+    return text
+
+
 class WriterService:
     """Uses Anthropic Claude 4 Sonnet to enforce strict anti-AI prose logic & deep comprehensiveness."""
 
@@ -26,56 +79,11 @@ class WriterService:
         with open(prompt_path, "r", encoding="utf-8") as f:
             self.base_system_prompt = f.read()
 
-    # Deterministic banned-word replacements (LLM prompt enforcement is unreliable)
-    # Must include all inflected forms since SEO gate uses substring matching
-    _BANNED_REPLACEMENTS = {
-        # delve
-        "delving": "exploring", "delved": "explored", "delves": "explores", "delve": "explore",
-        # tapestry
-        "tapestries": "mixes", "tapestry": "mix",
-        # landscape
-        "landscapes": "spaces", "landscape": "space",
-        # multifaceted
-        "multifaceted": "complex",
-        # comprehensive
-        "comprehensively": "thoroughly", "comprehensive": "thorough",
-        # holistic
-        "holistically": "completely", "holistic": "complete",
-        # navigate
-        "navigating": "moving through", "navigated": "moved through", "navigates": "moves through", "navigate": "move through",
-        # crucial
-        "crucially": "critically", "crucial": "critical",
-        # robust
-        "robustly": "strongly", "robustness": "strength", "robust": "strong",
-        # seamless
-        "seamlessly": "smoothly", "seamless": "smooth",
-        # synergy
-        "synergies": "collaborations", "synergy": "collaboration",
-        # leverage (must come before base to avoid partial matches)
-        "leveraging": "using", "leveraged": "used", "leverages": "uses", "leverage": "use",
-        # scalable
-        "scalability": "growth capacity", "scalable": "growable",
-        # foster
-        "fostering": "encouraging", "fostered": "encouraged", "fosters": "encourages", "foster": "encourage",
-        # optimize
-        "optimization": "improvement", "optimizing": "improving", "optimized": "improved", "optimizes": "improves", "optimize": "improve",
-        # ecosystem
-        "ecosystems": "environments", "ecosystem": "environment",
-        # paradigm
-        "paradigms": "models", "paradigm": "model",
-    }
+    _BANNED_REPLACEMENTS = BANNED_REPLACEMENTS
 
     def _sanitize_banned_words(self, text: str) -> str:
         """Replace banned words and their inflections with safe alternatives, preserving case."""
-        for banned, replacement in self._BANNED_REPLACEMENTS.items():
-            pattern = re.compile(r'\b' + re.escape(banned) + r'\b', re.IGNORECASE)
-            def _match_case(match, repl=replacement):
-                word = match.group()
-                if word[0].isupper():
-                    return repl[0].upper() + repl[1:]
-                return repl
-            text = pattern.sub(_match_case, text)
-        return text
+        return sanitize_banned_words(text)
 
     async def produce_article(self, blueprint: dict, profile_name: str = "default", niche: str = "general", research_run_id: int | None = None, source_content_map: dict | None = None, claim_feedback: str | None = None, settings_override: dict | None = None):
         """
@@ -205,7 +213,7 @@ class WriterService:
         
         final_state = None
         try:
-            async for output in app_graph.astream(initial_state):
+            async for output in app_graph.astream(initial_state, stream_mode="updates"):
                 for node_name, state_update in output.items():
                     if "yield_messages" in state_update:
                         for msg in state_update["yield_messages"]:

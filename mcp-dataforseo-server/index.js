@@ -6,11 +6,9 @@
  * Exposes DataForSEO API endpoints as MCP tools for Ares Engine ResearchAgent.
  * Communicates via stdio (standard input/output) using MCP protocol.
  *
- * Usage:
- *   node index.js <dataforseo_login> <dataforseo_password>
- *
  * Environment:
- *   - Expects credentials as CLI arguments (passed by app/main.py)
+ *   - DATAFORSEO_LOGIN: DataForSEO API login (passed via env by app/main.py)
+ *   - DATAFORSEO_PASSWORD: DataForSEO API password (passed via env by app/main.py)
  *   - Runs in stdio mode for MCP protocol communication
  */
 
@@ -19,12 +17,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { DataForSEOClient } from "./dataforseo-client.js";
 import { registerTools } from "./tools.js";
 
-// Parse credentials from CLI arguments
-const [login, password] = process.argv.slice(2);
+// Read credentials from environment variables
+const login = process.env.DATAFORSEO_LOGIN;
+const password = process.env.DATAFORSEO_PASSWORD;
 
 if (!login || !password) {
   console.error("ERROR: DataForSEO credentials required");
-  console.error("Usage: node index.js <login> <password>");
+  console.error("Set DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD environment variables");
   process.exit(1);
 }
 

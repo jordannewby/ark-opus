@@ -322,13 +322,15 @@ On Gate 1-3 failure:
 - Performs 3-tier URL matching + number anchoring + text similarity checks
 - Max 2 claims sent to DeepSeek LLM for ambiguous resolution
 
-**Retry on Failure**: If fabricated, uncited, or mismatch claims detected, re-runs writer with feedback (max 2 retries)
+**Retry on Failure**: If fabricated, uncited, ungrounded, or mismatch claims detected, re-runs writer with feedback (max 2 retries)
+
+**Graceful Degradation**: If Phase 1.5 (Exa Research API) failed and no fact citations exist, claim verification is skipped entirely. The article is saved with an informational note that verified facts were unavailable.
 
 **Final Gate**: Proceeds to save if:
 - Zero fabricated claims
 - Zero attribution mismatches
 - `≤MAX_UNCITED_CLAIMS` (tunable, default 2)
-- `≤15%` ungrounded claims (when <3 on-topic facts available)
+- `≤MAX_UNGROUNDED_RATIO` of total claims ungrounded (default 15%)
 
 ---
 
@@ -563,6 +565,13 @@ DATAFORSEO_PASSWORD="your-password"
 ```
 **Required**: DataForSEO credentials for SERP/keyword/backlink tools. Register at [app.dataforseo.com](https://app.dataforseo.com).
 
+### Admin
+
+```env
+ADMIN_SECRET="your-admin-secret"
+```
+**Required for API key management**: Used to authenticate `POST /admin/api-keys` requests via the `X-Admin-Secret` header. Generate a strong random value (e.g., `python -c "import secrets; print(secrets.token_urlsafe(32))"`).
+
 ### Optional
 
 ```env
@@ -632,9 +641,11 @@ MAX_VERIFICATION_ITERATIONS = 3       # Iterative backfill attempts
 ```python
 MAX_EXA_FACT_CHECKS = 15
 MAX_LLM_VERIFICATIONS = 10
-CLAIM_TEXT_SIMILARITY_THRESHOLD = 0.2
+CLAIM_TEXT_SIMILARITY_THRESHOLD = 0.45
 LLM_SOURCE_CONTEXT_CHARS = 5000
-MAX_UNCITED_CLAIMS = 0                # Zero-tolerance for ungrounded claims
+MAX_UNCITED_CLAIMS = 2                # Max uncited claims before gate fails
+MAX_UNGROUNDED_RATIO = 0.15          # Max fraction of claims allowed ungrounded (15%)
+MAX_CLAIM_RETRIES = 2                 # Writer retries on claim gate failure
 ```
 
 ### Penalties
@@ -924,7 +935,25 @@ The frontend (`static/ares_console.html` + `static/js/console.js`) features a **
 
 ---
 
-## 12. Security Best Practices
+## 12. Security
+
+### API Key Authentication
+
+All endpoints (except `/health` and static files) require API key authentication via the `X-API-Key` header. Keys are managed through:
+
+- `app/auth.py` — `verify_api_key()` dependency extracts, hashes (SHA256), and validates against the `api_keys` table
+- `POST /admin/api-keys` — Admin endpoint (protected by `ADMIN_SECRET` header) to create new API keys
+- Keys are generated as `secrets.token_urlsafe(32)` and stored as SHA256 hashes (never plaintext)
+- Each key is scoped to a `profile_name` for multi-tenant isolation
+
+### Prompt Injection Protection
+
+All user-controlled inputs are sanitized before injection into LLM prompts via `app/security.py`:
+
+- `sanitize_prompt_input(text, max_chars, tag)` — Removes HTML comments, control characters (zero-width, bidirectional), truncates, and wraps in XML boundary tags (`<tag>...</tag>`)
+- `sanitize_external_content(text, max_chars)` — Same cleaning without boundary tags (for Exa results, tool outputs)
+- Applied in: `research_service.py`, `briefing_agent.py`, `psychology_agent.py`, `writer_agent_graph.py`, `cartographer_service.py`
+- Input length bounds: `MAX_USER_CONTEXT_CHARS=2000`, `MAX_STYLE_RULES_CHARS=1500`, `MAX_RESEARCH_JSON_CHARS=6000`, `MAX_PLAYBOOK_CHARS=1500`
 
 ### API Key Management
 
@@ -946,6 +975,7 @@ The frontend (`static/ares_console.html` + `static/js/console.js`) features a **
 - All API keys come from `app/settings.py` via `os.getenv()`
 - No hardcoded secrets in Python source files
 - Database connection string uses `DATABASE_URL` env var
+- Admin operations require `ADMIN_SECRET` environment variable
 
 ### .gitignore Verification
 
@@ -996,7 +1026,7 @@ ARES_DEBUG=true
 **Check Frontend Console** (F12):
 - SSE events show real-time agent execution
 - `phase1_start`, `source_verification`, `content`, `debug`, `error` events
-- Error stack traces displayed in `error` events
+- Error events display generic messages (details in backend logs only)
 
 **Check Backend Logs**:
 ```bash
@@ -1035,7 +1065,7 @@ SELECT fact_text, fact_type, confidence, verification_status FROM fact_citations
 The `CLAUDE.md` file contains critical development rules:
 - **Async mandatory** — All HTTP clients + LLM generation must use async/await
 - **Pydantic-first** — Validate at every agent boundary via schemas
-- **Multi-tenant isolation** — All DB queries filter by `profile_name`
+- **Multi-tenant isolation** — All DB queries filter by `profile_name`; endpoints use `verify_api_key` for profile scoping
 - **Niche normalization** — Always use `normalize_niche()`: `strip().lower().replace(" ", "-")`
 - **No fake assets** — Writer prompt bans invented templates/tools/stats
 - **Banned word sanitizer** — Post-LLM regex catches inflected forms
@@ -1043,6 +1073,9 @@ The `CLAUDE.md` file contains critical development rules:
 - **Source credibility threshold** — 45.0/100 minimum
 - **Prompt files read-only** — Never modify `app/services/prompts/*.md` without approval
 - **MCP 429 retry** — Exponential backoff on DataForSEO rate-limits
+- **Prompt sanitization** — All user inputs sanitized via `app/security.py` before LLM prompt injection
+- **API key auth** — All endpoints authenticated via `app/auth.py` (`X-API-Key` header)
+- **No error leakage** — Exception details go to server logs only; clients get generic error messages
 
 ### Architecture Documentation
 

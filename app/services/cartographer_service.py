@@ -7,6 +7,7 @@ from sqlalchemy import desc
 
 from ..database import ensure_db_alive
 from ..models import ContentCampaign
+from ..security import sanitize_prompt_input
 
 logger = logging.getLogger(__name__)
 from ..schemas import CampaignResponse, PillarKeyword, SpokeKeyword
@@ -144,10 +145,12 @@ class CartographerService:
         }
         
         data_str = json.dumps(keyword_data)
-        
+        safe_seed = sanitize_prompt_input(seed_topic, max_chars=200, tag="seed_topic")
+        safe_context = sanitize_prompt_input(niche_context, max_chars=500, tag="niche_context") if niche_context else ""
+
         prompt = f"""You are an Elite Enterprise SEO Strategist.
-Context/Target Audience: {niche_context}
-Seed Topic: {seed_topic}
+Context/Target Audience: {safe_context}
+Seed Topic: {safe_seed}
 Raw Keyword Data: {data_str}
 
 Your goal is to build a high-converting, hyper-relevant 'Hub and Spoke' Topical Authority map. 

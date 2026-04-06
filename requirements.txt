@@ -53,3 +53,4 @@ psycopg2-binary
 python-dateutil
 langgraph
 langchain-anthropic
+slowapi

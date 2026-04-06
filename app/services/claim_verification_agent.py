@@ -749,8 +749,8 @@ def detect_unverified_entities(
             match_start = m.start(1)
             context_start = max(0, match_start - 15)
             preceding_context = scan_text[context_start:match_start]
-            if re.search(r'[\.\!\?]\s*$', preceding_context):
-                continue  # Skip - this is likely a sentence-start capitalization
+            if match_start == 0 or re.search(r'(?:[\.\!\?\:\;\u2014\u2013\-]|\n)\s*$', preceding_context):
+                continue  # Skip - this is likely a sentence-start or clause-start capitalization
 
             # Single-word products should appear 2+ times OR be in citation anchors
             if ' ' not in name and '-' not in name:  # Single word, no hyphens
@@ -839,6 +839,15 @@ _COMMON_WORDS = frozenset({
     # Business/professional nouns
     "client", "clients", "employees", "firms", "users", "customers",
     "vendors", "companies", "businesses", "organizations", "enterprises", "teams",
+    "quality", "revenue", "profit", "growth", "budget", "value", "rate", "scale",
+    "scope", "risk", "margin", "capital", "demand", "supply", "market", "strategy",
+    "compliance", "governance", "pipeline", "workflow", "framework", "benchmark",
+    "metric", "metrics", "insight", "insights", "trend", "trends", "impact",
+    "outcome", "outcomes", "return", "investment", "stakeholder", "stakeholders",
+    "management", "leadership", "industry", "sector", "partner", "partners",
+    "talent", "resource", "resources", "brand", "engagement", "retention",
+    "conversion", "acquisition", "efficiency", "productivity", "visibility",
+    "accountability", "transparency", "sustainability",
     # Common text words that get capitalized at sentence start
     "however", "therefore", "moreover", "furthermore", "meanwhile",
     "according", "because", "although", "while", "since", "until",
@@ -865,6 +874,12 @@ _COMMON_WORDS = frozenset({
     "generate", "produce", "develop", "design", "define", "measure",
     "review", "check", "ensure", "focus", "remember", "realize",
     "document", "schedule", "complete", "block", "install", "prioritize",
+    "track", "monitor", "manage", "plan", "drive", "deliver", "enable",
+    "achieve", "maintain", "identify", "address", "execute", "launch",
+    "deploy", "evaluate", "assess", "align", "connect", "collect",
+    "protect", "prevent", "detect", "handle", "streamline", "consolidate",
+    "transform", "migrate", "automate", "configure", "customize", "enhance",
+    "support", "adopt", "organize",
     # Adjectives/quantifiers
     "several", "various", "numerous", "multiple", "different", "certain",
     "specific", "particular", "overall", "entire", "lower", "recent",
@@ -872,6 +887,14 @@ _COMMON_WORDS = frozenset({
     "automated", "potential", "current", "previous", "proper",
     "zero", "single", "double", "triple", "one", "two", "three",
     "many", "few", "own", "same", "other", "another", "whole",
+    "critical", "essential", "important", "effective", "efficient",
+    "reliable", "secure", "flexible", "strategic", "operational",
+    "technical", "manual", "custom", "native", "global", "local",
+    "primary", "secondary", "direct", "indirect", "major", "minor",
+    "rapid", "growing", "leading", "existing", "emerging", "ongoing",
+    "proactive", "reactive", "dynamic", "minimal", "maximum", "optimal",
+    "faster", "slower", "stronger", "weaker", "higher", "deeper",
+    "broader", "wider",
     # Nouns that appear in business/tech context
     "threat", "threats", "recovery", "access", "credential", "confidential",
     "financial", "restricted", "internal", "public", "classification",
@@ -886,6 +909,21 @@ _COMMON_WORDS = frozenset({
     "solution", "answer", "question", "context", "pattern", "task",
     "format", "style", "structure", "section", "paragraph", "sentence",
     "word", "text", "image", "video", "code", "file",
+    # Tech/domain nouns
+    "platform", "software", "hardware", "database", "infrastructure",
+    "endpoint", "dashboard", "interface", "feature", "features", "module",
+    "component", "layer", "stack", "protocol", "encryption", "authentication",
+    "authorization", "backup", "storage", "compute", "traffic", "deployment",
+    "release", "version", "update", "patch", "plugin", "extension",
+    "template", "query", "cache", "token", "agent", "provider", "vendor",
+    "pricing", "tier", "suite", "workspace", "console", "migration",
+    "incident", "alert", "logging", "monitoring",
+    # Temporal/connective adverbs
+    "today", "tomorrow", "instead", "otherwise", "likewise", "similarly",
+    "notably", "specifically", "essentially", "initially", "finally",
+    "additionally", "alternatively", "fortunately", "unfortunately",
+    "ideally", "practically", "simply", "currently", "previously",
+    "frequently",
 })
 
 

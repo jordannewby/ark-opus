@@ -36,6 +36,8 @@ if not EXA_API_KEY:
 if not ANTHROPIC_API_KEY:
     raise ValueError("ANTHROPIC_API_KEY is missing.")
 
+ADMIN_SECRET = get_clean_env("ADMIN_SECRET")
+
 # ── Operational Constants ──────────────────────────────────────────
 # Timeouts (seconds)
 BRIEFING_TIMEOUT = 30
@@ -94,7 +96,8 @@ MAX_EXA_FACT_CHECKS = 15
 MAX_LLM_VERIFICATIONS = 10
 CLAIM_TEXT_SIMILARITY_THRESHOLD = 0.45
 LLM_SOURCE_CONTEXT_CHARS = 5000
-MAX_UNCITED_CLAIMS = 0
+MAX_UNCITED_CLAIMS = 2
+MAX_UNGROUNDED_RATIO = 0.15  # Max fraction of total claims allowed to be ungrounded before gate fails
 CLAIM_NUMBER_CONTEXT_WORDS = 3  # Min shared context words for number matching (was 2)
 
 # Source rescue bonus
@@ -126,6 +129,9 @@ MAX_STYLE_RULES_CHARS = 1500        # Accumulated style rules injected into writ
 MAX_RESEARCH_JSON_CHARS = 6000      # Research data JSON injected into psychology prompt
 MAX_PLAYBOOK_CHARS = 1500           # Niche/writer playbook text injected into prompts
 RESEARCH_TIMEOUT = 300              # Phase 1 timeout (seconds)
+
+# Rate limiting
+MAX_DAILY_GENERATIONS = 50          # Per-profile daily cap (~$15 at $0.30/gen)
 
 # ── User-Configurable Settings Registry ──────────────────────────────
 # Each entry defines type, default, bounds/choices, and UI metadata.

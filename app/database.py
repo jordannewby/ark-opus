@@ -444,6 +444,31 @@ def migrate_fk_constraints():
             conn.rollback()
 
 
+def migrate_api_keys():
+    """One-time migration: Create api_keys table for API key authentication."""
+    from sqlalchemy import inspect
+
+    inspector = inspect(engine)
+
+    if 'api_keys' in inspector.get_table_names():
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE api_keys (
+                id SERIAL PRIMARY KEY,
+                key_hash VARCHAR(64) NOT NULL UNIQUE,
+                profile_name VARCHAR(50) NOT NULL,
+                label VARCHAR(100) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("CREATE INDEX idx_api_keys_hash ON api_keys(key_hash)"))
+        conn.execute(text("CREATE INDEX idx_api_keys_profile ON api_keys(profile_name)"))
+        logger.info("[OK] Created api_keys table")
+
+
 def migrate_version_tracking():
     """Create migration_history table to track applied migrations."""
     with engine.connect() as conn:
@@ -495,6 +520,7 @@ def record_all_migrations():
         "migrate_profile_settings",
         "migrate_version_tracking",
         "migrate_fk_constraints",
+        "migrate_api_keys",
     ]
     for name in migrations:
         _record_migration(name)
