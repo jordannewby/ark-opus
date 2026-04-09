@@ -12,8 +12,22 @@ from .readability_service import verify_readability, READABILITY_DIRECTIVE
 from ..settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
 from ..security import sanitize_prompt_input, sanitize_external_content
 
+from urllib.parse import urlparse, urlunparse
+
 import logging
 logger = logging.getLogger(__name__)
+
+
+def _normalize_url_simple(url: str) -> str:
+    """Normalize a URL for allowlist comparison: lowercase, strip www, trailing slash, query params."""
+    try:
+        p = urlparse(url)
+        netloc = p.netloc.lower().replace("www.", "", 1)
+        path = p.path.rstrip("/")
+        return urlunparse((p.scheme, netloc, path, "", "", ""))
+    except Exception:
+        return url.strip().rstrip("/")
+
 
 # Raw Anthropic client for extended thinking (writer node)
 _anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -246,6 +260,7 @@ ZERO TOLERANCE: You MUST NOT invent ANY claim not backed by a citation below.
 - No fabricated case studies, anecdotes, or success stories.
 - No fictional people, company names, or quotes.
 - No attribution to unnamed sources (e.g., 'one business owner said').
+- No modified, guessed, or invented URLs. You may ONLY use the exact URLs provided in <citations>. Do NOT "fix" a URL to what you think the real source should be — use it exactly as given or do not link at all.
 - If a fact is not in the citation list, DO NOT state it. Use general advice instead.
 VIOLATION = IMMEDIATE REJECTION.
 </no_fabrication>
@@ -259,6 +274,8 @@ VIOLATION = IMMEDIATE REJECTION.
         prompt += f"""\n<citations>
 Use these facts INLINE with Markdown links: [Anchor](URL). No footnotes.
 These are the ONLY facts you may state as data-backed claims.
+These are the ONLY URLs you may link to. Do NOT modify, shorten, or "correct" any URL.
+Copy-paste the URL exactly as shown — character for character.
 Do NOT name organizations (McKinsey, Gartner, etc.) unless the URL belongs to them.
 
 {citation_block}
@@ -314,6 +331,7 @@ Before you output your final text, verify:
 3. Every statistic has an inline [Source](URL) citation.
 4. No fabricated claims.
 5. Required structural element (list/table) is present if specified.
+6. Every URL in your output exists VERBATIM in the <citations> block above. If you used a URL not in <citations>, remove it now.
 Fix any violations before outputting.
 </self_check>
 
@@ -421,7 +439,17 @@ async def editor_node(state: WriterState) -> dict:
     unverified = detect_unverified_entities(draft, citation_urls, citation_anchors)
     if unverified:
         errors.append(f"Unverified product/tool names not found in any citation source: {', '.join(unverified[:5])}. Remove these or replace with tools mentioned in your citation sources.")
-        
+
+    # 7. Unauthorized URL check — reject URLs not in the citation allowlist
+    all_allowed_urls = {c['source_url'] for c in state['all_citations']}
+    for anchor, url in re.findall(r'\[([^\]]+)\]\((https?://[^)]+)\)', draft):
+        normalized = _normalize_url_simple(url)
+        if not any(_normalize_url_simple(a) == normalized for a in all_allowed_urls):
+            errors.append(
+                f"UNAUTHORIZED URL: [{anchor}]({url}) is not in the approved citation list. "
+                f"You MUST only use URLs from the <citations> block. Remove this link or replace with a provided URL."
+            )
+
     if errors and retries < 2:
         fb = "\n".join(errors)
         yield_msgs.append({"type": "debug", "message": f"Graph: Section failed validation, returning to Writer. Errors:\n{fb}"})
@@ -477,4 +505,4 @@ workflow.add_edge("retriever", "writer")
 workflow.add_edge("writer", "editor")
 
 workflow.add_conditional_edges("editor", route_editor, {"writer": "writer", "retriever": "retriever", "end": END})
-app_graph = workflow.compile(recursion_limit=75)
+app_graph = workflow.compile()

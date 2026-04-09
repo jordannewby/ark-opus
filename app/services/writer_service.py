@@ -216,7 +216,7 @@ class WriterService:
         
         final_state = None
         try:
-            async for output in app_graph.astream(initial_state, stream_mode="updates"):
+            async for output in app_graph.astream(initial_state, stream_mode="updates", recursion_limit=75):
                 for node_name, state_update in output.items():
                     if "yield_messages" in state_update:
                         for msg in state_update["yield_messages"]:

@@ -25,7 +25,7 @@
 - `app/glm_client.py` — GLM-5 API client (semaphore concurrency + 5xx retry)
 - `app/exa_client.py` — Exa API client (rate limiting + 5xx retry)
 - `app/domain_tiers.py` — 4-tier domain credibility lists
-- `app/services/` — Agents: briefing, research, exa_research, source_verification, claim_verification, psychology, writer (writer_service + writer_agent_graph), readability, feedback, research_intel, writer_intel, cartographer
+- `app/services/` — Agents: briefing, research, exa_research, source_verification, claim_verification, psychology, writer (writer_service + writer_agent_graph), readability, feedback, research_intel, writer_intel, cartographer, url_validation
 - `app/services/prompts/` — LLM prompt templates (writer.md, persuasion.md) — **read-only without explicit approval**
 - `static/` — Frontend (ares_console.html, js/console.js)
 
@@ -54,14 +54,17 @@
 - **SSL retry** — post-generation `db.commit()` in `event_generator()` uses `nonlocal db` + `OperationalError` catch to get fresh `SessionLocal()` if Neon drops connection
 - **Centralized config** — all operational constants live in `app/settings.py`; import from there, never hardcode
 - **Niche normalization** — always use `normalize_niche()` helper: `strip().lower().replace(" ", "-")`
-- **URL normalization** — `_normalize_url()` in `main.py` strips www, query params, fragments, trailing slashes; always use for `source_content_map` keys
+- **URL normalization** — `_normalize_url()` in `main.py` and `_normalize_url()` in `claim_verification_agent.py` strip www, query params, fragments, trailing slashes; `_normalize_url_simple()` in `writer_agent_graph.py` for editor allowlist checks; always use for `source_content_map` keys and URL comparison
 - **Migration versioning** — `migration_history` table tracks applied migrations; new migrations go in `database.py` and register in `record_all_migrations()`
 - **FK constraints** — `posts.research_run_id` → `research_runs.id` (SET NULL), `writer_runs.post_id` → `posts.id` (CASCADE); enforced at DB level
 
 ## Pipeline Rules
-- **No fake assets / no fabricated data** — writer prompt bans invented templates, tools, stats; must use only verified citation map facts
-- **source_content_map completeness** — must include both Phase 1 competitor articles AND Phase 1.5 Exa Research API facts, keyed by normalized URL
-- **Claim verification gate** — post-writer claim cross-referencing via `claim_verification_agent.py`; fabricated citations = zero-tolerance; skipped when no FactCitations exist (Phase 1.5 failure → graceful bypass)
+- **No fake assets / no fabricated data** — writer prompt bans invented templates, tools, stats, and fabricated/modified URLs; must use only verified citation map facts and exact URLs from `<citations>` block
+- **source_content_map completeness** — must include both Phase 1 competitor articles AND Phase 1.5 Exa Research API facts, keyed by normalized URL; dead URLs removed via `url_validation_service.batch_validate_urls()` before Phase 2
+- **URL allowlist enforcement (defense-in-depth)** — 3 layers: (1) editor_node check #7 in `writer_agent_graph.py` rejects any `[text](url)` not in citation allowlist during writer loop, (2) `cross_reference_claims()` in `claim_verification_agent.py` marks domain-only URL matches as fabricated (not ambiguous), (3) `enforce_url_allowlist()` strips unauthorized URLs before `Post(...)` save in `main.py`
+- **URL liveness validation** — `app/services/url_validation_service.py` validates all source URLs via async HEAD/GET before they enter `source_content_map`; dead URLs removed, 403 (paywalled) kept, timeouts kept
+- **Original source tracing** — `resolve_original_source()` in `exa_research_service.py` uses Exa search constrained to canonical domains to find original publisher URLs when citation laundering is detected (max 3 lookups/article)
+- **Claim verification gate** — post-writer claim cross-referencing via `claim_verification_agent.py`; fabricated citations = zero-tolerance; domain-only URL matches treated as fabricated (not ambiguous); skipped when no FactCitations exist (Phase 1.5 failure → graceful bypass)
 - **Attribution mismatch detection** — use `detect_attribution_mismatches()` from `source_verification_service.py`; never duplicate `_ORG_PATTERN` / `KNOWN_RESEARCH_ORGS`
 - **Banned word sanitizer** — deterministic post-LLM regex in `writer_service._sanitize_banned_words()`; never rely solely on prompt instructions
 - **Phase 1.5 graceful degradation** — Exa Research API failure is non-fatal; pipeline continues with Phase 1 data only

@@ -21,9 +21,11 @@ from ..settings import (
     EXA_API_KEY,
     EXA_RESEARCH_TIMEOUT,
     EXA_RESEARCH_MODEL,
+    ORIGINAL_SOURCE_TRACING_ENABLED,
+    ORIGINAL_SOURCE_MAX_LOOKUPS,
 )
 from ..domain_tiers import get_domain_tier_score
-from .source_verification_service import detect_citation_laundering
+from .source_verification_service import detect_citation_laundering, KNOWN_RESEARCH_ORGS
 
 logger = logging.getLogger(__name__)
 
@@ -91,15 +93,72 @@ def _build_instructions(keyword: str, niche: str) -> str:
     niche_context = f' in the {niche} industry' if niche and niche != "default" else ""
     return (
         f'Find verified, data-backed factual claims about "{keyword}"{niche_context}. '
+        f"CRITICAL: For every fact, the source_url MUST point to the ORIGINAL publisher — "
+        f"not a blog or news site that quotes or summarizes it. "
+        f"If a blog cites a Gartner report, return the Gartner URL, not the blog URL. "
+        f"If the original is behind a paywall and only accessible via a third party, "
+        f"return the third-party URL but note it in the source_title. "
         f"Focus on: statistics with exact percentages or dollar amounts from named "
         f"research firms (Gartner, Forrester, McKinsey, IDC, Deloitte, Ponemon, SANS), "
         f"benchmarks from industry reports, real case studies with named companies and "
         f"specific outcomes, and direct expert findings with attribution. "
         f"Prefer sources from the last 2 years. "
-        f"For each fact, identify the ORIGINAL authoritative source -- if a blog cites "
-        f"a Gartner report, trace back to Gartner's actual publication. "
         f"Return 8-15 high-confidence facts with full source URLs."
     )
+
+
+async def resolve_original_source(
+    fact_text: str,
+    claimed_org: str,
+    canonical_domains: list,
+) -> Optional[dict]:
+    """
+    Attempt to find the original source URL for a laundered citation.
+
+    When Exa returns a fact like "Gartner reports 67%..." but the source_url is
+    a third-party blog, this function searches Exa for the same fact constrained
+    to the original publisher's domain(s).
+
+    Returns: {"original_url": str, "original_title": str} or None
+    Cost: 1 Exa /search call (~$0.001)
+    """
+    if not canonical_domains or not fact_text:
+        return None
+
+    try:
+        from ..exa_client import exa_search
+
+        # Extract key terms from the fact for a targeted search
+        # Use first 200 chars to stay focused
+        query = fact_text[:200]
+
+        payload = {
+            "query": query,
+            "type": "neural",
+            "numResults": 3,
+            "includeDomains": canonical_domains,
+        }
+
+        result = await exa_search(payload, timeout=15)
+        results = result.get("results", [])
+
+        if results:
+            best = results[0]
+            original_url = best.get("url", "")
+            original_title = best.get("title", "")
+            if original_url:
+                logger.info(
+                    f"[SOURCE-TRACE] Resolved original source for '{claimed_org}': "
+                    f"{original_url} (title: {original_title[:80]})"
+                )
+                return {"original_url": original_url, "original_title": original_title}
+
+        logger.debug(f"[SOURCE-TRACE] No original source found for '{claimed_org}' on {canonical_domains}")
+        return None
+
+    except Exception as e:
+        logger.warning(f"[SOURCE-TRACE] Failed to resolve original source for '{claimed_org}': {e}")
+        return None
 
 
 async def research_facts(
@@ -344,9 +403,10 @@ async def create_citations_from_research(
         url_to_source[url] = source
         all_sources.append(source)
 
-    # Create FactCitation rows (one per fact) with citation laundering detection
+    # Create FactCitation rows (one per fact) with citation laundering detection + original source tracing
     all_citations = []
     laundered_count = 0
+    source_trace_lookups = 0
 
     for fact in facts:
         source = url_to_source[fact["source_url"]]
@@ -364,6 +424,29 @@ async def create_citations_from_research(
                 f"'{fact['fact_text'][:80]}...' claims {laundering['claimed_org']} "
                 f"but source is {source.domain}"
             )
+
+            # Attempt to resolve to original source (e.g., find actual Gartner URL)
+            if ORIGINAL_SOURCE_TRACING_ENABLED and source_trace_lookups < ORIGINAL_SOURCE_MAX_LOOKUPS:
+                claimed_org = laundering.get("claimed_org", "")
+                canonical_domains = KNOWN_RESEARCH_ORGS.get(claimed_org, [])
+                if canonical_domains:
+                    source_trace_lookups += 1
+                    original = await resolve_original_source(
+                        fact["fact_text"], claimed_org, canonical_domains
+                    )
+                    if original:
+                        # Substitute URL and clear laundered flag
+                        fact["source_url"] = original["original_url"]
+                        fact["source_title"] = original["original_title"]
+                        is_laundered = False
+                        laundered_count -= 1
+                        # Re-evaluate domain tier for the original source
+                        new_domain = _extract_domain(original["original_url"])
+                        tier_level, _ = get_domain_tier_score(new_domain)
+                        logger.info(
+                            f"[SOURCE-TRACE] Substituted original source: "
+                            f"{source.domain} -> {new_domain} for '{claimed_org}'"
+                        )
 
         # Tier-aware confidence: Tier 1-2 get higher confidence, unknown domains lower
         if is_laundered:

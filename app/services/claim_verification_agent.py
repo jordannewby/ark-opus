@@ -692,6 +692,32 @@ _QUALITATIVE_CLAIM_PATTERNS = [
 ]
 
 
+def enforce_url_allowlist(
+    article_text: str,
+    allowed_urls: set,
+) -> tuple:
+    """
+    Final safety gate: strip any markdown [text](url) whose URL is not in the
+    allowed set. Returns (cleaned_text, list_of_stripped_urls).
+
+    Matching uses _normalize_url for consistency with claim cross-referencing.
+    Unauthorized links are replaced with plain anchor text (no link).
+    """
+    stripped_urls = []
+
+    def _replace_unauthorized(match):
+        anchor = match.group(1)
+        url = match.group(2)
+        normalized = _normalize_url(url)
+        if normalized in allowed_urls:
+            return match.group(0)  # keep as-is
+        stripped_urls.append(url)
+        return anchor  # plain text, link removed
+
+    cleaned = _CITATION_LINK_PATTERN.sub(_replace_unauthorized, article_text)
+    return cleaned, stripped_urls
+
+
 def detect_unverified_entities(
     draft_text: str,
     citation_urls: list[str],
@@ -1150,19 +1176,27 @@ def cross_reference_claims(
                     matched_facts = facts
                     break
 
-        # Step 4: Domain fallback match — forces LLM verification (no fast-path heuristics)
-        domain_fallback = False
+        # Step 4: Domain-only match → FABRICATED with diagnostic (path was fabricated by LLM)
         if not matched_facts:
             try:
                 from urllib.parse import urlparse
                 claim_domain = urlparse(claim_url).netloc.lower().replace("www.", "")
+                available_from_domain = []
                 for url, facts in url_facts_map.items():
                     fact_domain = urlparse(url).netloc.lower().replace("www.", "")
                     if claim_domain == fact_domain and claim_domain != "":
-                        matched_facts = facts
-                        domain_fallback = True
-                        logger.debug(f"[CLAIM-XREF] Domain fallback: '{claim_text[:50]}...' matched {url} via domain-only")
-                        break
+                        available_from_domain.append(url)
+                if available_from_domain:
+                    fabricated_count += 1
+                    details.append({
+                        "claim_text": claim_text[:200],
+                        "status": "fabricated",
+                        "matched_fact": None,
+                        "source_url": claim_url,
+                        "reason": f"URL path fabricated. Domain '{claim_domain}' has verified facts at: {', '.join(available_from_domain[:3])}",
+                    })
+                    logger.debug(f"[CLAIM-XREF] FABRICATED (path mismatch): '{claim_text[:60]}...' cites {claim_url} but domain has facts at {available_from_domain[:3]}")
+                    continue
             except Exception:
                 pass
 
@@ -1173,18 +1207,9 @@ def cross_reference_claims(
                 "status": "fabricated",
                 "matched_fact": None,
                 "source_url": claim_url,
-                "reason": "No verified facts matched this URL (checked: exact, normalized, path-prefix)",
+                "reason": "No verified facts matched this URL (checked: exact, normalized, path-prefix, domain)",
             })
             logger.debug(f"[CLAIM-XREF] FABRICATED: '{claim_text[:60]}...' cites {claim_url} (no URL match)")
-            continue
-
-        # Domain-fallback claims skip heuristics — go straight to LLM verification
-        if domain_fallback:
-            ambiguous_claims.append({
-                "claim": claim,
-                "candidate_facts": matched_facts,
-            })
-            logger.debug(f"[CLAIM-XREF] Domain-fallback claim forced to LLM verification: '{claim_text[:50]}...'")
             continue
 
         # Try number-matching first (only for quantitative claims with exact/normalized/path-prefix URL matches)

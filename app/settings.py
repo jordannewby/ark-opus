@@ -82,6 +82,15 @@ EXA_RESEARCH_TIMEOUT = 300          # seconds to poll before giving up (Research
 EXA_RESEARCH_MODEL = "exa-research" # or "exa-research-pro" for complex niches
 EXA_RESEARCH_ENABLED = True         # feature flag — False skips Phase 1.5 entirely
 
+# URL liveness validation (Phase 1 + Phase 1.5 ingestion gate)
+URL_VALIDATION_TIMEOUT = 10          # seconds per HEAD/GET check
+URL_VALIDATION_CONCURRENCY = 10      # max concurrent URL checks
+URL_VALIDATION_ENABLED = True        # feature flag — False skips URL validation
+
+# Original source tracing (Phase 1.5 citation laundering resolution)
+ORIGINAL_SOURCE_TRACING_ENABLED = True  # feature flag — False skips source tracing
+ORIGINAL_SOURCE_MAX_LOOKUPS = 3         # max Exa searches per article for source tracing
+
 # Writer tuning
 MAX_WRITER_ATTEMPTS = 5
 WRITER_MAX_TOKENS = 8192

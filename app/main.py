@@ -547,6 +547,21 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             elif runtime["debug_mode"]:
                 yield f"data: {json.dumps({'event': 'debug', 'message': 'Phase 1.5 skipped'})}\n\n"
 
+            # URL liveness validation — remove dead URLs from source_content_map before writer sees them
+            from .settings import URL_VALIDATION_ENABLED
+            if URL_VALIDATION_ENABLED and source_content_map:
+                try:
+                    from .services.url_validation_service import batch_validate_urls
+                    url_validation_results = await batch_validate_urls(list(source_content_map.keys()))
+                    dead_urls = [url for url, r in url_validation_results.items() if not r["is_live"]]
+                    for dead_url in dead_urls:
+                        del source_content_map[dead_url]
+                        logger.warning(f"[URL-VALIDATE] Removed dead URL from source_content_map: {dead_url}")
+                    if dead_urls:
+                        yield f"data: {json.dumps({'event': 'debug', 'message': f'URL validation removed {len(dead_urls)} dead URLs from {len(url_validation_results)} checked'})}\n\n"
+                except Exception as e:
+                    logger.error(f"[URL-VALIDATE] Batch validation failed (non-fatal): {e}")
+
             # Phase 2
             yield f"data: {json.dumps({'event': 'phase2_start', 'message': 'Mapping psychological blueprint...'})}\n\n"
             p2_start = time.time()
@@ -612,6 +627,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     cross_reference_claims,
                     verify_claim_with_llm,
                     format_claim_verification_feedback,
+                    enforce_url_allowlist,
                 )
                 from .settings import MAX_UNCITED_CLAIMS, MAX_CLAIM_RETRIES, MAX_UNGROUNDED_RATIO
 
@@ -747,6 +763,23 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                         else:
                             logger.error(f"[CLAIM-VERIFY] Gate still failing after {max_claim_retries} retries. Proceeding with warnings.")
                             yield f"data: {json.dumps({'event': 'claim_verification_warning', 'message': f'WARNING: Article has {fabricated} fabricated and {uncited_count} uncited claims after {max_claim_retries} retries. Review carefully.'})}\n\n"
+
+            # Final URL allowlist gate — strip any markdown link whose URL is not verified
+            if article_content and source_content_map:
+                try:
+                    from .services.claim_verification_agent import enforce_url_allowlist
+                    allowed_urls = set(source_content_map.keys())  # already normalized
+                    try:
+                        if run_fact_citations:
+                            allowed_urls |= {_normalize_url(fc.source_url) for fc in run_fact_citations}
+                    except NameError:
+                        pass  # run_fact_citations not defined if Phase 1.5 was skipped
+                    article_content, stripped_urls = enforce_url_allowlist(article_content, allowed_urls)
+                    if stripped_urls:
+                        logger.warning(f"[URL-GATE] Stripped {len(stripped_urls)} unauthorized URLs: {stripped_urls}")
+                        yield f"data: {json.dumps({'event': 'debug', 'message': f'URL gate stripped {len(stripped_urls)} unauthorized links from final article'})}\n\n"
+                except Exception as e:
+                    logger.error(f"[URL-GATE] Error during URL enforcement: {e}")
 
             # Save the generated article
             post = Post(
