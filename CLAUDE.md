@@ -1,4 +1,4 @@
-# Ares Engine
+# Ark Opus
 
 ## NEVER
 - Never rewrite entire files for small logic changes — use targeted edits
@@ -27,7 +27,7 @@
 - `app/domain_tiers.py` — 4-tier domain credibility lists
 - `app/services/` — Agents: briefing, research, exa_research, source_verification, claim_verification, psychology, writer (writer_service + writer_agent_graph), readability, feedback, research_intel, writer_intel, cartographer, url_validation
 - `app/services/prompts/` — LLM prompt templates (writer.md, persuasion.md) — **read-only without explicit approval**
-- `static/` — Frontend (ares_console.html, js/console.js)
+- `static/` — Frontend (ark_opus_console.html, js/console.js)
 
 ## Security Rules
 - **API key auth** — all endpoints (except `/health`, `/`) require `X-API-Key` header validated by `verify_api_key()` from `app/auth.py`; SHA256 hashed against `api_keys` table

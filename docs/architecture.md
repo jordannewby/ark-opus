@@ -1,4 +1,4 @@
-# Ares Engine — Architecture Reference
+# Ark Opus — Architecture Reference
 
 Load this file when working on pipeline logic, agent behavior, or the workspace system: `@docs/architecture.md`
 
@@ -167,7 +167,7 @@ The DB session (`db`) is checked out via FastAPI's `Depends(get_db)` before `eve
 
 ## State Management & Bleed Prevention
 
-Ares Engine implements multi-layered state isolation to prevent topic bleed across keyword generations:
+Ark Opus implements multi-layered state isolation to prevent topic bleed across keyword generations:
 
 ### Backend Cache Isolation
 - **ResearchCache Table**: Composite unique key `(keyword, profile_name, niche)` enforces strict workspace and niche scoping

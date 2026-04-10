@@ -1,84 +1,402 @@
-# Ares Engine
+# Ark Opus
 
-Ares Engine is a sophisticated, fully autonomous, asynchronous **7-Phase AI Content Pipeline** that orchestrates multiple LLMs (GLM-5, DeepSeek-V3, Claude Sonnet 4.5) and external APIs (Exa.ai, DataForSEO MCP) to dynamically build deeply researched, psychologically persuasive, and fact-verified 1,600+ word Markdown articles with citation-backed claims.
-
-It features real-time UI streaming via Server-Sent Events (SSE), multi-gate validation (SEO, Citation, Readability), and self-improving intelligence loops that learn from user feedback to converge on your exact writing style over time.
+A 7-phase AI content pipeline that researches, verifies, and writes long-form articles with automated citation checking. It orchestrates multiple LLMs (GLM-5, DeepSeek-V3, Claude Sonnet 4.5) and external APIs (Exa.ai, DataForSEO) to produce 1,600+ word Markdown articles where every factual claim is cross-referenced against verified sources before the article is saved.
 
 ---
 
 ## Table of Contents
 
-1. [What is Ares Engine?](#1-what-is-ares-engine)
-2. [The 7-Phase Pipeline](#2-the-7-phase-pipeline)
-3. [Intelligence Loops (Self-Improvement)](#3-intelligence-loops-self-improvement)
-4. [Tech Stack](#4-tech-stack)
-5. [Quickstart Guide](#5-quickstart-guide)
-6. [Environment Variables](#6-environment-variables)
-7. [Configuration (app/settings.py)](#7-configuration-appsettingspy)
-8. [Database Schema](#8-database-schema)
-9. [API Endpoints](#9-api-endpoints)
-10. [Frontend UI](#10-frontend-ui)
-11. [Cost Breakdown](#11-cost-breakdown)
-12. [Security](#12-security)
-13. [Troubleshooting](#13-troubleshooting)
-14. [Development Notes](#14-development-notes)
+1. [The Problem](#the-problem)
+2. [What Ark Opus Does Differently](#what-ark-opus-does-differently)
+3. [What This Is / What This Is NOT](#what-this-is--what-this-is-not)
+4. [How It Compares](#how-it-compares)
+5. [Pipeline Overview](#pipeline-overview)
+6. [Quick Start](#quick-start)
+7. [Environment Variables](#environment-variables)
+8. [Tech Stack](#tech-stack)
+9. [API Endpoints](#api-endpoints)
+10. [Cost Breakdown](#cost-breakdown)
+11. [Security](#security)
+12. [Architecture Deep Dive](#architecture-deep-dive)
+13. [License](#license)
 
 ---
 
-## 1. What is Ares Engine?
+## The Problem
 
-Ares Engine is an **AI-powered content generation platform** designed to produce SEO-optimized, fact-verified articles at scale. Unlike simple LLM wrappers, Ares orchestrates a sophisticated pipeline that:
+Every major AI content tool generates text and leaves fact-checking to the user. Jasper, Copy.ai, and Writesonic produce fluent prose with no mechanism to verify whether the claims in that prose are real. Frase researches before writing but does not cross-reference claims after generation. Surfer SEO optimizes for keyword density and SERP signals but does not touch factual accuracy. MarketMuse maps topical authority but does not verify individual claims.
 
-- **Researches** keywords using agentic tool orchestration (GLM-5 Deep Thinking)
-- **Verifies** sources via 7-factor credibility scoring (domain authority, freshness, integrity)
-- **Extracts** verifiable facts with confidence scoring and citation mapping
-- **Strategizes** psychological frameworks (PAS - Problem-Agitation-Solution)
-- **Writes** publication-ready prose (Claude Sonnet 4.5) with 3-gate validation
-- **Cross-references** claims against verified facts to prevent hallucinations
-- **Learns** from human edits to improve over time via intelligence loops
+Citation fabrication is the default failure mode of LLMs used for content. They invent URLs that return 404. They attribute studies to organizations that never published them. They hallucinate statistics that sound plausible but have no source. This is not an edge case. It is the baseline behavior of every general-purpose content generation tool on the market today.
 
-### Key Features
+The result: editorial teams spend more time fact-checking AI output than they saved by using AI in the first place. Content agencies publish articles with fabricated citations that damage client credibility. The trust problem is not a model quality problem — it is an architecture problem. No amount of prompt engineering prevents a model from inventing a URL it has never seen.
 
-- **Agentic Research**: GLM-5 autonomously decides which tools to use (DataForSEO, Exa.ai) across 5 iterative reasoning loops
-- **Source Credibility System**: 4-tier domain classification (Government/Academic → Tech Giants → Industry Blogs → General) with 7-factor scoring algorithm
-- **Fact Verification**: Zero-tolerance for fabricated citations; cross-references every claim against verified source facts
-- **Multi-Gate Validation**: Articles must pass SEO metrics (1,500+ words, 5+ H2s), citation requirements, and readability standards (7th-10th grade ARI)
-- **Real-Time Streaming**: SSE-based UI shows live agent execution, source verification scores, and iteration feedback
-- **Self-Improving**: Research and Writer intelligence loops distill playbooks from past runs (≥10 articles) to guide future generations
-- **Multi-Tenant**: Workspace-scoped isolation with per-profile style rules and niche playbooks
-
-### Use Cases
-
-- **SEO Content Agencies**: Generate 35-65 researched articles/month on a $10 budget
-- **Niche Blogs**: Cybersecurity, AI/ML, GRC, Blue/Red/Purple Team technical content
-- **Thought Leadership**: Citation-backed industry analysis with psychological persuasion
-- **Content Teams**: Human-in-the-loop workflow where editors approve/refine AI drafts
+Ark Opus solves this by making verification a structural requirement, not an optional step. Articles cannot be saved until claims pass a multi-gate verification pipeline. The system does not trust LLM output — it verifies it.
 
 ---
 
-## 2. The 7-Phase Pipeline
+## What Ark Opus Does Differently
 
-### Phase -1: Cartographer (Hub-and-Spoke Planning)
+These are specific, technical capabilities implemented in this codebase. Each one is verifiable by reading the referenced source file.
+
+**1. Post-Write Claim Cross-Referencing**
+After Claude generates an article, every factual claim is extracted via regex and matched against the verified fact database using 3-tier URL matching (exact, normalized, domain-level) and text similarity scoring. Fabricated citations — URLs not in the verified source map — trigger an automatic rewrite. Zero tolerance, no exceptions.
+`app/services/claim_verification_agent.py`
+
+**2. 7-Factor Source Credibility Scoring**
+Before any source enters the writer's citation pool, it is scored on a 0-100 scale across 7 factors: content integrity, content quality, domain tier + authority, content freshness, author attribution, topical relevance, and spam detection. Sources below the threshold (default 45.0) are rejected. A rescue bonus system (up to +15 points) recovers borderline sources that show strong SERP ranking or citation depth.
+`app/services/source_verification_service.py`
+
+**3. Citation Laundering Detection**
+When an article claims "Gartner reports X" but the citation URL points to a blog that aggregated the data, the system detects the mismatch. It maintains a map of 70+ research organizations to their canonical domains and flags attribution-URL mismatches as zero-tolerance violations.
+`app/services/source_verification_service.py` — `KNOWN_RESEARCH_ORGS`
+
+**4. Self-Improving Intelligence Loops**
+After 10+ articles in a niche, the system distills successful research patterns (tool sequences, entity clusters, keyword strategies) and readability patterns (ARI baselines, sentence lengths) into playbooks. These playbooks are injected into future generations to guide — not dictate — research and writing quality. Human edit feedback trains per-profile style rules that persist across sessions.
+`app/services/research_intel_service.py`, `app/services/writer_intel_service.py`, `app/services/feedback_service.py`
+
+---
+
+## What This Is / What This Is NOT
+
+| This IS | This is NOT |
+|---------|-------------|
+| A fact-verification-first content pipeline | A fast content spinner |
+| 20-40 minutes per article (research + verification + writing) | A "generate in 30 seconds" tool |
+| Multi-LLM orchestration (5 models across 7 phases) | A single-prompt wrapper around GPT/Claude |
+| Self-hosted, API-key-based | A SaaS product with a login page |
+| ~$0.15-0.30 per article in API costs | Free or unlimited |
+| Best for: technical content, SEO, thought leadership | Best for: social media posts, ad copy, email blasts |
+| Style learning requires 10+ articles to activate | Instant brand voice templates |
+| Requires 5 separate API accounts (Anthropic, DeepSeek, ZhipuAI, Exa, DataForSEO) | A one-click setup |
+
+---
+
+## How It Compares
+
+This table reflects publicly documented capabilities of each platform as of April 2026. Checkmarks indicate the feature exists as a core product capability, not a workaround.
+
+| Feature | Ark Opus | Frase | Jasper | Surfer SEO | MarketMuse |
+|---------|----------|-------|--------|------------|------------|
+| Post-write citation verification | Yes | No | No | N/A | No |
+| Source credibility scoring | 7-factor (0-100) | No | No | No | No |
+| Citation laundering detection | Yes | No | No | No | No |
+| Research before writing | Yes (agentic, multi-tool) | Yes (single-pass) | Limited | No | No |
+| Multi-LLM orchestration | 5 models | 1 | 2+ | N/A | N/A |
+| Self-improving intelligence loops | Yes (research + writer) | No | Brand voice only | No | No |
+| Speed per article | 20-40 min | ~10 min | ~2 min | N/A | N/A |
+| Real-time SEO optimization | Basic (word count, H2s, ARI) | Yes | Via Surfer add-on | Yes (advanced) | No |
+| Topical authority mapping | No | No | No | No | Yes |
+| Brand voice template library | No (learned from edits) | No | Yes (50+) | No | No |
+| Cost per article | ~$0.15-0.30 | Subscription | Subscription | Subscription | Subscription |
+
+**Where competitors are better:** Frase is faster. Jasper has superior brand voice templates and enterprise integrations. Surfer SEO provides deeper real-time SERP correlation analysis. MarketMuse excels at site-wide topical authority planning. All of them are easier to set up.
+
+**Where Ark Opus is better:** No platform in this category performs automated post-write citation verification, source credibility scoring, or citation laundering detection. These are structurally absent from the competition, not just weaker implementations.
+
+---
+
+## Pipeline Overview
+
+```
+Keyword + Niche
+       |
+       v
+[Phase -1] Cartographer ─── Hub-and-spoke keyword campaign planning (DeepSeek-R1)
+       |                    Fetches 100-700 keywords from DataForSEO, clusters into
+       |                    pillar + up to 10 spokes with intent classification
+       v
+[Phase  0] Briefing ─────── 3 clarifying questions before research (DeepSeek-V3)
+       |                    Optional. Refines keyword intent and audience targeting
+       v
+[Phase  1] Research ─────── Agentic tool orchestration (GLM-5)
+       |                    DataForSEO SERP/keywords + Exa.ai neural search
+       |                    Max 5 reasoning loops, niche-filtered source discovery
+       v
+[Phase 1.5] Verification ── Source credibility scoring + fact extraction
+       |                    7-factor scoring (0-100), AI content detection,
+       |                    citation laundering detection, URL liveness validation
+       |                    GATE: Fails if <3 credible sources verified
+       v
+[Phase  2] Psychology ───── Persuasion blueprint generation (DeepSeek-V3)
+       |                    PAS framework, identity hooks, semantic entity mapping,
+       |                    dynamic content length targets from competitor benchmarks
+       v
+[Phase  3] Writer ────────── Article generation + 3-gate validation (Claude Sonnet 4.5)
+       |                    Gate 1: SEO (1,500+ words, 5+ H2s, 3+ list/table blocks)
+       |                    Gate 2: Citations (claim cross-referencing, URL matching)
+       |                    Gate 3: Readability (ARI ≤10.0, 80%+ sentences 8-12 words)
+       |                    Max 5 attempts with detailed feedback per retry
+       v
+[Phase  4] Claim Gate ───── Post-write claim verification
+       |                    Zero-tolerance: fabricated citations, attribution mismatches
+       |                    Soft limits: ≤2 uncited claims, ≤15% ungrounded ratio
+       v
+[Phase  6] Feedback ─────── Self-correction from human edits (DeepSeek-V3)
+                            Extracts style rules, scores research/writer quality,
+                            triggers playbook distillation at ≥10 articles
+```
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- [Python 3.10+](https://www.python.org/downloads/)
+- [Git](https://git-scm.com/downloads)
+- [Node.js / npm](https://nodejs.org/en/) (required for DataForSEO MCP server)
+
+### Installation
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/jordannewby/ark-opus.git
+cd ark-opus
+
+# 2. Set up Python virtual environment
+python -m venv venv
+
+# Windows:
+.\venv\Scripts\activate
+# Mac/Linux:
+source venv/bin/activate
+
+# 3. Install Python dependencies
+pip install -r requirements.txt
+
+# 4. Install DataForSEO MCP server dependencies
+cd mcp-dataforseo-server
+npm install
+cd ..
+
+# 5. Create your .env file (NEVER commit this file)
+cp .env.example .env
+# Edit .env with your actual API keys (see Environment Variables below)
+
+# 6. Install pre-commit hook (blocks accidental secret commits)
+cp hooks/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+
+# 7. Start the application
+uvicorn app.main:app --reload
+```
+
+**Access Points:**
+- Frontend UI: `http://127.0.0.1:8000/`
+- API docs (Swagger): `http://127.0.0.1:8000/docs`
+- Health check: `http://127.0.0.1:8000/health`
+
+### Verify Installation
+
+1. Open `http://127.0.0.1:8000/` — you should see the Ark Opus Console UI
+2. Check browser console (F12) for errors
+3. Hit `/health` to verify API connectivity
+
+---
+
+## Environment Variables
+
+Create a `.env` file in the project root. **This file is gitignored and must never be committed.**
+
+### Required
+
+```env
+# Database — Neon PostgreSQL (https://neon.tech)
+DATABASE_URL="postgresql://user:password@host:5432/dbname?sslmode=require"
+
+# Anthropic — Claude Sonnet 4.5 for writing (https://console.anthropic.com)
+ANTHROPIC_API_KEY="your-anthropic-api-key-here"
+
+# ZhipuAI — GLM-5 for research + verification (https://open.bigmodel.cn)
+ZAI_API_KEY="your-zai-api-key-here"
+
+# DeepSeek — V3 for briefing/psychology/feedback, R1 for cartographer (https://platform.deepseek.com)
+DEEPSEEK_API_KEY="your-deepseek-api-key-here"
+
+# Exa.ai — Neural search for source discovery (https://dashboard.exa.ai)
+EXA_API_KEY="your-exa-api-key-here"
+
+# DataForSEO — SERP, keywords, backlinks, on-page analysis (https://app.dataforseo.com)
+DATAFORSEO_LOGIN="your-dataforseo-login"
+DATAFORSEO_PASSWORD="your-dataforseo-password"
+
+# Admin — API key management endpoint authentication
+# Generate: python -c "import secrets; print(secrets.token_urlsafe(32))"
+ADMIN_SECRET="your-admin-secret-here"
+```
+
+### Optional
+
+```env
+# Enable debug mode for verbose SSE events and logging
+ARK_DEBUG=true
+```
+
+### Security Notes
+
+- All keys loaded via `os.getenv()` in `app/settings.py` — never hardcoded
+- Server refuses to start if critical keys are missing
+- Verify your `.env` is ignored: `git check-ignore .env` (should output `.env`)
+- If keys are accidentally exposed, rotate immediately at provider dashboards
+
+---
+
+## Tech Stack
+
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| **API Framework** | FastAPI | REST endpoints + SSE streaming |
+| **Database** | Neon PostgreSQL + SQLAlchemy 2.0 | Multi-tenant ORM with connection pooling |
+| **Reasoning LLM** | GLM-5 / DeepSeek-R1 | Research orchestration, source verification, campaign planning |
+| **Chat LLM** | DeepSeek-V3 | Briefing, psychology, feedback, intelligence distillation |
+| **Writer LLM** | Claude Sonnet 4.5 | Article generation with extended thinking |
+| **Research APIs** | Exa.ai + DataForSEO MCP | Neural search + SEO intelligence (SERP, keywords, backlinks, on-page) |
+| **Streaming** | SSE (Server-Sent Events) | Real-time frontend updates |
+| **Frontend** | Vanilla JS + Tailwind CSS | Console UI with real-time agent visualization |
+| **HTTP Client** | httpx (async) + Anthropic SDK | LLM API calls |
+| **Validation** | Pydantic | Request/response schema enforcement |
+| **MCP Framework** | Model Context Protocol | DataForSEO tool integration |
+
+---
+
+## API Endpoints
+
+All endpoints except `/health` and `/` require `X-API-Key` header authentication.
+
+| Endpoint | Method | Auth | Rate Limit | Purpose |
+|----------|--------|------|------------|---------|
+| `/generate/{keyword:path}` | POST | API Key | 5/min, 50/day | Full 7-phase pipeline (SSE stream) |
+| `/research/{keyword:path}` | GET | API Key | 10/min | Phase 1 research only |
+| `/clarify` | GET | API Key | - | Phase 0 — 3 clarifying questions |
+| `/blueprint` | POST | API Key | - | Phase 2 psychology blueprint only |
+| `/posts` | GET | API Key | - | List articles (profile-scoped) |
+| `/posts/{post_id}` | GET | API Key | - | Fetch specific article |
+| `/posts/{post_id}/approve` | POST | API Key | - | Approve edits, trigger feedback + scoring |
+| `/rules` | GET/POST | API Key | - | Manage style rules (max 25/profile) |
+| `/rules/{rule_id}` | DELETE | API Key | - | Delete style rule (ownership verified) |
+| `/workspaces` | GET/POST | API Key | - | Manage workspaces (profile-scoped) |
+| `/campaigns` | GET | API Key | - | Fetch campaigns |
+| `/campaigns/plan` | POST | API Key | 10/min | Cartographer hub-and-spoke planning |
+| `/settings` | GET/PUT | API Key | - | Profile settings (tunable thresholds) |
+| `/admin/api-keys` | POST | Admin Secret | - | Create API keys (`X-Admin-Secret` header) |
+| `/health` | GET | None | - | System status |
+| `/` | GET | None | - | Frontend UI |
+
+---
+
+## Cost Breakdown
+
+| Service | Purpose | Cost per Article | Model |
+|---------|---------|------------------|-------|
+| **Anthropic** | Writer phase | ~$0.05 | Claude Sonnet 4.5 |
+| **ZhipuAI** | Research + verification | ~$0.06 | GLM-5 |
+| **DeepSeek** | Briefing, psychology, feedback, cartographer | ~$0.02 | V3 + R1 |
+| **Exa.ai** | Neural search | ~$0.01 | scout_search, extract |
+| **DataForSEO** | SERP, keywords, on-page (via MCP) | ~$0.02 | SERP, keyword ideas, on-page |
+| **Neon PostgreSQL** | Database | Free tier (3GB) or ~$7/mo | PostgreSQL 15 |
+
+**Total per article:** $0.15-0.30 (varies by research depth and retry count)
+
+**Budget planning:**
+- $10/month = ~35-65 articles
+- $20/month = ~70-130 articles
+
+**Cost optimizations built in:**
+- Research caching (24h TTL) — reuses results for same keyword/niche/profile
+- Domain credibility cache (90-day TTL) — reduces verification API calls by ~40%
+- Playbook distillation — reduces prompt token injection after 10+ articles
+- Configurable limits: `EXA_NUM_RESULTS`, `MAX_AGENTIC_ITERATIONS`, `MAX_WRITER_ATTEMPTS`
+
+---
+
+## Security
+
+Ark Opus implements defense-in-depth across authentication, prompt injection, rate limiting, and frontend hardening.
+
+### Authentication & Authorization
+
+- **API key auth** — All endpoints (except `/health`, `/`) require `X-API-Key` header. Keys are SHA256-hashed and validated against the `api_keys` table via `app/auth.py`
+- **Admin endpoint** — `POST /admin/api-keys` requires `X-Admin-Secret` header, validated with `secrets.compare_digest()` (timing-safe)
+- **Key generation** — `secrets.token_urlsafe(32)`, stored as SHA256 hash (never plaintext)
+- **Profile scoping** — Each API key is bound to a `profile_name`; all database queries filter by profile for multi-tenant isolation
+
+### Prompt Injection Defense
+
+All data entering LLM prompts is sanitized via `app/security.py`:
+
+| Function | Protection | Usage |
+|----------|-----------|-------|
+| `sanitize_prompt_input()` | Strips HTML comments + control chars, truncates, wraps in XML boundary tags | User-controlled inputs (keyword, niche, context, briefing answers) |
+| `sanitize_external_content()` | Strips HTML comments + control chars, truncates (no boundary tags) | External/LLM-derived data (Exa content, style rules, claim feedback, web content) |
+
+**Coverage** — sanitization applied at every LLM prompt boundary across all 8 agent services.
+
+**Input length bounds** — Pydantic `Field(max_length=...)` at API boundary AND truncation before LLM injection: `MAX_USER_CONTEXT_CHARS=2000`, `MAX_STYLE_RULES_CHARS=1500`, `MAX_RESEARCH_JSON_CHARS=6000`, `MAX_PLAYBOOK_CHARS=1500`
+
+### Rate Limiting & Abuse Prevention
+
+- **Per-endpoint rate limits** — `slowapi`: `/generate` (5/min), `/research` (10/min), `/campaigns/plan` (10/min); keyed by API key hash
+- **Daily generation cap** — `MAX_DAILY_GENERATIONS=50` per profile per day
+- **Style rule cap** — `MAX_STYLE_RULES_PER_PROFILE=25` prevents unbounded memory accumulation
+- **Agentic loop limits** — `MAX_AGENTIC_ITERATIONS=5`, `MAX_WRITER_ATTEMPTS=5` cap per-request cost
+
+### Security Headers
+
+`SecurityHeadersMiddleware` adds to all responses:
+- `Strict-Transport-Security: max-age=63072000; includeSubDomains` (HSTS)
+- `Content-Security-Policy` (restricted script/style/font/connect sources)
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
+
+### Frontend Security
+
+- **XSS prevention** — All `innerHTML` assignments wrapped in `DOMPurify.sanitize()`
+- **Markdown rendering** — `marked.parse()` output sanitized via DOMPurify before DOM insertion
+- **SRI hashes** — Third-party scripts loaded with Subresource Integrity
+- **Error isolation** — SSE error events send generic messages only; stack traces never reach the client
+
+### Secrets Management
+
+- All API keys loaded via `os.getenv()` in `app/settings.py` — never hardcoded in source
+- `.env` is gitignored; `.env.example` provides the template with placeholder values
+- Pre-commit hook (`hooks/pre-commit`) blocks `.env` files and scans for API key patterns
+- Server validates critical keys at startup — refuses to start if missing
+
+```bash
+# Verify before committing
+git check-ignore .env          # Should output: .env
+git status                     # Should NOT show .env
+```
+
+---
+
+## Architecture Deep Dive
+
+<details>
+<summary><strong>Phase -1: Cartographer (Hub-and-Spoke Planning)</strong></summary>
 
 **Trigger**: `/campaigns/plan` endpoint
 **Model**: DeepSeek-R1 (`deepseek-reasoner`)
 **Purpose**: Maps keyword clusters into strategic content campaigns
 
 **Process**:
-1. Fetches 100+ keyword ideas from DataForSEO based on a seed keyword
+1. Fetches 100-700 keyword ideas from DataForSEO based on a seed keyword
 2. DeepSeek-R1 analyzes keyword intent, search volume, and topical relationships
-3. Structures results into a **Pillar keyword** (main topic) + **10 Spoke keywords** (supporting subtopics)
-4. Each spoke includes: keyword, intent classification, content angle suggestion
+3. Structures results into a **Pillar keyword** (main topic) + up to **10 Spoke keywords** (supporting subtopics)
+4. Each spoke includes: keyword, KD, volume, intent classification (Informational/Commercial), content angle
 
-**Output**: `ContentCampaign` database record (persistent, queryable via `/campaigns` endpoint)
+**Filtering rules**: Discards job-seeking, navigational, competitor-branded, and irrelevant keywords. Prefers 4 good spokes over 10 forced ones. Target KD < 45 for spokes.
 
-**Example**:
-- **Pillar**: "zero trust architecture"
-- **Spokes**: "zero trust network access", "microsegmentation strategies", "ZTNA vs VPN", etc.
+**Output**: `ContentCampaign` database record (queryable via `/campaigns` endpoint)
 
----
+**Cost**: ~$0.02/campaign
 
-### Phase 0: Briefing Agent (Clarification Loop)
+</details>
+
+<details>
+<summary><strong>Phase 0: Briefing Agent (Clarification Loop)</strong></summary>
 
 **Trigger**: `/clarify` endpoint (optional, user-facing)
 **Model**: DeepSeek-V3 (`deepseek-chat`)
@@ -87,18 +405,19 @@ Ares Engine is an **AI-powered content generation platform** designed to produce
 **Process**:
 1. Accepts a raw keyword + free-form niche description
 2. DeepSeek-V3 generates 3 specific questions to refine context
-3. User answers are stored and injected into Phase 1's research prompt
-
-**Output**: List of 3 questions with user-provided answers
+3. User answers are stored and injected into Phase 1's research prompt (capped at 2,000 chars)
 
 **Example Questions**:
 - "Are you targeting IT managers or technical implementers?"
 - "Should we focus on on-premise or cloud-native solutions?"
 - "Do you want vendor comparisons or implementation best practices?"
 
----
+**Cost**: ~$0.002/call
 
-### Phase 1: Research Agent (Agentic Intelligence Gathering)
+</details>
+
+<details>
+<summary><strong>Phase 1: Research Agent (Agentic Intelligence Gathering)</strong></summary>
 
 **Trigger**: `/generate` endpoint start
 **Model**: GLM-5 (`glm-5`) for agentic tool orchestration via ZhipuAI API
@@ -108,233 +427,130 @@ Ares Engine is an **AI-powered content generation platform** designed to produce
 1. **Agentic Loop** (max 5 iterations): GLM-5 autonomously decides which tools to use based on information gaps
 2. **3-Step Sequencing**:
    - **Mandatory**: Keyword ideas + SERP data (always runs first)
-   - **Strategic**: Exa scout search → extract full text (GLM-5 decides when to use)
+   - **Strategic**: Exa scout search + extract full text (GLM-5 decides when to use)
    - **Final**: Synthesize research dict with competitive intelligence
-3. **Niche Filtering**: Maps 30+ niche aliases (e.g., "cybersecurity" → ["infosec", "appsec", "netsec"]) to 9 categories, filters Exa searches by domain credibility
+3. **Niche Filtering**: Maps 30+ niche aliases (e.g., "cybersecurity" -> ["infosec", "appsec", "netsec"]) to 9 categories, filters Exa searches by domain credibility
 4. **Keyword Relevance Fallback**: If <3 relevant sources found after niche-filtered search, triggers unfiltered Exa + broad backfill
 5. **Metadata Preservation**: Stores `publishedDate` + `score` via `url_metadata_map` for Phase 1.5 scoring
-6. **On-Page Competitor Analysis**: Analyzes top 10 SERP competitors via DataForSEO On-Page API for readability metrics, content quality scores (0-1 scale), on-page SEO scores (0-100), Core Web Vitals, and word count benchmarks
-7. **MCP 429 Retry**: Exponential backoff (1s→2s→4s, max 3 retries) on DataForSEO rate-limits
-8. **Niche Playbook Injection**: If ≥10 prior runs exist for this niche, injects distilled playbook (~200 tokens) to guide tool selection
+6. **On-Page Competitor Analysis**: Analyzes top 10 SERP competitors via DataForSEO On-Page API for readability metrics, on-page SEO scores (0-100), and word count benchmarks
+7. **MCP 429 Retry**: Exponential backoff (1s -> 2s -> 4s, max 3 retries) on DataForSEO rate-limits
+8. **Niche Playbook Injection**: If >=10 prior runs exist for this niche, injects distilled playbook (~200 tokens) to guide tool selection
 
-**Output**: Research dict with:
-- Competitive headers/subheaders from top-ranking pages
-- Semantic entities (technologies, frameworks, people, companies)
-- People-Also-Ask questions
-- Backlink authority scores
-- KD (keyword difficulty) metrics
-- `elite_competitors` list (URLs of top sources for Phase 1.5)
-- `content_patterns` (competitor benchmarks: avg word count, on-page scores, readability metrics, top 5 competitor details)
+**Output**: Research dict with competitive headers, semantic entities, People-Also-Ask questions, KD metrics, `elite_competitors` list, and `content_patterns` (competitor benchmarks)
 
-**Cost**: ~$0.08/article (GLM-5 reasoning tokens)
+**Cost**: ~$0.08/article
 
----
+</details>
 
-### Phase 1.5: Source Verification & Fact Extraction
+<details>
+<summary><strong>Phase 1.5: Source Verification & Fact Extraction</strong></summary>
 
 **Trigger**: Automatic if `elite_competitors` found in Phase 1
-**Model**: GLM-5 (`glm-5`) for integrity/quality checks + fact extraction via ZhipuAI API
+**Models**: GLM-5 for integrity/quality checks + DeepSeek-V3 for fact extraction
 **Tools**: DataForSEO MCP (domain authority), Exa.ai, cached domain credibility lists
 
-**Process**:
-1. **7-Factor Credibility Scoring** (0-85 base + 15 rescue bonus = 100 max):
-   - **Content Integrity** (0-25pts): DeepSeek adversarial check for promotional intent, claim sourcing, specificity
-   - **Content Quality** (0-15pts): Depth, evidence, structure assessment
-   - **Domain Tier + Authority** (0-20pts): 4-tier classification + DataForSEO domain rank
-   - **Content Freshness** (0-15pts): Exa `publishedDate` + OpenGraph metadata + regex date patterns
-   - **Author Attribution** (0-5pts): E-E-A-T signals (author names, credentials, contact info)
-   - **Topical Relevance** (0-5pts): Exa neural search score
-   - **Spam Penalty** (-10pts): If promotional_intent ≥ 0.9
-2. **Threshold**: 45.0/100 minimum (53% pass rate)
-3. **Rescue Bonus** (borderline sources 35-45): Up to +15pts from:
-   - SERP ranking position (+5pts if top 3)
-   - Citation count in content (+3pts)
-   - Content depth indicators (+4pts)
-   - Domain credibility cache hits (+3pts)
-4. **Fact Extraction**: DeepSeek extracts verifiable claims:
-   - **Types**: Statistics, benchmarks, case studies, expert quotes, survey results
-   - **Confidence**: 0.0-1.0 scale (≥0.6 required to pass)
-   - **Original Source**: Named study/report/expert (e.g., "Gartner 2024 Report")
-   - **Citation Anchor**: Display text for markdown link (e.g., "according to Gartner")
-5. **Iterative Backfill**: If <3 sources verified after initial pass:
-   - **Attempt 1**: Threshold decay 45→40, find similar sources
-   - **Attempt 2**: Threshold 40→35, niche-filtered Exa search
-   - **Attempt 3**: Threshold 35, broad unfiltered search
-6. **Citation Map Building**: Facts stored in `FactCitation` table, formatted as pre-rendered markdown bullets for writer consumption
+**7-Factor Credibility Scoring** (0-85 base + 15 rescue bonus = 100 max):
+- **Content Integrity** (0-25pts): GLM-5 adversarial check for promotional intent, claim sourcing, specificity
+- **Content Quality** (0-15pts): Depth, evidence, structure assessment
+- **Domain Tier + Authority** (0-20pts): 4-tier classification + DataForSEO domain rank
+- **Content Freshness** (0-15pts): Exa `publishedDate` + OpenGraph metadata + regex date patterns
+- **Author Attribution** (0-5pts): E-E-A-T signals (author names, credentials)
+- **Topical Relevance** (0-5pts): Exa neural search score
+- **Spam Penalty** (-10pts): If promotional_intent >= 0.9
 
-**Output**:
-- `VerifiedSource` database records (credibility scores, metadata)
-- `FactCitation` records linking facts to sources
-- Pre-formatted citation map (markdown bullets with source URLs)
+**Threshold**: 45.0/100 minimum. Rescue bonus for borderline sources (35-45): up to +15pts from SERP ranking, citation count, content depth, domain cache.
 
-**Gate**: Generation **fails** if <3 credible sources remain after all backfill attempts
+**Fact Extraction** (DeepSeek-V3):
+- Types: statistics, benchmarks, case studies, expert quotes, survey results
+- Confidence: 0.0-1.0 scale (>=0.6 required to pass)
+- Citation laundering detection: Maps 70+ research organizations to canonical domains
 
-**Cost**: ~$0.01/article (DataForSEO domain rank + DeepSeek fact extraction)
+**Iterative Backfill**: If <3 sources verified, retries with decaying thresholds (45 -> 40 -> 35) and broader search.
 
----
+**Gate**: Generation **fails** if <3 credible sources remain after all backfill attempts.
 
-### Phase 2: Psychology Agent (Persuasion Blueprint)
+**AI Content Detection** (deterministic, $0.00 cost):
+- 4 measurable signals: type-token ratio, sentence length variance, hedging phrase density, transition formula density
+- Tier-aware penalty applied after scoring
+
+**Cost**: ~$0.01/article
+
+</details>
+
+<details>
+<summary><strong>Phase 2: Psychology Agent (Persuasion Blueprint)</strong></summary>
 
 **Trigger**: After Phase 1.5 completes
 **Model**: DeepSeek-V3 (`deepseek-chat`)
 **Prompt**: `app/services/prompts/persuasion.md` — PAS framework
 
 **Process**:
-1. Receives research dict + verified facts from Phase 1/1.5
-2. **Injects competitor benchmarks** from On-Page analysis (avg word count, on-page scores, readability targets) for niche-specific adaptation
-3. Maps article structure to psychological triggers using **PAS (Problem-Agitation-Solution)**:
-   - **Problem**: Identify pain points from research (e.g., "traditional perimeter security fails against lateral movement")
-   - **Agitation**: Amplify consequences (e.g., "82% of breaches involve insider threats")
-   - **Solution**: Position keyword as remedy (e.g., "zero trust microsegmentation eliminates implicit trust")
-4. Generates structured JSON blueprint with dynamic content length targets based on top-ranking competitors:
-   - **Hook Strategy**: Opening angle (stat-driven, case-study-led, contrarian)
-   - **Target Identity**: Reader persona (CISO, SOC analyst, compliance officer)
-   - **Agitation Points**: 3-5 pain amplifiers with emotional triggers
-   - **Identity Hooks**: Language patterns that reinforce reader's self-image
-   - **Semantic Entity Map**: Technologies/frameworks to weave into prose
-   - **Outline Structure**: H2/H3 hierarchy with psychological purpose per section
+1. Receives research dict + verified facts + competitor benchmarks
+2. Maps article structure to psychological triggers using **PAS (Problem-Agitation-Solution)**
+3. Generates structured JSON blueprint with dynamic content length targets based on top-ranking competitors
 
-**Output**: Blueprint JSON (saved to database, displayed in UI Blueprint Pane)
+**Output includes**:
+- Hook strategy (stat-driven, case-study-led, contrarian)
+- Target identity (reader persona)
+- Agitation points (3-5 pain amplifiers)
+- Identity hooks (expert vs. amateur, visionary vs. follower, insider vs. crowd)
+- Semantic entity map
+- Outline structure with H2/H3 hierarchy and psychological purpose per section
 
-**Cost**: ~$0.01/article (DeepSeek-V3)
+**Heading rules enforced**: <=10 words per heading, no word >3 syllables, 7th-grade readability, 22+ banned words (delve, landscape, multifaceted, comprehensive, etc.)
 
----
+**Cost**: ~$0.01/article
 
-### Phase 3: Writer Service (Content Generation + Multi-Gate Validation)
+</details>
+
+<details>
+<summary><strong>Phase 3: Writer Service (Content Generation + 3-Gate Validation)</strong></summary>
 
 **Trigger**: After Phase 2 completes
 **Model**: Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) via native Anthropic SDK
-**Process**: Iterative loop (max 5 attempts) with **3 sequential gates**
+**Process**: Iterative loop (max 5 attempts) with 3 sequential gates
 
 #### Gate 1: SEO Validation
-
-**Requirements**:
 - Min word count: **1,500**
 - Min H2 count: **5**
 - Min list/table density: **3 blocks**
-- Information Gain Density: **≥2.0** (unique insights per 100 words)
+- Information Gain Density: **>=2.0**
 
-**Feedback on Failure**: All conditions reported with specific counts (e.g., "Only 1,342 words, need 1,500")
+#### Gate 2: Citation & Claim Verification (Two-Stage)
 
-#### Gate 2: Citation & Claim Verification
+**Stage A**: Citation requirement validation
+- Detects claims via 8 regex patterns (percentages, dollar amounts, comparative stats, benchmarks)
+- 0-2 claims detected -> 3 citations minimum; 3+ claims -> 1 citation per claim
 
-**Two-Stage Process**:
-
-**Stage A: Citation Requirement Validation**
-- Detects claims via 8 regex patterns:
-  - Percentages (e.g., "72% of organizations")
-  - Dollar amounts (e.g., "$4.5M average cost")
-  - Comparative stats (e.g., "3x more likely")
-  - Benchmarks (e.g., "industry standard of 99.9% uptime")
-- **Citation Requirements**:
-  - 0-2 claims detected → 3 citations minimum
-  - 3+ claims → 1 citation per claim minimum
-- **Accepted Formats**:
-  - Markdown links: `[text](url)`
-  - Parenthetical: `(Source 2024)`
-  - Footnotes: `[1]`
-
-**Stage B: Post-Writer Claim Cross-Referencing**
-1. Extracts claim+citation pairs from article prose
-2. Matches each citation URL against `FactCitation` database via **3-tier matching**:
-   - **Exact**: Full URL match
-   - **Normalized**: Domain + path prefix match
-   - **Domain**: Domain-only match (weaker)
-3. **Claim Classification**:
-   - **VERIFIED**: Claim text matches source fact (text similarity ≥0.2)
-   - **FABRICATED**: Citation URL not in fact map (zero-tolerance, triggers retry)
-   - **UNGROUNDED**: URL exists but claim doesn't match source facts (zero-tolerance normally, softened to 15% max when <3 on-topic facts available)
-   - **AMBIGUOUS**: Sent to LLM for resolution (max 10 per article, requires ≥0.7 confidence)
-4. **Attribution-URL Mismatch Detection**: Flags "Gartner says X" linked to random blog (zero-tolerance, triggers retry)
-5. **Topical Coverage Softening**: If <3 on-topic facts found in citation map, allows `max(2, int(total_claims * 0.15))` ungrounded claims
-
-**Feedback on Failure**: Shows available facts per source with correction instructions
+**Stage B**: Post-writer claim cross-referencing
+- Extracts claim+citation pairs from article prose
+- 3-tier URL matching: exact -> normalized -> domain
+- Number-anchored matching: requires shared number + >=2 context words
+- Text similarity threshold: >=0.45
+- Classification: VERIFIED, FABRICATED (zero-tolerance), UNGROUNDED (zero-tolerance normally, softened to 15% max when <3 on-topic facts), AMBIGUOUS (LLM resolution, max 10)
+- Attribution-URL mismatch detection (zero-tolerance)
 
 #### Gate 3: Readability Validation
+- **ARI <= 10.0** (7th-10th grade target)
+- Flesch-Kincaid <= 11.5
+- Average sentence length <= 12 words
+- >= 80% of sentences in 8-12 word range
+- Keyword masking: filters semantic keywords + 58 jargon terms for scoring (actual article keeps keywords)
+- Citation masking: inline markdown citations treated as single words
 
-**Primary Metric**: **ARI (Automated Readability Index) ≤10.0** (7th-10th grade target)
-
-**Cross-Check**: Flesch-Kincaid ≤11.5 (+1.5 buffer)
-
-**Advisory**: Coleman-Liau (reports but doesn't block — over-penalizes technical vocab)
-
-**Sentence Constraints**:
-- Average sentence length ≤12 words
-- **≥80%** of sentences in 8-12 word range
-- **≤15%** can exceed 15 words
-
-**Keyword Masking**: Filters semantic keywords + blueprint entities + 58 niche business jargon terms (e.g., streamline, leverage, optimize, enhance, framework, ecosystem, paradigm, synergize)
-
-**Citation Masking**: Inline markdown citations `[text](url)` treated as single words
-
-**Feedback on Failure**:
-- Exact distribution (e.g., "Only 62% in 8-12 range, need 80%")
-- Per-sentence analysis showing length violations
-- Concrete word-swap table (e.g., "implement → set up", "utilize → use")
-
-#### Prompt Injection
-
-Claude receives:
-- **User Style Rules**: Learned via FeedbackAgent from past human edits
-- **WriterPlaybook**: Distilled readability patterns if ≥10 articles exist (niche ARI baseline, target sentence length)
-- **Citation Map**: Pre-rendered markdown bullets from Phase 1.5 with **CRITICAL CITATION REQUIREMENTS** warning
-- **Topical Mismatch Warning**: If <3 on-topic citations found, alerts Claude to expect limited factual grounding
-- **Pre-Flight Simplicity Primer** + **7th-Grade Template Sentences** for pattern-matching
-- **Layer-Cake Scanning Format**: H2s every 150-200 words, first-sentence takeaways, bold anchors
-- **Word-Swap Reference Table**: 58 banned words with simple alternatives embedded in prompt
-- **Dynamic `READABILITY_DIRECTIVE`**: Injected per-iteration based on gate failures (never modifies `writer.md` file)
-
-#### Deterministic Banned-Word Sanitizer
-
-**Post-LLM Regex**: Catches inflected forms Claude might miss:
-- 22 banned root words (leverage, optimize, landscape, streamline, etc.)
-- All variants: leveraging, leveraged, optimized, optimizing, landscapes, landscaping, etc.
-- Runs **after** Claude generates, strips variants deterministically
+#### Deterministic Post-Processing
+- **Banned-word sanitizer**: 22 banned root words + all inflections stripped via regex after generation
+- **Slop pattern removal**: Catches formulaic phrases ("it's worth noting", "in today's X Y")
 
 #### Retry Logic
+On gate failure: detailed feedback (specific counts, violation examples, fix instructions) sent to Claude for re-generation.
 
-On Gate 1-3 failure:
-1. Reporter generates detailed feedback (specific counts, violation examples, fix instructions)
-2. Feedback sent to Claude in follow-up message
-3. Claude regenerates article (attempt 2/5)
-4. Process repeats until all gates pass or max attempts reached
+**Cost**: ~$0.05/article
 
-**Streaming**: Real-time SSE events:
-- `content` — Live typing effect (article prose chunks)
-- `debug` — Iteration logs, gate pass/fail with reasons
-- `control` — `RETRY_CLEAR` signal to reset editor before retry
+</details>
 
-**Output**: ~1,600 word markdown article (streamed in real-time)
-
-**Cost**: ~$0.05/article (Claude Sonnet 4.5 input+output tokens)
-
----
-
-### Phase 4: Post-Writer Claim Verification Gate
-
-**Trigger**: After Phase 3 completes (integrated into Gate 2)
-**Function**: Cross-references article claims against verified facts (described in Gate 2 Stage B above)
-
-**Capabilities**:
-- Extracts article claims via regex (claim text + citation URL pairs)
-- Detects uncited claims (claims without markdown links)
-- Detects attribution-URL mismatches (org named in prose but linked to wrong domain)
-- Performs 3-tier URL matching + number anchoring + text similarity checks
-- Max 2 claims sent to DeepSeek LLM for ambiguous resolution
-
-**Retry on Failure**: If fabricated, uncited, ungrounded, or mismatch claims detected, re-runs writer with feedback (max 2 retries)
-
-**Graceful Degradation**: If Phase 1.5 (Exa Research API) failed and no fact citations exist, claim verification is skipped entirely. The article is saved with an informational note that verified facts were unavailable.
-
-**Final Gate**: Proceeds to save if:
-- Zero fabricated claims
-- Zero attribution mismatches
-- `≤MAX_UNCITED_CLAIMS` (tunable, default 2)
-- `≤MAX_UNGROUNDED_RATIO` of total claims ungrounded (default 15%)
-
----
-
-### Phase 6: Self-Correction Loop (Feedback Agent)
+<details>
+<summary><strong>Phase 6: Self-Correction Loop (Feedback Agent)</strong></summary>
 
 **Trigger**: `/posts/{post_id}/approve` endpoint after human edits
 **Model**: DeepSeek-V3 (`deepseek-chat`)
@@ -343,260 +559,53 @@ On Gate 1-3 failure:
 **Process**:
 1. Compares `original_ai_content` vs `human_edited_content`
 2. DeepSeek-V3 semantically diffs the two versions
-3. Extracts permanent `UserStyleRule` entities:
-   - **Type**: vocabulary_preference, structure_preference, tone_preference
-   - **Pattern**: Original phrase → Preferred replacement
-   - **Example**: "implement" → "set up", "utilize" → "use"
-4. Stores rules in database scoped by `profile_name`
+3. Extracts permanent `UserStyleRule` entities (max 3 per approval):
+   - Types: vocabulary_preference, structure_preference, tone_preference
+   - Example: "implement" -> "set up", "utilize" -> "use"
+4. Stores rules scoped by `profile_name` (max 25 per profile, auto-consolidated if >20)
 5. Rules injected into Phase 3 writer prompt on future generations
 
-**Background Task**: Runs in a separate `SessionLocal()` connection (request-scoped session closes after `/approve` response)
+**Intelligence Scoring**: Triggers `score_research_run()` (edit-distance ratio) and `score_writer_run()` (readability efficiency) for playbook distillation.
 
-**Output**: `UserStyleRule` database records (queried by profile_name)
+**Cost**: ~$0.01/approval
 
-**Intelligence Scoring**: Triggers `score_research_run()` and `score_writer_run()` to compute quality metrics for intelligence loop distillation
+</details>
 
----
-
-## 3. Intelligence Loops (Self-Improvement)
+<details>
+<summary><strong>Intelligence Loops (Self-Improvement System)</strong></summary>
 
 ### Research Intelligence Loop
 
-**Purpose**: Distills successful research patterns into reusable playbooks
+**Telemetry captured**: tool sequences, KD stats, Exa queries, semantic entity clusters ($0.00 — pure Python)
 
-**Telemetry Capture** (`_capture_run_telemetry()`):
-- Tool sequence used (keyword_ideas, serp, exa_scout, exa_extract)
-- KD (keyword difficulty) stats
-- Exa queries executed
-- Semantic entity clusters discovered
-- **Cost**: $0.00 (pure Python, no API calls)
+**Playbook recall**: If >=10 prior runs for `(profile_name, niche)`, fetches `NichePlaybook` and injects ~200 tokens into GLM-5's research prompt.
 
-**Playbook Recall** (`_get_niche_playbook()`):
-- If ≥10 prior runs exist for `(profile_name, niche)`, fetches `NichePlaybook`
-- Injects distilled playbook (~200 tokens) into R1's agentic prompt
-- Guides tool selection without contaminating current research
+**Reinforcement**: On `/approve`, computes edit-distance ratio (0.0-1.0) as `quality_score`.
 
-**Reinforcement** (`score_research_run()`):
-- Triggered on `/approve` after human edits
-- Computes edit-distance ratio: `1.0 - (levenshtein(original, edited) / max_len)`
-- Persisted as `quality_score` (0.0-1.0)
-
-**Distillation** (`maybe_distill()`):
-- Triggers at ≥10 undistilled runs
-- **Heuristic Aggregation** (<5 quality runs): Averages tool patterns, entity clusters
-- **DeepSeek-V3 Distillation** (≥5 runs with quality ≥0.20): Summarizes strategic patterns
-- Result upserted to `NichePlaybook` table
-
-**Storage**: `NichePlaybook` table with composite key `(profile_name, niche)`
-
----
+**Distillation**: At >=10 undistilled runs with >=5 quality scores >=0.20, DeepSeek-V3 summarizes strategic patterns. Result upserted to `NichePlaybook` table.
 
 ### Writer Intelligence Loop
 
-**Purpose**: Learns optimal readability patterns for each niche
+**Telemetry captured**: ARI, Flesch-Kincaid, Coleman-Liau, average sentence length, word count.
 
-**Telemetry Capture** (`WriterRun`):
-- ARI (Automated Readability Index)
-- FK (Flesch-Kincaid Grade Level)
-- CLI (Coleman-Liau Index)
-- Average sentence length
-- Word count
-- Automatically captured on every generation
+**Playbook recall**: If >=10 articles for niche, injects niche ARI baseline, target sentence length, and structure patterns.
 
-**Playbook Recall** (`WriterPlaybook`):
-- If ≥10 articles exist for `(profile_name, niche)`, fetches playbook
-- Injects:
-  - Niche ARI baseline (e.g., "Cybersecurity articles average ARI 9.2")
-  - Target sentence length (e.g., "Aim for 11 words/sentence")
-  - Structure patterns (e.g., "Use 6 H2s per 1,500 words")
+**Reinforcement**: Computes readability efficiency `(10.0 - ari) / 10.0` as `efficiency_score`.
 
-**Reinforcement** (`score_writer_run()`):
-- Computes readability efficiency: `(10.0 - ari) / 10.0` (higher = closer to 7th-10th grade target)
-- Persisted as `efficiency_score` (0.0-1.0)
+**Distillation**: Heuristic averages (median ARI, mean sentence length) upserted to `WriterPlaybook` table.
 
-**Distillation**:
-- Triggers at ≥10 undistilled runs with ≥5 efficiency ≥0.20
-- Computes heuristic averages (median ARI, mean sentence length)
-- Upserted to `WriterPlaybook` table
+</details>
 
-**Storage**: `WriterPlaybook` table with composite key `(profile_name, niche)`
-
----
-
-## 4. Tech Stack
-
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **API Framework** | FastAPI 0.135.1 | REST endpoints + SSE streaming |
-| **Database** | Neon PostgreSQL + SQLAlchemy 2.0 | Multi-tenant ORM with connection pooling |
-| **Reasoning LLM** | GLM-5 (`glm-5`) / DeepSeek-R1 (`deepseek-reasoner`) | GLM-5: Phase 1 research, Phase 1.5 verification; DeepSeek-R1: Phase -1 cartographer |
-| **Chat LLM** | DeepSeek-V3 (`deepseek-chat`) | Phase 0 briefing, Phase 2 psychology, Phase 6 feedback, intelligence distillation |
-| **Writer LLM** | Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) | Phase 3 article generation |
-| **Research Tools** | Exa.ai + DataForSEO MCP | Web search (neural + SERP) + SEO intelligence (keywords, backlinks, on-page analysis) |
-| **Streaming** | SSE (Server-Sent Events) | Real-time frontend updates |
-| **Frontend** | Vanilla JS + Tailwind CSS | Cyber-glassmorphism console UI |
-| **Container** | Uvicorn ASGI server | Async production runtime |
-| **HTTP Client** | httpx (async) + Anthropic SDK | LLM API calls |
-| **Validation** | Pydantic 2.12.5 | Request/response schemas |
-| **MCP Framework** | Model Context Protocol (MCP) | DataForSEO tool integration |
-
----
-
-## 5. Quickstart Guide
-
-### Prerequisites
-
-Ensure you have the following installed:
-- [Python 3.10+](https://www.python.org/downloads/)
-- [Git](https://git-scm.com/downloads)
-- [Node.js / npm](https://nodejs.org/en/) (required for DataForSEO MCP server)
-
-### Installation Steps
-
-#### 1. Clone the Repository
-
-```bash
-git clone https://github.com/jordannewby/ares-engine.git
-cd ares-engine
-```
-
-#### 2. Set Up Virtual Environment
-
-```bash
-python -m venv venv
-```
-
-**Activate the environment:**
-
-**Windows:**
-```powershell
-.\venv\Scripts\activate
-```
-
-**Mac/Linux:**
-```bash
-source venv/bin/activate
-```
-
-#### 3. Install Python Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-#### 4. Install DataForSEO MCP Server Dependencies
-
-```bash
-cd mcp-dataforseo-server
-npm install
-cd ..
-```
-
-#### 5. Create .env File
-
-**CRITICAL**: The `.env` file holds sensitive API keys and is **gitignored**. You must create it manually.
-
-Copy the template:
-```bash
-cp .env.example .env
-```
-
-Edit `.env` with your actual API keys (see [Section 6: Environment Variables](#6-environment-variables) for details).
-
-#### 6. Start the Application
-
-```bash
-uvicorn app.main:app --reload
-```
-
-**Access Points:**
-- Frontend UI: `http://127.0.0.1:8000/`
-- API docs (Swagger): `http://127.0.0.1:8000/docs`
-- Alternative docs (ReDoc): `http://127.0.0.1:8000/redoc`
-
-#### 7. Verify Installation
-
-1. Open `http://127.0.0.1:8000/` in your browser
-2. You should see the Ares Console UI (cyber-glassmorphism design)
-3. Check browser console (F12) for any errors
-4. Navigate to `/health` endpoint to verify API connectivity
-
----
-
-## 6. Environment Variables
-
-Create a `.env` file in the project root with these required variables:
-
-### Database
-
-```env
-DATABASE_URL="postgresql://user:password@host:5432/dbname?sslmode=require"
-```
-
-**Required**: Neon PostgreSQL connection string. Get yours at [neon.tech](https://neon.tech).
-
-### LLM API Keys
-
-```env
-ANTHROPIC_API_KEY="sk-ant-api03-..."
-```
-**Required**: Claude Sonnet 4.5 for writing phase. Get yours at [console.anthropic.com](https://console.anthropic.com).
-
-```env
-DEEPSEEK_API_KEY="sk-..."
-```
-**Required**: DeepSeek-V3 for cartographer, briefing, psychology, feedback. Get yours at [platform.deepseek.com](https://platform.deepseek.com).
-
-```env
-ZAI_API_KEY="sk-..."
-```
-**Required**: GLM-5 for research and source verification. Get yours at [open.bigmodel.cn](https://open.bigmodel.cn).
-
-### Search & Intelligence APIs
-
-```env
-EXA_API_KEY="..."
-```
-**Required**: Exa.ai neural search for source discovery. Get yours at [dashboard.exa.ai](https://dashboard.exa.ai).
-
-```env
-DATAFORSEO_LOGIN="your-email@example.com"
-DATAFORSEO_PASSWORD="your-password"
-```
-**Required**: DataForSEO credentials for SERP/keyword/backlink tools. Register at [app.dataforseo.com](https://app.dataforseo.com).
-
-### Admin
-
-```env
-ADMIN_SECRET="your-admin-secret"
-```
-**Required for API key management**: Used to authenticate `POST /admin/api-keys` requests via the `X-Admin-Secret` header. Generate a strong random value (e.g., `python -c "import secrets; print(secrets.token_urlsafe(32))"`).
-
-### Optional
-
-```env
-ARES_DEBUG=true
-```
-**Optional**: Enable debug mode for verbose logging.
-
-```env
-DATAFORSEO_CONTENT_ANALYSIS_ENABLED=true
-```
-**Optional**: Enable DataForSEO on-page analysis feature flag.
-
----
-
-## 7. Configuration (app/settings.py)
-
-The application uses centralized operational constants in `app/settings.py`. Key configurations:
+<details>
+<summary><strong>Configuration Reference (app/settings.py)</strong></summary>
 
 ### Model Constants
 
 ```python
 CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
-DEEPSEEK_MODEL = "deepseek-chat"  # DeepSeek-V3
+DEEPSEEK_MODEL = "deepseek-chat"        # DeepSeek-V3
 DEEPSEEK_REASONER_MODEL = "deepseek-reasoner"  # DeepSeek-R1
-GLM5_MODEL = "glm-5"  # GLM-5 Deep Thinking
+GLM5_MODEL = "glm-5"                    # GLM-5 Deep Thinking
 ```
 
 ### Timeouts (seconds)
@@ -631,7 +640,7 @@ WRITER_MAX_TOKENS = 8192            # Token budget per generation
 ### Source Verification
 
 ```python
-SOURCE_CREDIBILITY_THRESHOLD = 45.0   # Min score to pass (0-100 scale)
+SOURCE_CREDIBILITY_THRESHOLD = 45.0   # Min score to pass (0-100)
 SOURCE_THRESHOLD_DECAY = 5.0          # Lower threshold on retries
 MAX_VERIFICATION_ITERATIONS = 3       # Iterative backfill attempts
 ```
@@ -642,443 +651,141 @@ MAX_VERIFICATION_ITERATIONS = 3       # Iterative backfill attempts
 MAX_EXA_FACT_CHECKS = 15
 MAX_LLM_VERIFICATIONS = 10
 CLAIM_TEXT_SIMILARITY_THRESHOLD = 0.45
-LLM_SOURCE_CONTEXT_CHARS = 5000
-MAX_UNCITED_CLAIMS = 2                # Max uncited claims before gate fails
-MAX_UNGROUNDED_RATIO = 0.15          # Max fraction of claims allowed ungrounded (15%)
-MAX_CLAIM_RETRIES = 2                 # Writer retries on claim gate failure
+MAX_UNCITED_CLAIMS = 2
+MAX_UNGROUNDED_RATIO = 0.15
+MAX_CLAIM_RETRIES = 2
 ```
 
 ### Penalties
 
 ```python
-BLOG_DOMAIN_PENALTY = 10.0            # Points deducted for blog.* subdomains
-BLOG_PATH_PENALTY = 5.0               # Points deducted for /blog/ in URL
-UNSOURCED_CLAIMS_PENALTY = 15.0       # Low-credibility domain claims penalty
+BLOG_DOMAIN_PENALTY = 10.0
+BLOG_PATH_PENALTY = 5.0
+UNSOURCED_CLAIMS_PENALTY = 15.0
 ```
 
----
+### Runtime-Tunable Settings (via `/settings` endpoint)
 
-## 8. Database Schema
+```python
+CONFIGURABLE_SETTINGS = {
+    "claim_gate_hard_block": bool,           # Block save on claim failure (default: True)
+    "verify_qualitative_claims": bool,       # Check "research shows" claims (default: True)
+    "source_credibility_threshold": float,   # 35.0-75.0 range
+    "exa_num_results": int,                  # 5-25 range
+    "max_agentic_iterations": int,           # 2-10 range
+    "cache_ttl_hours": int,                  # 1, 6, 24, or 72
+    "writer_max_tokens": int,                # 4096-16384
+    "max_writer_attempts": int,              # 1-10
+}
+```
 
-Ares Engine uses **Neon PostgreSQL** (serverless). Tables are created automatically via 15 migrations in `app/database.py`.
+</details>
 
-### Core Models
+<details>
+<summary><strong>Database Schema</strong></summary>
+
+Ark Opus uses **Neon PostgreSQL** (serverless). Tables are created automatically via migrations in `app/database.py`.
 
 #### Post
-```python
-id: int (PK)
-keyword: str
-profile_name: str
-niche: str
-original_ai_content: str          # Claude's initial draft
-human_edited_content: str | None  # User's refined version
-readability_scores: dict | None   # ARI, FK, CLI, sentence length
-created_at: datetime
-```
-
-Stores generated articles with readability analytics.
+Stores generated articles with readability analytics. Fields: `id`, `keyword`, `profile_name`, `niche`, `original_ai_content`, `human_edited_content`, `readability_scores`, `created_at`.
 
 #### UserStyleRule
-```python
-id: int (PK)
-profile_name: str
-rule_type: str  # vocabulary_preference, structure_preference, tone_preference
-pattern: str    # Original phrase
-replacement: str  # Preferred replacement
-created_at: datetime
-```
-
-Learned writing preferences extracted by FeedbackAgent (Phase 6).
+Learned writing preferences extracted by FeedbackAgent. Fields: `id`, `profile_name`, `rule_type`, `pattern`, `replacement`. Max 25 per profile.
 
 #### ResearchCache
-```python
-keyword: str (composite PK)
-profile_name: str (composite PK)
-niche: str (composite PK)
-data: dict  # Research dict from Phase 1
-created_at: datetime
-```
-
-Caches research results for 24h to reduce API costs.
+Caches research results (composite key: `keyword`, `profile_name`, `niche`). 24h TTL.
 
 #### ResearchRun
-```python
-id: int (PK)
-profile_name: str
-niche: str
-tool_sequence: list[str]  # e.g., ["keyword_ideas", "serp", "exa_scout"]
-kd_stats: dict | None
-exa_queries: list[str]
-entity_clusters: list[str]
-quality_score: float | None  # 0.0-1.0 from human edits
-is_distilled: bool
-created_at: datetime
-```
-
-Telemetry for Research Intelligence Loop.
+Telemetry for Research Intelligence Loop. Fields: `id`, `profile_name`, `niche`, `tool_sequence`, `kd_stats`, `exa_queries`, `entity_clusters`, `quality_score`, `is_distilled`.
 
 #### NichePlaybook
-```python
-profile_name: str (composite PK)
-niche: str (composite PK)
-playbook_data: dict  # Distilled research patterns
-source_run_count: int
-distilled_at: datetime
-```
-
-Distilled research strategies (≥10 runs).
+Distilled research strategies (composite key: `profile_name`, `niche`). Activated at >=10 runs.
 
 #### WriterRun
-```python
-id: int (PK)
-profile_name: str
-niche: str
-ari: float
-flesch_kincaid: float
-coleman_liau: float
-avg_sentence_length: float
-word_count: int
-efficiency_score: float | None  # (10.0 - ari) / 10.0
-is_distilled: bool
-created_at: datetime
-```
-
-Telemetry for Writer Intelligence Loop.
+Telemetry for Writer Intelligence Loop. Fields: `id`, `profile_name`, `niche`, `ari`, `flesch_kincaid`, `coleman_liau`, `avg_sentence_length`, `word_count`, `efficiency_score`, `is_distilled`.
 
 #### WriterPlaybook
-```python
-profile_name: str (composite PK)
-niche: str (composite PK)
-playbook_data: dict  # Distilled readability patterns
-source_run_count: int
-distilled_at: datetime
-```
-
-Distilled readability patterns (≥10 articles).
+Distilled readability patterns (composite key: `profile_name`, `niche`). Activated at >=10 articles.
 
 #### VerifiedSource
-```python
-id: int (PK)
-research_run_id: int (FK)
-source_url: str
-domain: str
-tier: int  # 0-4 (domain credibility tier)
-composite_score: float  # 0-100 credibility score
-verification_status: str  # verified, rejected, pending
-published_date: datetime | None
-```
-
-Sources scored in Phase 1.5. Unique constraint: `(research_run_id, source_url)`.
+Sources scored in Phase 1.5. Fields: `id`, `research_run_id`, `source_url`, `domain`, `tier`, `composite_score`, `verification_status`, `published_date`. Unique constraint: `(research_run_id, source_url)`.
 
 #### FactCitation
-```python
-id: int (PK)
-source_id: int (FK to VerifiedSource)
-fact_text: str
-fact_type: str  # statistic, benchmark, case_study, expert_quote
-citation_anchor: str  # e.g., "according to Gartner"
-original_source: str  # Named study/report
-confidence: float  # 0.0-1.0
-is_verified: bool
-verification_status: str  # corroborated, trusted, exa_verified, not_checked
-```
-
-Extracted facts linked to verified sources.
+Extracted facts linked to verified sources. Fields: `id`, `source_id`, `fact_text`, `fact_type`, `citation_anchor`, `original_source`, `confidence`, `is_verified`, `verification_status`, `consensus_count`.
 
 #### DomainCredibilityCache
-```python
-domain: str (composite PK)
-niche: str (composite PK)
-tier: int
-composite_score: float
-cached_at: datetime
-```
-
-90-day cache for domain credibility scores (reduces DeepSeek calls by 40%).
+90-day cache for domain credibility scores. Composite key: `(domain, niche)`. Reduces verification API calls by ~40%.
 
 #### ContentCampaign
-```python
-id: int (PK)
-profile_name: str
-pillar_keyword: str
-spoke_keywords: list[dict]  # [{keyword, intent, angle}, ...]
-created_at: datetime
-```
-
-Hub-and-spoke keyword mappings from Cartographer (Phase -1).
+Hub-and-spoke keyword mappings from Cartographer. Fields: `id`, `profile_name`, `pillar_keyword`, `spoke_keywords`.
 
 #### Workspace
-```python
-id: int (PK)
-name: str
-slug: str
-profile_name: str
-# Unique constraint: (slug, profile_name)
-```
+Multi-tenant workspace definitions. Unique constraint: `(slug, profile_name)`.
 
-Multi-tenant workspace definitions scoped to authenticated profile.
+</details>
 
----
+<details>
+<summary><strong>Frontend UI</strong></summary>
 
-## 9. API Endpoints
+The frontend (`static/ark_opus_console.html` + `static/js/console.js`) features a cyberpunk-inspired glassmorphic interface with real-time agent visualization.
 
-All endpoints except `/health` and `/` require `X-API-Key` header authentication.
+**Editor Pane**: Real-time markdown editor with live SEO audit scoring (mirrors backend gates), word/H2/citation count indicators, and "Approve" button for feedback loop.
 
-| Endpoint | Method | Auth | Rate Limit | Purpose |
-|----------|--------|------|------------|---------|
-| **`/generate/{keyword:path}`** | POST | API Key | 5/min, 50/day | **Main orchestration** — full 7-phase pipeline. SSE stream |
-| **`/research/{keyword:path}`** | GET | API Key | 10/min | Phase 1 only — direct research endpoint |
-| **`/clarify`** | GET | API Key | - | Phase 0 — 3 clarifying questions |
-| **`/blueprint`** | POST | API Key | - | Phase 2 only — psychology blueprint |
-| **`/posts`** | GET | API Key | - | List articles (profile-scoped) |
-| **`/posts/{post_id}`** | GET | API Key | - | Fetch specific article (profile-scoped) |
-| **`/posts`** | POST | API Key | - | Create article manually |
-| **`/posts/{post_id}/approve`** | POST | API Key | - | Approve edits, trigger FeedbackAgent + scoring |
-| **`/rules`** | GET | API Key | - | Fetch style rules (profile-scoped) |
-| **`/rules`** | POST | API Key | - | Add style rule (max 25 per profile) |
-| **`/rules/{rule_id}`** | DELETE | API Key | - | Delete style rule (ownership verified) |
-| **`/workspaces`** | GET | API Key | - | List workspaces (profile-scoped) |
-| **`/workspaces`** | POST | API Key | - | Create workspace (profile-scoped) |
-| **`/campaigns`** | GET | API Key | - | Fetch campaigns (profile-scoped) |
-| **`/campaigns/plan`** | POST | API Key | 10/min | Cartographer hub-and-spoke planning |
-| **`/settings`** | GET | API Key | - | Fetch profile settings |
-| **`/settings`** | PUT | API Key | - | Update profile settings |
-| **`/admin/api-keys`** | POST | Admin Secret | - | Create new API key (X-Admin-Secret header) |
-| **`/health`** | GET | None | - | System status check |
-| **`/`** | GET | None | - | Serves frontend UI |
+**Blueprint Pane**: Displays psychology outline — hook strategy, target identity, agitation points, outline structure with H2/H3 hierarchy.
 
----
+**Terminal**: Structured logs from all agents with phase progression indicators, source verification scores (color-coded: green >=70, yellow 45-69, red <45), and iteration feedback.
 
-## 10. Frontend UI
+**Agent Nodes**: Visual indicators of active phase with glowing effect and progress dots.
 
-### Cyber-Glassmorphism Design
+**Modal System**: Workspace selector/creator, AI Brain (style rule management), Cartographer (campaign planner), Clarification Questions (Phase 0).
 
-The frontend (`static/ares_console.html` + `static/js/console.js`) features a **cyberpunk-inspired glassmorphic interface** with real-time agent visualization.
+**State Management**: Global abort controller cancels in-flight SSE streams. Frontend clears `lastGeneratedMarkdown`, `currentPostId`, `currentQuestions`, and editor content before each generation. Custom `showConfirmModal()` replaces native `window.confirm()`.
 
-### Key Components
+</details>
 
-#### Editor Pane
-- Real-time markdown editor with syntax highlighting
-- Live SEO audit scoring (mirrors backend `verify_seo_score()` gates)
-- Word count, H2 count, citation count indicators
-- "Approve" button triggers `/approve` endpoint
+<details>
+<summary><strong>Troubleshooting</strong></summary>
 
-#### Blueprint Pane
-- Displays psychology outline from Phase 2
-- Hook strategy, target identity, agitation points
-- Outline structure with H2/H3 hierarchy
-- Collapsible sections for clean viewing
-
-#### Terminal
-- Structured logs from all agents
-- Phase progression indicators (Research → Verify → Psychology → Writer)
-- Source verification scores with color-coding:
-  - Green (≥70): High credibility
-  - Yellow (45-69): Moderate credibility
-  - Red (<45): Rejected
-- Iteration feedback (gate failures with specific fix instructions)
-
-#### Agent Nodes
-- Visual indicators of active phase
-- Glowing effect on current agent
-- Progress dots showing iteration count
-
-#### Modal System
-- **Workspace Selector**: Switch between profiles
-- **Workspace Creator**: Add new workspace
-- **AI Brain**: Manage style rules (view, add, delete)
-- **Cartographer**: Campaign planner with spoke generation confirmation
-- **Clarification Questions**: Phase 0 modal (3 questions)
-
-#### Mobile Toast
-- Agent status indicator for mobile users
-- Shows current phase + iteration count
-
-### State Management
-
-**Global Abort Controller**: Cancels in-flight SSE streams before new generation
-
-**State Clearing**: Frontend clears these before each generation:
-- `lastGeneratedMarkdown`
-- `currentPostId`
-- `currentQuestions`
-- Editor content
-- Blueprint pane
-
-**No Native Dialogs**: Uses custom `showConfirmModal(message, onConfirm)` instead of `window.confirm()` for better UX
-
----
-
-## 11. Cost Breakdown
-
-### External Services
-
-| Service | Purpose | Cost per Article | Required | Model/Version |
-|---------|---------|------------------|----------|---------------|
-| **Anthropic** | Writer phase prose generation | ~$0.05 | Yes | Claude Sonnet 4.5-20250929 |
-| **GLM-5** | Research, Source verification | ~$0.06 | Yes | glm-5 via ZhipuAI API |
-| **DeepSeek** | Cartographer (R1), Briefing (V3), Psychology (V3), Feedback (V3) | ~$0.02 | Yes | deepseek-chat (V3), deepseek-reasoner (R1) |
-| **Exa.ai** | Neural search source discovery | ~$0.01 | Yes | scout_search, extract_full_text |
-| **DataForSEO** | SERP/keywords/backlinks/on-page (via MCP) | ~$0.02 | Yes | SERP ($0.02), Keyword Ideas ($0.0001), Backlinks ($0.00), On-Page ($0.00125 for 10 competitors) |
-| **Neon PostgreSQL** | Database (serverless) | Free tier: 3GB storage, $7/month for more | Yes | PostgreSQL 15 |
-
-### Budget Planning
-
-**Total Cost per Article**: $0.15-0.30 (varies by research depth, iteration count)
-
-**$10/Month Budget**:
-- **Low estimate**: 35 articles (at $0.30 each)
-- **High estimate**: 65 articles (at $0.15 each)
-- **Average**: ~50 articles
-
-### Cost Optimization Strategies
-
-1. **Research Caching** (`CACHE_TTL_HOURS = 24`): Reuse research results within 24h window
-2. **Domain Credibility Cache** (90-day TTL): Reduces DeepSeek calls by 40%
-3. **Playbook Distillation** (≥10 articles): Reduces intelligence injection tokens
-4. **Exa Result Limits** (`EXA_NUM_RESULTS = 10`): Caps per-search costs
-5. **Agentic Loop Limits** (`MAX_AGENTIC_ITERATIONS = 5`): Prevents runaway R1 reasoning
-6. **Writer Retry Limits** (`MAX_WRITER_ATTEMPTS = 5`): Caps iteration costs
-
----
-
-## 12. Security
-
-Ares Engine implements defense-in-depth across authentication, prompt injection, rate limiting, and frontend hardening. Audited against OWASP Agentic Top 10 (2026), OWASP Web Top 10, and ASVS v4.0.
-
-### Authentication & Authorization
-
-- **API key auth** — All endpoints (except `/health`, `/`) require `X-API-Key` header. Keys are SHA256-hashed and validated against the `api_keys` table via `app/auth.py`
-- **Admin endpoint** — `POST /admin/api-keys` requires `X-Admin-Secret` header, validated with `secrets.compare_digest()` (timing-safe)
-- **Key generation** — `secrets.token_urlsafe(32)`, stored as SHA256 hash (never plaintext)
-- **Profile scoping** — Each API key is bound to a `profile_name`; all database queries filter by profile for multi-tenant isolation
-
-### Prompt Injection Defense
-
-All data entering LLM prompts is sanitized via `app/security.py`:
-
-| Function | Protection | Usage |
-|----------|-----------|-------|
-| `sanitize_prompt_input()` | Strips HTML comments + control chars, truncates, wraps in XML boundary tags | User-controlled inputs (keyword, niche, context, briefing answers) |
-| `sanitize_external_content()` | Strips HTML comments + control chars, truncates (no boundary tags) | External/LLM-derived data (Exa content, style rules, claim feedback, psychology directives, web content) |
-
-**Coverage** — sanitization applied at every LLM prompt boundary:
-- `research_service.py` — keyword, user_context, niche playbook, Exa tool results
-- `briefing_agent.py` — keyword, niche
-- `cartographer_service.py` — seed_topic, niche_context
-- `writer_agent_graph.py` — style rules, citation text, psychology directives
-- `writer_service.py` — style rule descriptions, claim feedback
-- `feedback_service.py` — original and edited article text
-- `source_verification_service.py` — web content in quality/integrity assessments
-- `psychology_agent.py` — research JSON data
-
-**Input length bounds** (Pydantic `Field(max_length=...)` at API boundary + truncation before LLM injection):
-- `MAX_USER_CONTEXT_CHARS=2000`, `MAX_STYLE_RULES_CHARS=1500`, `MAX_RESEARCH_JSON_CHARS=6000`, `MAX_PLAYBOOK_CHARS=1500`
-
-### Rate Limiting & Abuse Prevention
-
-- **Per-endpoint rate limits** — `slowapi`: `/generate` (5/min), `/research` (10/min), `/campaigns/plan` (10/min); keyed by API key hash
-- **Daily generation cap** — `MAX_DAILY_GENERATIONS=50` per profile per day
-- **Style rule cap** — `MAX_STYLE_RULES_PER_PROFILE=25` prevents unbounded memory accumulation
-- **Agentic loop limits** — `MAX_AGENTIC_ITERATIONS=5`, `MAX_WRITER_ATTEMPTS=5` cap per-request cost
-
-### Security Headers
-
-`SecurityHeadersMiddleware` adds to all responses:
-- `Strict-Transport-Security: max-age=63072000; includeSubDomains` (HSTS)
-- `Content-Security-Policy` (default-src 'self', restricted script/style/font/connect sources)
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`
-- `Referrer-Policy: strict-origin-when-cross-origin`
-- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
-
-### Frontend Security
-
-- **XSS prevention** — All `innerHTML` assignments wrapped in `DOMPurify.sanitize()`
-- **Markdown rendering** — `marked.parse()` output sanitized via DOMPurify before DOM insertion
-- **SRI hashes** — Third-party scripts (marked.js, DOMPurify) loaded with Subresource Integrity
-- **Error isolation** — SSE error events send generic messages only; stack traces never reach the client
-
-### Secrets Management
-
-**Environment variables only** — All API keys loaded via `os.getenv()` in `app/settings.py`:
-- `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `EXA_API_KEY`, `ZAI_API_KEY`
-- `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD`
-- `DATABASE_URL`, `ADMIN_SECRET`
-- Validated at startup — server refuses to start if critical keys are missing
-
-**Never commit secrets**:
-- `.env` is gitignored; use `.env.example` as template
-- If keys are accidentally exposed, rotate immediately at provider dashboards
-
-**Verify before commit**:
-```bash
-git check-ignore .env  # Should output: .env
-git status             # Should NOT show .env in untracked files
-```
-
----
-
-## 13. Troubleshooting
-
-### Common Setup Issues
+### Common Issues
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
-| `DEEPSEEK_API_KEY is missing` | `.env` not loaded or key missing | Verify `.env` exists in project root with `DEEPSEEK_API_KEY="..."` |
-| `DATABASE_URL environment variable is required` | PostgreSQL connection string missing | Add `DATABASE_URL="postgresql://..."` to `.env` |
+| `DEEPSEEK_API_KEY is missing` | `.env` not loaded or key missing | Verify `.env` exists with `DEEPSEEK_API_KEY="..."` |
+| `DATABASE_URL environment variable is required` | Connection string missing | Add `DATABASE_URL="postgresql://..."` to `.env` |
 | `ModuleNotFoundError: No module named 'anthropic'` | Dependencies not installed | Run `pip install -r requirements.txt` |
-| MCP server fails to start | Node.js not installed or DataForSEO credentials wrong | Install Node.js, verify `DATAFORSEO_LOGIN` and `DATAFORSEO_PASSWORD` in `.env` |
-| "0/47 sources verified" error | Metadata extraction failure (legacy issue) | Ensure `url_metadata_map` is preserved (March 2026 fix already in code) |
-| Emoji in logs crashes (Windows) | cp1252 encoding doesn't support emoji | Use `[LABEL]` ASCII prefixes instead (already enforced in codebase) |
-| Articles stuck in validation loops | Readability gate too strict | Tune `WRITER_MAX_TOKENS`, verify citation map is provided if Phase 1.5 completed |
-| SSE stream disconnects mid-generation | Neon PostgreSQL SSL timeout | `nonlocal db` pattern already implemented (March 2026 fix) |
+| MCP server fails to start | Node.js missing or DataForSEO creds wrong | Install Node.js, verify `DATAFORSEO_LOGIN`/`PASSWORD` in `.env` |
+| Emoji in logs crashes (Windows) | cp1252 encoding | Codebase uses `[LABEL]` ASCII prefixes — if you see crashes, check for bare `print()` |
+| Articles stuck in validation loops | Readability gate too strict | Tune `WRITER_MAX_TOKENS`, verify citation map provided |
+| SSE stream disconnects mid-generation | Neon PostgreSQL SSL timeout | `nonlocal db` pattern handles reconnection automatically |
 | Writer produces fabricated citations | Citation map not injected | Verify Phase 1.5 completed (check `verified_sources` table) |
-| High API costs | Research loop running too many iterations | Lower `MAX_AGENTIC_ITERATIONS`, enable `CACHE_TTL_HOURS` |
+| High API costs | Too many research iterations | Lower `MAX_AGENTIC_ITERATIONS`, enable caching |
 
-### Debugging Tips
+### Debugging
 
-**Enable Debug Mode**:
-```env
-ARES_DEBUG=true
-```
-
-**Check Frontend Console** (F12):
-- SSE events show real-time agent execution
-- `phase1_start`, `source_verification`, `content`, `debug`, `error` events
-- Error events display generic messages (details in backend logs only)
-
-**Check Backend Logs**:
 ```bash
-uvicorn app.main:app --log-level debug
+# Enable debug mode
+ARK_DEBUG=true uvicorn app.main:app --log-level debug
 ```
 
-Look for structured log prefixes:
-- `[ARES]` — General system messages
-- `[SCORE]` — Source credibility scoring
-- `[RESCUED]` — Borderline sources with rescue bonus
-- `[DEDUP]` — Duplicate source filtering
-- `[GATE]` — Writer validation gates
-- `[CLAIM-VERIFY]` — Claim cross-referencing
+**Log prefixes**: `[ARK]` general, `[SCORE]` credibility scoring, `[RESCUED]` borderline sources, `[GATE]` writer validation, `[CLAIM-VERIFY]` claim cross-referencing.
 
-**Database Inspection**:
-```bash
-# Connect to Neon PostgreSQL
-psql $DATABASE_URL
+**Frontend console (F12)**: SSE events show real-time agent execution — `phase1_start`, `source_verification`, `content`, `debug`, `error`.
 
-# Check recent research runs
-SELECT profile_name, niche, tool_sequence, quality_score FROM research_runs ORDER BY created_at DESC LIMIT 10;
-
-# Check verified sources for a run
-SELECT source_url, tier, composite_score, verification_status FROM verified_sources WHERE research_run_id = 123;
-
-# Check extracted facts
-SELECT fact_text, fact_type, confidence, verification_status FROM fact_citations WHERE source_id IN (SELECT id FROM verified_sources WHERE research_run_id = 123);
-```
+</details>
 
 ---
 
-## 14. Development Notes
+## License
+
+This project is proprietary software. All rights reserved.
+
+You may view the source code for reference purposes only. No permission is granted to use, copy, modify, merge, publish, distribute, sublicense, or sell copies of this software without explicit written permission from the author.
+
+For licensing inquiries, contact the repository owner.
+
+---
+
+## Development Notes
 
 All development rules, security constraints, and architecture conventions are documented in `CLAUDE.md` (project root). Key highlights:
 
@@ -1089,4 +796,3 @@ All development rules, security constraints, and architecture conventions are do
 - **Prompt files read-only** — Never modify `app/services/prompts/*.md` without explicit approval
 
 For detailed phase diagrams, scoring algorithms, and intelligence loop mechanics, see `docs/architecture.md`.
-

@@ -757,14 +757,43 @@ def detect_unverified_entities(
     candidates = set()
     for m in product_pattern.finditer(scan_text):
         name = m.group(1).strip()
-        if len(name) >= 4:  # Skip very short matches
-            # Extract core name (strip product suffix like "AI", "Platform")
-            core = re.sub(r'\s+(' + _PRODUCT_SUFFIXES + r')$', '', name, flags=re.IGNORECASE).strip()
-            # Skip if ALL words in core name are common English words (e.g., "Your AI", "Most AI", "Traditional AI")
-            core_words = [w.lower() for w in core.split()]
-            if all(w in _COMMON_WORDS for w in core_words):
-                continue
-            candidates.add(name)
+        if len(name) < 4:
+            continue
+
+        # Extract core name (strip product suffix like "AI", "Platform")
+        core = re.sub(r'\s+(' + _PRODUCT_SUFFIXES + r')$', '', name, flags=re.IGNORECASE).strip()
+
+        # EVIDENCE GATE: Must pass at least ONE positive signal to be flagged as a product.
+        # This replaces the old blacklist approach (_COMMON_WORDS) which could never be complete.
+        evidence = False
+
+        # Signal 1: Appears 2+ times in the full text (real products get repeated)
+        occurrences = len(re.findall(r'\b' + re.escape(name) + r'\b', scan_text))
+        if occurrences >= 2:
+            evidence = True
+
+        # Signal 2: Contains CamelCase or unusual capitalization (ChatGPT, DeepSeek, MagicSchool)
+        if re.search(r'[a-z][A-Z]', core):
+            evidence = True
+
+        # Signal 3: Multi-word core (2+ proper nouns before suffix = likely brand)
+        core_words = core.split()
+        if len(core_words) >= 2 and all(w[0].isupper() for w in core_words if w):
+            evidence = True
+
+        # Signal 4: Contains digits or domain-like suffix (GPT4, Caktus.ai)
+        if re.search(r'\d|\.ai|\.io|\.co', core, re.IGNORECASE):
+            evidence = True
+
+        if not evidence:
+            continue  # No positive evidence this is a product name
+
+        # Still skip if ALL core words are common English words
+        core_words_lower = [w.lower() for w in core_words]
+        if all(w in _COMMON_WORDS for w in core_words_lower):
+            continue
+
+        candidates.add(name)
 
     for m in standalone_pattern.finditer(scan_text):
         name = m.group(1).strip()
@@ -830,7 +859,12 @@ def detect_unverified_entities(
             or core_name in all_urls_text
         )
 
-        if not is_known and core_name not in _TECH_TERMS:
+        # Check if ANY word in the core name is a known tech term/org
+        # (e.g., "nist adversarial" should match because "nist" is in _TECH_TERMS)
+        core_words_check = core_name.split()
+        is_tech = core_name in _TECH_TERMS or any(w in _TECH_TERMS for w in core_words_check)
+
+        if not is_known and not is_tech:
             unverified.append(candidate)
 
     if unverified:
@@ -845,6 +879,10 @@ _TECH_TERMS = frozenset({
     "agentic", "generative", "multimodal", "transformer", "neural",
     "copilot", "midjourney", "perplexity", "mistral", "llama", "meta",
     "google", "microsoft", "amazon", "nvidia", "hugging", "huggingface",
+    "nist", "iso", "ieee", "owasp", "sans", "cisa", "enisa", "mitre",
+    # Government/regulatory bodies (not products)
+    "eu", "fda", "sec", "ftc", "doj", "dhs", "gao", "epa", "fcc",
+    "gdpr", "hipaa", "sox", "pci", "ccpa", "ferpa",
 })
 
 # Common English words that should NOT be flagged as product names

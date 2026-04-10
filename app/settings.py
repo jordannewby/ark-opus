@@ -9,7 +9,7 @@ def get_bool_env(key: str, default: bool = False) -> bool:
     val = os.getenv(key)
     return val.lower() in ("true", "1", "yes") if val else default
 
-DEBUG_MODE = get_bool_env("ARES_DEBUG", False)
+DEBUG_MODE = get_bool_env("ARK_DEBUG", False)
 DATAFORSEO_CONTENT_ANALYSIS_ENABLED = get_bool_env("DATAFORSEO_CONTENT_ANALYSIS_ENABLED", False) # Additive feature flag
 
 def get_clean_env(key: str) -> str | None:
@@ -81,6 +81,8 @@ EXA_INTER_REQUEST_DELAY = 0.12   # seconds between search releases (~8 QPS susta
 EXA_RESEARCH_TIMEOUT = 300          # seconds to poll before giving up (Research API p90 ~90s, complex niches can take longer)
 EXA_RESEARCH_MODEL = "exa-research" # or "exa-research-pro" for complex niches
 EXA_RESEARCH_ENABLED = True         # feature flag — False skips Phase 1.5 entirely
+EXA_RESEARCH_SUBMIT_RETRIES = 3     # retry attempts for initial POST to /research/v1
+EXA_RESEARCH_SUBMIT_BASE_DELAY = 2.0  # seconds, doubles each retry (2s → 4s → 8s)
 
 # URL liveness validation (Phase 1 + Phase 1.5 ingestion gate)
 URL_VALIDATION_TIMEOUT = 10          # seconds per HEAD/GET check

@@ -18,8 +18,26 @@ __pycache__/
 
 # Local/Secrets
 .env
+.env.local
+.env.*.local
+.env.development
+.env.staging
+.env.production
+.env.test
+.env.backup
+.env.bak
+.env.old
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
 .vscode/
 *.log
+
+# OS artifacts
+.DS_Store
+Thumbs.db
 
 # Node modules
 node_modules/

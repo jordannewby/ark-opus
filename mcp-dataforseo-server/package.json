@@ -8,7 +8,7 @@
     "start": "node index.js"
   },
   "keywords": ["mcp", "dataforseo", "seo", "api"],
-  "author": "Ares Engine",
+  "author": "Ark Opus",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",

@@ -1,4 +1,4 @@
-"""API key authentication for Ares Engine endpoints."""
+"""API key authentication for Ark Opus endpoints."""
 import hashlib
 from fastapi import Depends, HTTPException
 from fastapi.security import APIKeyHeader

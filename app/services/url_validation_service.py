@@ -73,7 +73,7 @@ async def validate_url(
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_s),
             follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; AresEngine/1.0; +https://aresengine.com)"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ArkOpus/1.0; +https://arkopus.com)"},
         ) as client:
             # Try HEAD first (lightweight)
             try:

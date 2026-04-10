@@ -122,7 +122,7 @@ async def lifespan(app: FastAPI):
     finally:
         await exit_stack.aclose()
 
-app = FastAPI(title="Ares Engine Console", lifespan=lifespan)
+app = FastAPI(title="Ark Opus Console", lifespan=lifespan)
 
 # --- Security Headers Middleware ---
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -435,7 +435,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
     settings_row = db.query(ProfileSettings).filter_by(profile_name=profile_name).first()
     runtime = resolve_settings(settings_row)
 
-    logger.info(f"[ARES] Starting unified generation for: {keyword} (niche: {niche})")
+    logger.info(f"[ARK] Starting unified generation for: {keyword} (niche: {niche})")
 
     async def event_generator():
         nonlocal db
@@ -833,7 +833,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                 db.commit()
                 db.refresh(post)
 
-            logger.info(f"[ARES] Generation complete for: {keyword}")
+            logger.info(f"[ARK] Generation complete for: {keyword}")
             
             # Use model_dump or dictionary access to serialize the SQLAlchemy object safely
             # Since standard Post output might not be directly JSON serializable without a Pydantic model conversion
@@ -852,7 +852,7 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
             yield f"data: {json.dumps(final_payload)}\n\n"
             
         except Exception as e:
-            logger.error(f"[ARES] Generation Error: {e}")
+            logger.error(f"[ARK] Generation Error: {e}")
             if runtime["debug_mode"]:
                 tb = traceback.format_exc()
                 logger.error(f"[CRITICAL ERROR TRACEBACK]\n{tb}")
@@ -952,6 +952,6 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 @app.get("/")
 async def serve_console():
-    return FileResponse(str(STATIC_DIR / "ares_console.html"))
+    return FileResponse(str(STATIC_DIR / "ark_opus_console.html"))
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

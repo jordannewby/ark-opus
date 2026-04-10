@@ -3,7 +3,7 @@
 /**
  * DataForSEO MCP Server
  *
- * Exposes DataForSEO API endpoints as MCP tools for Ares Engine ResearchAgent.
+ * Exposes DataForSEO API endpoints as MCP tools for Ark Opus ResearchAgent.
  * Communicates via stdio (standard input/output) using MCP protocol.
  *
  * Environment:

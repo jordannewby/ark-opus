@@ -1,7 +1,7 @@
 /**
  * MCP Tool Definitions and Handlers for DataForSEO API
  *
- * Registers 4 tools used by Ares Engine ResearchAgent:
+ * Registers 4 tools used by Ark Opus ResearchAgent:
  * 1. dataforseo_labs_google_keyword_ideas - Keyword research with search volume
  * 2. serp_organic_live_advanced - SERP organic results with PAA, headers
  * 3. dataforseo_labs_content_analysis_summary_live - Content patterns from top 10 results
@@ -366,7 +366,7 @@ async function handleOnPageInstantPages(client, args) {
     url,
     enable_javascript,
     store_raw_html,
-    custom_user_agent: "Mozilla/5.0 (compatible; AresEngine/1.0; +https://example.com/bot)"
+    custom_user_agent: "Mozilla/5.0 (compatible; ArkOpus/1.0; +https://example.com/bot)"
   }));
 
   const result = await client.post("/v3/on_page/instant_pages", tasks);

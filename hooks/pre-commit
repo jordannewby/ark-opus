@@ -1,0 +1,79 @@
+#!/bin/bash
+# =============================================================================
+# Ark Opus Pre-Commit Hook
+# =============================================================================
+# Prevents accidental commit of .env files and detects hardcoded secrets.
+# Install: cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# =============================================================================
+
+set -e
+
+echo "[pre-commit] Scanning for secrets..."
+
+# ---------------------------------------------------------------------------
+# 1. Block .env files (except .env.example)
+# ---------------------------------------------------------------------------
+ENV_FILES=$(git diff --cached --name-only | grep -E '^\.env' | grep -v '^\.env\.example$' || true)
+if [ -n "$ENV_FILES" ]; then
+    echo ""
+    echo "ERROR: Refusing to commit .env file(s):"
+    echo "$ENV_FILES"
+    echo ""
+    echo "The .env file contains API keys and secrets that must NEVER be committed."
+    echo "If you need to update the template, edit .env.example instead."
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Scan staged content for common secret patterns
+# ---------------------------------------------------------------------------
+STAGED_DIFF=$(git diff --cached -U0 2>/dev/null || true)
+
+if [ -n "$STAGED_DIFF" ]; then
+    # Anthropic API keys
+    if echo "$STAGED_DIFF" | grep -E '^\+' | grep -v '^\+\+\+' | grep -qE 'sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,}'; then
+        echo ""
+        echo "ERROR: Possible Anthropic API key detected in staged changes."
+        echo "Remove the key and use environment variables instead."
+        exit 1
+    fi
+
+    # Generic long API keys (sk- prefix, 20+ chars)
+    if echo "$STAGED_DIFF" | grep -E '^\+' | grep -v '^\+\+\+' | grep -v '\.env\.example' | grep -v 'README' | grep -qE '"sk-[a-zA-Z0-9]{20,}"'; then
+        echo ""
+        echo "ERROR: Possible API key (sk-...) detected in staged changes."
+        echo "Remove the key and use environment variables instead."
+        exit 1
+    fi
+
+    # AWS access keys
+    if echo "$STAGED_DIFF" | grep -E '^\+' | grep -v '^\+\+\+' | grep -qE 'AKIA[A-Z0-9]{16}'; then
+        echo ""
+        echo "ERROR: Possible AWS access key detected in staged changes."
+        exit 1
+    fi
+
+    # GitHub personal access tokens
+    if echo "$STAGED_DIFF" | grep -E '^\+' | grep -v '^\+\+\+' | grep -qE 'ghp_[A-Za-z0-9]{36}'; then
+        echo ""
+        echo "ERROR: Possible GitHub token detected in staged changes."
+        exit 1
+    fi
+
+    # Private keys
+    if echo "$STAGED_DIFF" | grep -E '^\+' | grep -v '^\+\+\+' | grep -qE '-----BEGIN (RSA |EC |DSA )?PRIVATE KEY'; then
+        echo ""
+        echo "ERROR: Private key detected in staged changes."
+        exit 1
+    fi
+
+    # Database connection strings with passwords
+    if echo "$STAGED_DIFF" | grep -E '^\+' | grep -v '^\+\+\+' | grep -v '\.env\.example' | grep -v 'README' | grep -qE 'postgresql://[^:]+:[^@]+@[^/]+/'; then
+        echo ""
+        echo "ERROR: Possible database connection string with password detected."
+        echo "Use DATABASE_URL environment variable instead."
+        exit 1
+    fi
+fi
+
+echo "[pre-commit] No secrets detected. Proceeding with commit."

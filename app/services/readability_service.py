@@ -1,5 +1,5 @@
 """
-Readability Service for Ares Engine
+Readability Service for Ark Opus
 ====================================
 ARI-primary readability scorer with FK cross-check and sentence length
 enforcement. CLI is computed for transparency but advisory only — it

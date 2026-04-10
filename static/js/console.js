@@ -1,4 +1,4 @@
-// ARES CONSOLE v4.0 - CYBER GLASS EXPERIMENT
+// ARK OPUS CONSOLE v4.0 - CYBER GLASS EXPERIMENT
 window.addEventListener('error', (e) => {
     console.error("Global Trapped Error:", e.error);
     console.warn("UI Error (non-fatal): " + (e.message || "Unknown error occurred in console.js"));
@@ -6,17 +6,24 @@ window.addEventListener('error', (e) => {
 let lastGeneratedMarkdown = "";
 let currentAbortController = null;
 
+// One-time migration from old key name
+const _oldKey = localStorage.getItem('ares_api_key');
+if (_oldKey && !localStorage.getItem('ark_opus_api_key')) {
+    localStorage.setItem('ark_opus_api_key', _oldKey);
+    localStorage.removeItem('ares_api_key');
+}
+
 function getApiHeaders(extra = {}) {
-    const key = localStorage.getItem('ares_api_key') || '';
+    const key = localStorage.getItem('ark_opus_api_key') || '';
     return { 'X-API-Key': key, ...extra };
 }
 
 function promptApiKey() {
-    const existing = localStorage.getItem('ares_api_key');
+    const existing = localStorage.getItem('ark_opus_api_key');
     if (existing) return;
-    const key = window.prompt('Enter your Ares Engine API key:');
+    const key = window.prompt('Enter your Ark Opus API key:');
     if (key && key.trim()) {
-        localStorage.setItem('ares_api_key', key.trim());
+        localStorage.setItem('ark_opus_api_key', key.trim());
     }
 }
 promptApiKey();

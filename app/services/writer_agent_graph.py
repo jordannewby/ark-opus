@@ -386,13 +386,10 @@ async def editor_node(state: WriterState) -> dict:
     yield_msgs = [{"type": "debug", "message": "Graph: EditorNode validating draft..."}]
     
     errors = []
-    
-    # 1. Banned words check
-    banned = ['delve', 'tapestry', 'landscape', 'multifaceted', 'comprehensive', 'holistic', 'navigate', 'crucial', 'robust', 'seamless', 'synergy', 'leverage', 'scalable', 'foster', 'optimize', 'ecosystem', 'paradigm']
-    found_banned = [w for w in banned if re.search(r'\b' + w + r'\b', draft, re.IGNORECASE)]
-    if found_banned:
-        errors.append(f"You used banned words: {', '.join(found_banned)}. Replace them with simpler terms.")
-        
+
+    # Note: Banned words are handled by sanitize_banned_words() at line 381 above.
+    # No need to check-and-reject here — the sanitizer silently replaces them.
+
     # 2. Readability check (delegates to readability_service's multi-factor gate)
     read_result = verify_readability(draft)
     details = read_result.get("details", {})

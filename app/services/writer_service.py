@@ -48,19 +48,70 @@ BANNED_REPLACEMENTS = {
     "ecosystems": "environments", "ecosystem": "environment",
     # paradigm
     "paradigms": "models", "paradigm": "model",
+    # AI slop phrases — replace with nothing or simpler alternatives
+    "it's worth noting": "",
+    "it's important to note": "",
+    "it is worth noting": "",
+    "it's worth mentioning": "",
+    "whether you're a": "",
+    "in the ever-evolving": "in the changing",
+    "when it comes to": "for",
+    "at the end of the day": "in practice",
+    "let's face it": "",
+    "in today's world": "today",
+    "in today's digital landscape": "today",
+    "in today's fast-paced world": "today",
+    "in today's digital age": "today",
+    "it cannot be overstated": "",
+    "needless to say": "",
+    "in conclusion": "to summarize",
+    "to sum up": "to summarize",
+    "ultimately": "in the end",
+    "fast-paced world": "competitive market",
+    "digital age": "current era",
+    "game-changers": "breakthroughs",
+    "game-changer": "breakthrough",
+    "unlock the power": "use",
+    "dive into": "explore",
+    "are you tired of": "",
+    "welcome to our guide": "",
+    "ultimate guide": "guide",
+    "by following these steps": "",
 }
+
+# Regex patterns for common AI slop structures that can't be enumerated as exact strings.
+# These catch novel variations like "it's worth remembering", "in today's hybrid workplace", etc.
+_SLOP_PATTERNS = [
+    (re.compile(r"\bit[''\u2019]s worth \w+ing\b", re.IGNORECASE), ""),
+    (re.compile(r"\bit[''\u2019]s important to \w+\b", re.IGNORECASE), ""),
+    (re.compile(r"\bin today[''\u2019]s \w+ \w+\b", re.IGNORECASE), "today"),
+    (re.compile(r"\bwhether you[''\u2019]re an? \w+\b", re.IGNORECASE), ""),
+]
 
 
 def sanitize_banned_words(text: str) -> str:
-    """Replace banned words and their inflections with safe alternatives, preserving case."""
+    """Replace banned words, AI slop phrases, and slop patterns with safe alternatives."""
+    # Step 1: Exact-match replacements (preserving case)
     for banned, replacement in BANNED_REPLACEMENTS.items():
         pattern = re.compile(r'\b' + re.escape(banned) + r'\b', re.IGNORECASE)
-        def _match_case(match, repl=replacement):
-            word = match.group()
-            if word[0].isupper():
-                return repl[0].upper() + repl[1:]
-            return repl
-        text = pattern.sub(_match_case, text)
+        if replacement:
+            def _match_case(match, repl=replacement):
+                word = match.group()
+                if word[0].isupper():
+                    return repl[0].upper() + repl[1:]
+                return repl
+            text = pattern.sub(_match_case, text)
+        else:
+            text = pattern.sub("", text)
+
+    # Step 2: Regex-based slop patterns (catch novel variations)
+    for slop_pattern, replacement in _SLOP_PATTERNS:
+        text = slop_pattern.sub(replacement, text)
+
+    # Step 3: Cleanup artifacts from empty-string replacements
+    text = re.sub(r'  +', ' ', text)  # collapse double spaces
+    text = re.sub(r'^\s+', '', text, flags=re.MULTILINE)  # strip leading whitespace on lines
+    text = re.sub(r'\s+([.,;:!?])', r'\1', text)  # remove space before punctuation
     return text
 
 
@@ -337,15 +388,16 @@ class WriterService:
             info_gain_ok = True
             logger.info("[SEO-CHECK] No information_gap provided -- info gain check bypassed")
 
-        # Banned phrases check
-        # Gap 11 fix: Merged prompt banned list (22 words) + AI slop phrases into gate.
-        # Previously only 13 words were enforced; the rest were prompt-only (unenforced).
+        # Banned phrases check — sanitize FIRST so the gate is a safety net, not a blocker.
+        # The sanitizer handles all known banned words/phrases; the gate only catches
+        # anything that somehow survives (should be nothing after sanitization).
+        text = sanitize_banned_words(text)
         banned_list = [
             # Original 13
             "delve", "tapestry", "landscape", "multifaceted", "comprehensive",
             "holistic", "navigate", "crucial", "in conclusion", "ultimately",
             "fast-paced world", "digital age", "game-changer",
-            # 9 additional from readability directive (were prompt-only, never gate-enforced)
+            # 9 additional from readability directive
             "robust", "seamless", "synergy", "leverage", "scalable",
             "foster", "optimize", "ecosystem", "paradigm",
             # AI slop phrases

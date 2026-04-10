@@ -21,6 +21,8 @@ from ..settings import (
     EXA_API_KEY,
     EXA_RESEARCH_TIMEOUT,
     EXA_RESEARCH_MODEL,
+    EXA_RESEARCH_SUBMIT_RETRIES,
+    EXA_RESEARCH_SUBMIT_BASE_DELAY,
     ORIGINAL_SOURCE_TRACING_ENABLED,
     ORIGINAL_SOURCE_MAX_LOOKUPS,
 )
@@ -205,15 +207,30 @@ async def research_facts(
 
     logger.info(f"[RESEARCH-API] Submitting research for '{keyword}' (niche: {niche}, model: {model})")
 
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(_EXA_RESEARCH_URL, headers=headers, json=submit_payload)
-            resp.raise_for_status()
-            submit_data = resp.json()
-    except httpx.HTTPStatusError as e:
-        raise ExaResearchError(f"Research API submit failed ({e.response.status_code}): {e.response.text[:200]}")
-    except Exception as e:
-        raise ExaResearchError(f"Research API submit failed: {e}")
+    submit_data = None
+    for attempt in range(EXA_RESEARCH_SUBMIT_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(_EXA_RESEARCH_URL, headers=headers, json=submit_payload)
+                resp.raise_for_status()
+                submit_data = resp.json()
+                break
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (429, 500, 502, 503) and attempt < EXA_RESEARCH_SUBMIT_RETRIES:
+                delay = EXA_RESEARCH_SUBMIT_BASE_DELAY * (2 ** attempt)
+                logger.warning(f"[RESEARCH-API] Submit attempt {attempt+1} failed ({e.response.status_code}), retrying in {delay}s")
+                await asyncio.sleep(delay)
+                continue
+            raise ExaResearchError(f"Research API submit failed ({e.response.status_code}): {e.response.text[:200]}")
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
+            if attempt < EXA_RESEARCH_SUBMIT_RETRIES:
+                delay = EXA_RESEARCH_SUBMIT_BASE_DELAY * (2 ** attempt)
+                logger.warning(f"[RESEARCH-API] Submit attempt {attempt+1} failed ({e!r}), retrying in {delay}s")
+                await asyncio.sleep(delay)
+                continue
+            raise ExaResearchError(f"Research API submit failed after {EXA_RESEARCH_SUBMIT_RETRIES} retries: {e!r}")
+        except Exception as e:
+            raise ExaResearchError(f"Research API submit failed: {e!r}")
 
     research_id = submit_data.get("researchId")
     if not research_id:
