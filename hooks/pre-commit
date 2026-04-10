@@ -61,7 +61,7 @@ if [ -n "$STAGED_DIFF" ]; then
     fi
 
     # Private keys
-    if echo "$STAGED_DIFF" | grep -E '^\+' | grep -v '^\+\+\+' | grep -qE '-----BEGIN (RSA |EC |DSA )?PRIVATE KEY'; then
+    if echo "$STAGED_DIFF" | grep -E '^\+' | grep -v '^\+\+\+' | grep -qE -- '-----BEGIN[[:space:]]+(RSA[[:space:]]+|EC[[:space:]]+|DSA[[:space:]]+)?PRIVATE[[:space:]]+KEY'; then
         echo ""
         echo "ERROR: Private key detected in staged changes."
         exit 1
