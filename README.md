@@ -128,7 +128,7 @@ Copy `.env.example` to `.env` and fill in your API keys. The application require
 
 ## Cost
 
-Roughly **$0.15 - $0.30 per article** in API costs, depending on research depth and retry count. Built-in caching (research results, domain credibility) reduces costs significantly after the first few runs in a niche.
+Roughly **$1.00 - $2.50 per article** in API costs, depending on research depth and retry count. Built-in caching (research results, domain credibility) reduces costs significantly after the first few runs in a niche.
 
 ---
 
