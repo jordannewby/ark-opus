@@ -509,8 +509,8 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                     verified_sources = citation_result["verified_sources"]
                     fact_citations = citation_result["fact_citations"]
 
-                    # SSE: fact verification complete
-                    yield f"data: {json.dumps({'event': 'fact_verification_complete', 'message': f'{len(fact_citations)} facts verified from {len(verified_sources)} authoritative sources', 'verified': len(fact_citations), 'unverifiable': 0, 'corrected': 0, 'total_checked': len(fact_citations)})}\n\n"
+                    # SSE: fact extraction complete (not yet verified — Phase 1.7 handles verification)
+                    yield f"data: {json.dumps({'event': 'fact_extraction_complete', 'message': f'{len(fact_citations)} facts extracted from {len(verified_sources)} sources (pending verification)', 'extracted': len(fact_citations), 'total_checked': len(fact_citations)})}\n\n"
 
                     # Enrich research_data_dict for downstream phases
                     research_data_dict["verified_sources"] = [
@@ -518,18 +518,6 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
                         for s in verified_sources
                     ]
                     research_data_dict["fact_categories"] = citation_result["fact_categories"]
-
-                    # CRITICAL-1 fix: Add Phase 1.5 fact texts to source_content_map
-                    # so claim cross-referencing (Phase 4) can verify citations from Research API sources
-                    for fact in research_result.get("facts", []):
-                        fact_url = fact.get("source_url", "")
-                        fact_text = fact.get("fact_text", "")
-                        if fact_url and fact_text:
-                            norm_url = _normalize_url(fact_url)
-                            if norm_url not in source_content_map:
-                                source_content_map[norm_url] = fact_text
-                            else:
-                                source_content_map[norm_url] += "\n" + fact_text
 
                     avg_credibility = (
                         sum(s.credibility_score for s in verified_sources) / len(verified_sources)
@@ -539,6 +527,81 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
 
                     if runtime["debug_mode"]:
                         yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1.5 (Exa Research) completed in {round(time.time() - p1_5_start, 2)}s. Cost: ${cost:.3f}. Facts: {len(fact_citations)}. source_content_map: {len(source_content_map)} URLs'})}\n\n"
+
+                    # Phase 1.7: Fact Grounding — verify facts against real source content
+                    from .services.fact_grounding_service import ground_facts
+                    from .settings import FACT_GROUNDING_ENABLED, FACT_GROUNDING_TIMEOUT
+
+                    if FACT_GROUNDING_ENABLED and fact_citations:
+                        yield f"data: {json.dumps({'event': 'phase1_7_start', 'message': 'Verifying facts against original sources...'})}\n\n"
+                        p1_7_start = time.time()
+
+                        try:
+                            db = ensure_db_alive(db)
+                            grounding_result = await asyncio.wait_for(
+                                ground_facts(
+                                    facts=research_result.get("facts", []),
+                                    fact_citations=fact_citations,
+                                    db=db,
+                                ),
+                                timeout=FACT_GROUNDING_TIMEOUT,
+                            )
+
+                            # Update fact_citations to only include verified facts
+                            fact_citations = grounding_result["verified_citations"]
+                            grounding_rejected = grounding_result["rejected_count"]
+                            grounding_enriched = grounding_result["enriched_count"]
+                            grounding_secondary = grounding_result["secondary_traced"]
+                            grounding_version = grounding_result["version_updated"]
+
+                            # Populate source_content_map with REAL page content
+                            for g_url, g_content in grounding_result["source_content"].items():
+                                source_content_map[_normalize_url(g_url)] = g_content
+
+                            yield f"data: {json.dumps({'event': 'phase1_7_complete', 'message': f'Fact grounding: {len(fact_citations)} verified, {grounding_rejected} rejected, {grounding_enriched} enriched', 'verified': len(fact_citations), 'rejected': grounding_rejected, 'enriched': grounding_enriched, 'secondary_traced': grounding_secondary, 'version_updated': grounding_version})}\n\n"
+
+                            if runtime["debug_mode"]:
+                                yield f"data: {json.dumps({'event': 'debug', 'message': f'Phase 1.7 (Fact Grounding) completed in {round(time.time() - p1_7_start, 2)}s'})}\n\n"
+
+                        except asyncio.TimeoutError:
+                            logger.error(f"[FACT-GROUND] Phase 1.7 timed out after {FACT_GROUNDING_TIMEOUT}s")
+                            yield f"data: {json.dumps({'event': 'phase1_7_warning', 'message': f'Fact grounding timed out after {FACT_GROUNDING_TIMEOUT}s. Continuing with unverified facts.'})}\n\n"
+                            # Fall back: store fact_text as content (current behavior)
+                            for fact in research_result.get("facts", []):
+                                fact_url = fact.get("source_url", "")
+                                fact_text_val = fact.get("fact_text", "")
+                                if fact_url and fact_text_val:
+                                    norm_url = _normalize_url(fact_url)
+                                    if norm_url not in source_content_map:
+                                        source_content_map[norm_url] = fact_text_val
+                                    else:
+                                        source_content_map[norm_url] += "\n" + fact_text_val
+
+                        except Exception as e:
+                            logger.error(f"[FACT-GROUND] Phase 1.7 failed (non-fatal): {e}")
+                            yield f"data: {json.dumps({'event': 'phase1_7_warning', 'message': 'Fact grounding unavailable. Continuing with unverified facts.'})}\n\n"
+                            # Fall back: store fact_text as content (current behavior)
+                            for fact in research_result.get("facts", []):
+                                fact_url = fact.get("source_url", "")
+                                fact_text_val = fact.get("fact_text", "")
+                                if fact_url and fact_text_val:
+                                    norm_url = _normalize_url(fact_url)
+                                    if norm_url not in source_content_map:
+                                        source_content_map[norm_url] = fact_text_val
+                                    else:
+                                        source_content_map[norm_url] += "\n" + fact_text_val
+
+                    elif fact_citations:
+                        # Grounding disabled — fall back to old behavior
+                        for fact in research_result.get("facts", []):
+                            fact_url = fact.get("source_url", "")
+                            fact_text_val = fact.get("fact_text", "")
+                            if fact_url and fact_text_val:
+                                norm_url = _normalize_url(fact_url)
+                                if norm_url not in source_content_map:
+                                    source_content_map[norm_url] = fact_text_val
+                                else:
+                                    source_content_map[norm_url] += "\n" + fact_text_val
 
                 except (ExaResearchError, asyncio.TimeoutError) as e:
                     logger.error(f"[RESEARCH-API] Phase 1.5 failed (non-fatal): {e}")
@@ -641,9 +704,13 @@ async def generate_article(keyword: str, payload: GeneratePayload, request: Requ
 
                 uncited_claims = detect_uncited_claims(article_content, article_claims, verify_qualitative=runtime["verify_qualitative_claims"])
 
-                # Fetch fact citations for this research run
+                # Fetch fact citations for this research run (exclude grounding-rejected facts)
                 db = ensure_db_alive(db)
-                run_fact_citations = db.query(FactCitation).filter_by(research_run_id=research_run_id).all()
+                run_fact_citations = db.query(FactCitation).filter_by(
+                    research_run_id=research_run_id
+                ).filter(
+                    FactCitation.is_verified == True  # noqa: E712 — SQLAlchemy requires == not 'is'
+                ).all()
 
                 # C-2 fix: skip claim verification if no fact citations exist (Phase 1.5 may have failed)
                 if not run_fact_citations:

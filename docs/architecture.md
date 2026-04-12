@@ -64,6 +64,22 @@ Load this file when working on pipeline logic, agent behavior, or the workspace 
 - **Config**: `EXA_RESEARCH_TIMEOUT=300`, `EXA_RESEARCH_MODEL="exa-research"`, `EXA_RESEARCH_ENABLED=True`, `ORIGINAL_SOURCE_TRACING_ENABLED=True`, `ORIGINAL_SOURCE_MAX_LOOKUPS=3` in settings.py
 - **Cost**: Single async API call per generation + 0-3 Exa search calls for source tracing (~$0.003 max). Reported cost per-call via `cost_dollars` field.
 
+### Phase 1.7 — FactGroundingAgent (`app/services/fact_grounding_service.py`)
+- **Model**: `glm-5` (GLM-5 Deep Thinking) via `call_glm5_with_retry()`
+- **Trigger**: After Phase 1.5b (Exa Research API), before Phase 2 (Psychology). Runs when FactCitations exist for the research run.
+- **Purpose**: Verifies Exa Research API facts against actual source page content before they enter the writer's citation pool. Prevents the self-fulfilling loop where `fact_text` was stored as "source content" and verified against itself.
+- **Steps**:
+  1. **Fetch real content** — Batch-fetch actual page content for source URLs via Exa `/contents` endpoint (`FACT_GROUNDING_CONTENT_MAX_CHARS` per page)
+  2. **GLM-5 verification** — AI Analyst verifies each fact against real page content. Facts not present in source → `is_verified=False`, `verification_status="rejected_not_in_source"`. Facts confirmed → `is_verified=True`, `is_grounded=True` (upstream `verification_status` preserved — see ownership rule below)
+  3. **Step 3.5 cross-source corroboration** — When `FACT_GROUNDING_CORROBORATION_ENABLED=True`, searches for independent confirmation of each surviving in-pool fact across other verified sources. Updates `consensus_count` and adjusts `composite_score` (×1.3 boost for corroborated, ×0.85 penalty for uncorroborated). Max `FACT_GROUNDING_MAX_CORROBORATION_SEARCHES` Exa searches.
+  4. **Primary source tracing (Step 4)** — For secondary citations (e.g., blog citing a Gartner report), traces to the primary source via Exa search constrained to canonical domains. Regex fast-path extracts numbers from primary content; falls back to GLM-5 comparison. Branches: **confirmed** (confidence boost), **contradicted with number** (hard reject: `is_verified=False`), **contradicted no number** (soft reject: `verification_status="suspect"`, confidence penalty), **different_metric/not_found** (annotation only, status preserved)
+  5. **Version currency check** — Detects versioned documents and checks for newer editions
+  6. **Methodology tagging** — Tags conflatable facts with methodology context
+- **verification_status ownership**: Phase 1.7 does NOT set `verification_status` on verified facts — the upstream value from `create_citations_from_research()` (Tier 1-2 → `"trusted"`, Tier 3-4 → `"corroborated"`, laundered → `"suspect"`) is the authoritative label. Phase 1.7 gates facts via `is_verified` boolean. The only exception is Step 4's contradicted-no-number branch, which downgrades status to `"suspect"`.
+- **Writer citation filter dependency**: The writer (`writer_service.py`) has a two-gate citation filter: (1) `is_verified` boolean gate, (2) for quantitative claims (matching `\d+%|\$\d|percent|\d+\.\d+`), `verification_status` must be in `("corroborated", "trusted")`. Phase 1.7's `is_verified=True` passes gate 1; the preserved upstream status passes gate 2.
+- **Config**: `FACT_GROUNDING_CONTENT_MAX_CHARS`, `FACT_GROUNDING_CORROBORATION_ENABLED`, `FACT_GROUNDING_GLM5_TEMPERATURE`, `FACT_GROUNDING_MAX_CORROBORATION_SEARCHES`, `FACT_GROUNDING_MAX_PRIMARY_LOOKUPS`, `FACT_GROUNDING_VERSION_CURRENCY_MAX` in `settings.py`
+- **Cost**: ~$0.01-0.03/article (GLM-5 verification calls + Exa content fetches + corroboration searches)
+
 ### Claim Verification Agent (`app/services/claim_verification_agent.py`)
 Cross-cutting service used by both Phase 1.5 (fact verification) and Phase 3 (post-writer claim verification). Four capabilities:
 
@@ -240,7 +256,7 @@ Tables managed via SQLAlchemy ORM in `app/models.py`:
 - `WriterRun` — per-article readability telemetry (`ari_score`, `flesch_kincaid_score`, `coleman_liau_score`, `avg_sentence_length`, `readability_efficiency`, `human_approved`, `approved_at`, `is_distilled`). Composite unique constraint `(profile_name, niche, post_id)`. Linked to `Post` via `post_id`.
 - `WriterPlaybook` — distilled niche-level readability patterns. Composite unique constraint `(profile_name, niche)` for multi-tenant isolation. Stores JSON with `avg_ari_baseline`, `avg_readability_efficiency`, `target_avg_sentence_length`, `structure_template`, `effective_sentence_patterns` (future), `preferred_word_swaps` (future). Versioned with `runs_distilled` counter.
 - `VerifiedSource` — credibility-scored sources from Phase 1.5. Stores (`url`, `title`, `domain`, `credibility_score` 0-100 (7-factor base 0-85 + rescue bonus 0-15), `domain_authority`, `publish_date`, `freshness_score`, `internal_citations_count`, `has_credible_citations`, `citation_urls_json`, `is_academic`, `is_authoritative_domain`, `content_snippet` 500 chars, `verification_passed` (threshold: ≥45.0), `rejection_reason`). Composite unique constraint `(research_run_id, url)`. Linked to `ResearchRun` via `research_run_id`. Scoped by `profile_name`. March 2026: Scoring changed from 9-factor (100pts) to 7-factor (85pts base) + rescue bonus (15pts max).
-- `FactCitation` — extracted facts mapped to verified sources. Stores (`fact_text`, `fact_type` stat/benchmark/case_study/expert_quote, `source_url`, `source_title`, `citation_anchor`, `confidence_score` 0.0-1.0). Indexed by `verified_source_id` and `research_run_id`. Used to build citation map for WriterService prompt injection.
+- `FactCitation` — extracted facts mapped to verified sources. Stores (`fact_text`, `fact_type` stat/benchmark/case_study/expert_quote, `source_url`, `source_title`, `citation_anchor`, `confidence_score` 0.0-1.0, `composite_score`, `source_credibility`, `verification_status` enum: `"trusted"|"corroborated"|"suspect"|"not_checked"|"corrected"|"unverifiable"|"ungrounded"`, `is_verified` boolean, `is_grounded` boolean, `grounding_method`, `consensus_count`). Indexed by `verified_source_id` and `research_run_id`. `verification_status` set by upstream producer (`create_citations_from_research()`) based on domain tier — preserved through Phase 1.7 verification. Writer citation filter requires `is_verified=True` AND `verification_status in ("corroborated", "trusted")` for quantitative claims.
 
 - `MigrationHistory` — tracks applied migrations (`name`, `applied_at`). Prevents re-running migrations and detects partial failures.
 
@@ -281,6 +297,7 @@ All operational constants centralized in `settings.py` — imported by service f
 - **Exa rate limiting**: `EXA_SEARCH_CONCURRENCY`, `EXA_CONTENTS_CONCURRENCY`, `EXA_MAX_RETRIES`, `EXA_RETRY_BASE_DELAY`, `EXA_INTER_REQUEST_DELAY`
 - **Exa Research API**: `EXA_RESEARCH_TIMEOUT`, `EXA_RESEARCH_MODEL`, `EXA_RESEARCH_ENABLED`
 - **URL validation**: `URL_VALIDATION_TIMEOUT`, `URL_VALIDATION_CONCURRENCY`, `URL_VALIDATION_ENABLED`
+- **Fact grounding (Phase 1.7)**: `FACT_GROUNDING_CONTENT_MAX_CHARS`, `FACT_GROUNDING_CORROBORATION_ENABLED`, `FACT_GROUNDING_GLM5_TEMPERATURE`, `FACT_GROUNDING_MAX_CORROBORATION_SEARCHES`, `FACT_GROUNDING_MAX_PRIMARY_LOOKUPS`, `FACT_GROUNDING_VERSION_CURRENCY_MAX`
 - **Original source tracing**: `ORIGINAL_SOURCE_TRACING_ENABLED`, `ORIGINAL_SOURCE_MAX_LOOKUPS`
 - **Input bounds**: `MAX_USER_CONTEXT_CHARS`, `MAX_STYLE_RULES_CHARS`, `MAX_RESEARCH_JSON_CHARS`, `MAX_PLAYBOOK_CHARS`
 - **Feedback**: `RULE_CONSOLIDATION_THRESHOLD`

@@ -25,7 +25,7 @@
 - `app/glm_client.py` — GLM-5 API client (semaphore concurrency + 5xx retry)
 - `app/exa_client.py` — Exa API client (rate limiting + 5xx retry)
 - `app/domain_tiers.py` — 4-tier domain credibility lists
-- `app/services/` — Agents: briefing, research, exa_research, source_verification, claim_verification, psychology, writer (writer_service + writer_agent_graph), readability, feedback, research_intel, writer_intel, cartographer, url_validation
+- `app/services/` — Agents: briefing, research, exa_research, source_verification, fact_grounding, claim_verification, psychology, writer (writer_service + writer_agent_graph), readability, feedback, research_intel, writer_intel, cartographer, url_validation
 - `app/services/prompts/` — LLM prompt templates (writer.md, persuasion.md) — **read-only without explicit approval**
 - `static/` — Frontend (ark_opus_console.html, js/console.js)
 
@@ -68,6 +68,7 @@
 - **Attribution mismatch detection** — use `detect_attribution_mismatches()` from `source_verification_service.py`; never duplicate `_ORG_PATTERN` / `KNOWN_RESEARCH_ORGS`
 - **Banned word sanitizer** — deterministic post-LLM regex in `writer_service._sanitize_banned_words()`; never rely solely on prompt instructions
 - **Phase 1.5 graceful degradation** — Exa Research API failure is non-fatal; pipeline continues with Phase 1 data only
+- **verification_status ownership** — `verification_status` on FactCitation is set by the upstream producer (`create_citations_from_research()` in `exa_research_service.py`) based on domain tier: Tier 1-2 → `"trusted"`, Tier 3-4 → `"corroborated"`, laundered → `"suspect"`. Phase 1.7 (fact_grounding_service) must NOT overwrite this value — it gates facts via `is_verified` boolean, not by relabeling status. The writer's citation filter (`writer_service.py`) requires `verification_status in ("corroborated", "trusted")` for quantitative claims.
 - **Exa metadata preservation** — all Exa search functions must preserve `publishedDate` + `score` via `url_metadata_map` pattern
 - **5xx retry** — GLM-5 and Exa clients retry on 429/500/502/503 with exponential backoff (1s→2s→4s); MCP calls use `mcp_call_with_retry()` wrapper
 - **Frontend state** — clear `lastGeneratedMarkdown`, `currentPostId`, `currentQuestions` before each generation; `currentAbortController` cancels in-flight SSE

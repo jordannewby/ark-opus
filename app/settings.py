@@ -93,6 +93,18 @@ URL_VALIDATION_ENABLED = True        # feature flag — False skips URL validati
 ORIGINAL_SOURCE_TRACING_ENABLED = True  # feature flag — False skips source tracing
 ORIGINAL_SOURCE_MAX_LOOKUPS = 3         # max Exa searches per article for source tracing
 
+# Fact Grounding Agent (Phase 1.7 — pre-writer source verification)
+FACT_GROUNDING_ENABLED = True                # Feature flag — False skips Phase 1.7 (falls back to current behavior)
+FACT_GROUNDING_TIMEOUT = 240                 # Max seconds for entire grounding phase (increased from 180 for Step 4 GLM-5 + Step 3.5 corroboration)
+FACT_GROUNDING_MAX_PRIMARY_LOOKUPS = 3       # Max Exa searches for secondary citation tracing
+FACT_GROUNDING_VERSION_CURRENCY_MAX = 3      # Max Exa searches for version currency checks
+FACT_GROUNDING_CONTENT_MAX_CHARS = 8000      # Max chars per source from Exa /contents
+FACT_GROUNDING_GLM5_TEMPERATURE = 0.1        # Low temp for verification precision (lower than extraction's 0.3)
+
+# Cross-source corroboration (Phase 1.7 Step 3.5)
+FACT_GROUNDING_CORROBORATION_ENABLED = True    # Feature flag — False skips corroboration
+FACT_GROUNDING_MAX_CORROBORATION_SEARCHES = 5  # Max Exa searches for independent confirmation
+
 # Writer tuning
 MAX_WRITER_ATTEMPTS = 5
 WRITER_MAX_TOKENS = 8192
