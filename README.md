@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="static/ark%20opus%20thumbnail.png" alt="Ark Opus" width="100%"/>
+</p>
+
 # Ark Opus
 
 **Multi-agent autonomous AI orchestration engine for verified content generation.**
