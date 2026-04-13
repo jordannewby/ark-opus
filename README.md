@@ -1,115 +1,100 @@
 # Ark Opus
 
-An AI content pipeline that researches, verifies, and writes long-form articles with automated citation checking. Every factual claim is cross-referenced against verified sources before the article is saved.
+An autonomous multi-agent content engine that doesn't trust itself.
+
+Every factual claim, every citation URL, every statistic in the final article has been independently verified against real source material before the system will save it. Not by one check — by a redundant chain of verification gates where each layer assumes the previous one failed.
 
 ---
 
-## The Problem
+## Why This Exists
 
-AI content tools generate fluent prose but leave fact-checking to the user. They invent URLs that 404. They attribute studies to organizations that never published them. They hallucinate statistics that sound plausible but have no source.
+AI writing tools have a credibility problem. They generate confident prose backed by sources that don't exist, statistics nobody published, and URLs that 404. Teams spend more time fact-checking the AI than they saved using it.
 
-Editorial teams end up spending more time fact-checking AI output than they saved by using it. The trust problem isn't a model quality problem — it's an architecture problem. No amount of prompt engineering prevents a model from inventing a URL it has never seen.
+The root cause isn't model quality. It's architecture. A single-pass generation pipeline will always hallucinate because there's nothing structurally preventing it from doing so.
 
-Ark Opus makes verification a structural requirement, not an optional step. Articles can't be saved until claims pass a multi-gate verification pipeline.
-
----
-
-## What It Does
-
-**Post-Write Claim Verification** — After the article is generated, every factual claim is extracted and matched against the verified fact database. Fabricated citations (URLs not in the verified source map) trigger an automatic rewrite. Zero tolerance.
-
-**Source Credibility Scoring** — Before any source enters the writer's citation pool, it's scored across multiple factors including content integrity, domain authority, freshness, and topical relevance. Sources below threshold are rejected.
-
-**Citation Laundering Detection** — When an article claims "Organization X reports Y" but the citation URL points to a blog that aggregated the data, the system detects the mismatch and flags it.
-
-**Self-Improving Intelligence Loops** — After enough articles in a niche, the system distills successful research and readability patterns into playbooks. Human edit feedback trains per-profile style rules that persist across sessions.
+Ark Opus makes it structurally impossible. The article cannot be saved until every claim survives a multi-agent verification gauntlet. Fabricate a URL? Caught. Attribute a study to the wrong organization? Caught. Invent a statistic? Caught and rejected.
 
 ---
 
-## How It Works
+## What Happens When You Hit Generate
 
-```
-Keyword + Niche
-       |
-       v
-[Campaign Planning] ── Keyword clustering into hub-and-spoke content strategy
-       |
-       v
-[Briefing] ─────────── Clarifying questions to refine intent and audience
-       |
-       v
-[Research] ─────────── Agentic tool orchestration across search and SEO APIs
-       |
-       v
-[Source Verification] ─ Credibility scoring, fact extraction, citation laundering detection
-       |
-       v
-[Fact Grounding] ───── Verifies extracted facts against actual source page content,
-       |                cross-source corroboration, primary source tracing
-       |
-       v
-[Psychology] ────────── Persuasion blueprint (audience targeting, emotional hooks)
-       |
-       v
-[Writer] ───────────── Article generation with triple-gate validation:
-       |                SEO structure, citation accuracy, readability scoring
-       |
-       v
-[Claim Gate] ────────── Post-write claim cross-referencing (zero-tolerance on fabrication)
-       |
-       v
-[Feedback] ─────────── Learns from human edits, improves future generations
-```
+Seven autonomous phases fire in sequence. Each one streams progress in real time.
 
-Each phase streams progress events in real time via SSE so you can watch the pipeline work.
+**Campaign Intelligence** — An AI cartographer analyzes hundreds of keywords from live SEO data and maps them into a hub-and-spoke content strategy. One pillar, up to ten supporting articles, all clustered by topical authority.
+
+**Briefing** — Before any research begins, the system asks you three targeted clarifying questions. Your answers shape the entire pipeline — audience, angle, depth.
+
+**Agentic Research** — A reasoning model autonomously orchestrates search APIs and neural retrieval tools in an iterative loop. It decides which tools to call, evaluates results, and re-queries when coverage is insufficient. It doesn't follow a script — it adapts.
+
+**Source Verification** — Every source is scored across seven credibility factors: content integrity, editorial quality, domain authority, freshness, author attribution, topical relevance, and spam detection. Sources below threshold are rejected. Borderline sources get a secondary rescue evaluation. The system will refuse to generate if fewer than three credible sources survive.
+
+**Fact Grounding** — Extracted facts are verified against actual source page content. Cross-source corroboration checks whether independent sources confirm the same claims. Primary source tracing follows citation chains back to the original publisher when laundering is detected. Version currency checks flag outdated statistics.
+
+**Psychology + Writing** — A persuasion blueprint maps the target audience's psychology before writing begins. The writer operates in a triple-gated loop: SEO structure validation, citation accuracy enforcement, and readability scoring. It rewrites until all three gates pass simultaneously. Banned-word sanitization runs deterministically after every draft — the system doesn't rely on prompt instructions alone.
+
+**Claim Verification Gate** — After the article is fully written, every claim-citation pair is extracted and cross-referenced against the verified fact database. URLs not in the verified source map are flagged as fabricated. Domain-only URL matches (where the model guessed a plausible path) are treated as fabricated, not ambiguous. Zero tolerance. The article rewrites until clean.
+
+**Final URL Gate** — A last-resort regex scan strips any URL that survived all previous checks but still isn't in the verified source set. Defense in depth.
+
+---
+
+## Self-Improving Intelligence
+
+The system gets better the more you use it.
+
+**Research playbooks** distill successful tool sequences, keyword difficulty patterns, and entity clusters across runs. After enough articles in a niche, the research agent stops exploring blindly and starts executing proven strategies.
+
+**Writer playbooks** track which sentence structures, word choices, and readability patterns consistently hit target scores. The writer's prompt evolves per-niche.
+
+**Style rules** learn from your edits. When you modify an article and approve it, the system diffs your changes, extracts style preferences, and applies them to every future generation. Your voice compounds over time.
+
+---
+
+## The Verification Stack
+
+This isn't one check. It's seven layers, each assuming the previous one was compromised:
+
+1. **Exa Research API** instructions demand original publisher URLs, not aggregator blogs
+2. **Citation laundering detection** catches when "Organization X reports Y" but the URL points to a third party
+3. **Original source tracing** searches the actual publisher's domain to find the real URL
+4. **URL liveness validation** confirms every source URL is alive before it enters the writer's pool
+5. **Editor allowlist** rejects any URL the writer generates that isn't in the verified citation set
+6. **Post-write claim cross-referencing** extracts every claim and matches it against source facts
+7. **Final URL gate** strips anything that slipped through
+
+A fabricated URL would need to independently fool all seven layers. Each layer uses a different detection mechanism.
+
+---
+
+## Multi-Tenant Workspaces
+
+Everything is scoped by profile. Research caches, style rules, playbooks, generation history — all isolated per workspace. Run ten different content brands from one instance without bleed.
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.10+
-- Git
-- Node.js / npm
-
-### Installation
-
 ```bash
-# Clone and set up
 git clone <your-repo-url>
 cd ark-opus
 
-# Python environment
 python -m venv venv
-# Windows:
-.\venv\Scripts\activate
-# Mac/Linux:
-source venv/bin/activate
+# Windows: .\venv\Scripts\activate
+# Mac/Linux: source venv/bin/activate
 
-# Install dependencies
 pip install -r requirements.txt
-
-# MCP server dependencies
 cd mcp-dataforseo-server && npm install && cd ..
 
-# Configure environment
 cp .env.example .env
-# Edit .env with your API keys (see .env.example for required keys)
+# Fill in your API keys (see .env.example for the full list)
 
-# Install pre-commit hook
 cp hooks/pre-commit .git/hooks/pre-commit
 chmod +x .git/hooks/pre-commit
 
-# Start the application
 uvicorn app.main:app --reload
 ```
 
-Open `http://127.0.0.1:8000/` to access the console UI.
-
-### Environment Setup
-
-Copy `.env.example` to `.env` and fill in your API keys. The application requires credentials for its database, LLM providers, and search APIs. See the example file for the full list — never commit `.env` to version control.
+Open `http://127.0.0.1:8000/` to access the console.
 
 ---
 
@@ -119,39 +104,16 @@ Copy `.env.example` to `.env` and fill in your API keys. The application require
 |-------|-----------|
 | API | FastAPI (async, SSE streaming) |
 | Database | PostgreSQL (SQLAlchemy ORM) |
-| LLMs | Multiple models for research, writing, and analysis |
+| LLMs | Multiple models — reasoning, writing, analysis |
 | Search | Neural search + SEO intelligence APIs |
 | Frontend | Vanilla JS + Tailwind CSS |
-| Validation | Pydantic schema enforcement |
+| Validation | Pydantic schema enforcement at every boundary |
 
 ---
 
 ## Cost
 
-Roughly **$1.00 - $2.50 per article** in API costs, depending on research depth and retry count. Built-in caching (research results, domain credibility) reduces costs significantly after the first few runs in a niche.
-
----
-
-## Frontend
-
-The console UI features a real-time agent visualization with:
-
-- **Editor** — Live markdown editor with SEO audit scoring, word/heading/citation counts, and an approval button for the feedback loop
-- **Blueprint** — Displays the psychology outline (hook strategy, audience targeting, content structure)
-- **Terminal** — Structured logs from all pipeline phases with color-coded source verification scores
-- **Modals** — Workspace management, style rule editor (AI Brain), campaign planner (Cartographer), and clarification questions
-
----
-
-## Troubleshooting
-
-Enable debug mode for verbose logging:
-
-```bash
-ARK_DEBUG=true uvicorn app.main:app --log-level debug
-```
-
-Common issues are usually one of: missing environment variables (check `.env`), missing dependencies (`pip install -r requirements.txt`), or MCP server not starting (verify Node.js is installed). The frontend console (F12) shows real-time SSE events for diagnosing pipeline issues.
+Roughly **$1.00 - $2.50 per article** in API costs. Built-in caching drops that significantly after the first few runs in a niche.
 
 ---
 
