@@ -1,5 +1,7 @@
 # Ark Opus
 
+**Multi-agent autonomous AI orchestration engine for verified content generation.**
+
 An autonomous multi-agent content engine that doesn't trust itself.
 
 Every factual claim, every citation URL, every statistic in the final article has been independently verified against real source material before the system will save it. Not by one check — by a redundant chain of verification gates where each layer assumes the previous one failed.
